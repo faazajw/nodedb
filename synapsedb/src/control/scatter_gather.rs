@@ -1,6 +1,6 @@
 //! Scatter-gather coordinator for cross-shard graph traversals.
 //!
-//! TDD §6.2: Cross-shard hops are NOT handled by forwarding the traversal to
+//! Cross-shard hops are NOT handled by forwarding the traversal to
 //! the remote shard. Instead, the Data Plane returns partial results (the set
 //! of cross-shard edge targets) to the Control Plane, which batches and
 //! dispatches them to the appropriate target cores.
@@ -8,7 +8,7 @@
 //! This keeps the Data Plane stateless per-request and avoids distributed
 //! deadlocks from recursive cross-shard calls.
 //!
-//! ## Vectorized Scatter Envelopes (TDD §6.2 Normative)
+//! ## Vectorized Scatter Envelopes
 //!
 //! The Data Plane MUST NOT emit one SPSC message per unresolved cross-shard edge.
 //! Instead, for each hop level, cross-shard destinations are accumulated into a
@@ -35,7 +35,7 @@ pub struct ScatterBatch {
 /// Vectorized scatter envelope for one hop level.
 ///
 /// Groups all cross-shard destinations by target shard, preventing
-/// scatter amplification (TDD §6.2).
+/// scatter amplification.
 #[derive(Debug, Clone, Default)]
 pub struct ScatterEnvelope {
     /// Batches grouped by target shard.
@@ -104,8 +104,6 @@ pub enum FanOutDecision {
 }
 
 /// Apply adaptive fan-out limits to a scatter envelope.
-///
-/// TDD §6.2:
 /// - Soft limit (default 12): query continues, response annotated with warning
 /// - Hard limit (default 16): query terminates with FAN_OUT_EXCEEDED unless
 ///   fan_out_partial is true, in which case partial results are returned

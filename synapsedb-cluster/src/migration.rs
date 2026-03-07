@@ -2,13 +2,13 @@ use std::time::Instant;
 
 use tracing::{info, warn};
 
-/// 3-phase shard migration state machine (TDD §6.3).
+/// 3-phase shard migration state machine.
 ///
 /// 1. **Base Copy**: Target node pulls the vShard's L1 segments via RDMA/QUIC.
 /// 2. **WAL Catch-up**: Target subscribes to source WAL, replays live mutations.
 /// 3. **Atomic Cut-over**: Raft leader updates routing table atomically.
 ///
-/// Write Pause Disclosure (TDD §6.3 Normative): During Phase 3, writes to the
+/// Write Pause Disclosure : During Phase 3, writes to the
 /// migrating vShard are paused. `migration_write_pause_budget_us` controls the
 /// maximum acceptable pause.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,7 +58,7 @@ pub struct MigrationState {
     pub target_node: u64,
     /// Current phase.
     pub phase: MigrationPhase,
-    /// Maximum write-pause budget in microseconds (TDD §6.3).
+    /// Maximum write-pause budget in microseconds.
     pub write_pause_budget_us: u64,
     /// When migration was initiated.
     pub started_at: Option<Instant>,
@@ -155,8 +155,7 @@ impl MigrationState {
 
     /// Attempt to start Phase 3: Atomic Cut-over.
     ///
-    /// Returns `Err` if the estimated pause would exceed the budget
-    /// (TDD §6.3 Write Pause Disclosure).
+    /// Returns `Err` if the estimated pause would exceed the budget.
     pub fn start_cutover(&mut self, estimated_pause_us: u64) -> crate::Result<()> {
         if estimated_pause_us > self.write_pause_budget_us {
             warn!(
@@ -193,7 +192,7 @@ impl MigrationState {
         );
     }
 
-    /// Mark migration as failed. Source remains authoritative (TDD §12.2).
+    /// Mark migration as failed. Source remains authoritative.
     pub fn fail(&mut self, reason: String) {
         warn!(
             vshard = self.vshard_id,

@@ -1,4 +1,4 @@
-//! Transport-agnostic vShard envelope (TDD §6.3 Normative).
+//! Transport-agnostic vShard envelope.
 //!
 //! "The on-wire format for vShard migration (segment files, WAL tail,
 //! routing metadata) MUST be identical regardless of whether the transport

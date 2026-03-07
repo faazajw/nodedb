@@ -2,13 +2,13 @@ use std::collections::HashMap;
 
 use crate::error::{ClusterError, Result};
 
-/// Number of virtual shards (TDD §6.1).
+/// Number of virtual shards.
 pub const VSHARD_COUNT: u16 = 1024;
 
 /// Maps vShards to Raft groups and Raft groups to nodes.
 ///
-/// TDD §6.1: "The 1024 vShards are divided into distinct Raft Groups
-/// (e.g., vShards 0-63 managed by Raft Group 1 across Nodes A, B, and C)."
+/// The 1024 vShards are divided into distinct Raft Groups
+/// (e.g., vShards 0-63 managed by Raft Group 1 across Nodes A, B, and C).
 ///
 /// This table is the authoritative routing source. It is updated atomically
 /// via Raft state machine when:

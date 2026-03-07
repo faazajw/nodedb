@@ -1,6 +1,6 @@
 //! Per-query graph traversal configuration.
 //!
-//! TDD §6.2: Adaptive fan-out uses a two-tier limit with optional graceful
+//! Adaptive fan-out uses a two-tier limit with optional graceful
 //! degradation instead of a hard kill.
 
 use serde::{Deserialize, Serialize};

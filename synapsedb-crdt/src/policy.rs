@@ -1,6 +1,6 @@
 //! Declarative conflict resolution policies for CRDT constraint violations.
 //!
-//! TDD §4.1 specifies that ~80% of constraint violations should be auto-resolved
+//! ~80% of constraint violations should be auto-resolved
 //! via declarative policies, with the DLQ serving as fallback-only.
 //!
 //! # Built-in Policies

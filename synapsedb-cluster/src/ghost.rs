@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use tracing::{debug, info};
 
-/// Ghost edge stub (TDD §6.2).
+/// Ghost edge stub.
 ///
 /// When vShard rebalancing moves a node to a new shard, a ghost stub
 /// `(node_id, target_shard_id, refcount)` remains on the source.
@@ -116,7 +116,7 @@ impl GhostTable {
         }
     }
 
-    /// Run anti-entropy sweep (TDD §6.2 Normative).
+    /// Run anti-entropy sweep.
     ///
     /// For each ghost stub, the caller must verify against the target shard:
     /// 1. Does the target shard acknowledge the node exists?

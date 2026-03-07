@@ -177,7 +177,7 @@ pub enum PhysicalPlan {
 
     /// GraphRAG fusion: vector search → graph expansion → RRF ranking.
     ///
-    /// TDD §5.4: Steps 1-3 execute entirely on the Data Plane within a single
+    /// Steps 1-3 execute entirely on the Data Plane within a single
     /// SPSC request-response cycle when all nodes are shard-local.
     GraphRagFusion {
         /// Collection for vector search.

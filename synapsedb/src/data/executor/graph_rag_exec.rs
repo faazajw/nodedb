@@ -1,6 +1,6 @@
 //! GraphRAG fusion execution handler for `CoreLoop`.
 //!
-//! TDD §5.4: A single query fuses semantic similarity with structural graph
+//! A single query fuses semantic similarity with structural graph
 //! relationships. Steps 1-3 execute entirely on the Data Plane within a single
 //! SPSC request-response cycle when all nodes are shard-local.
 //!

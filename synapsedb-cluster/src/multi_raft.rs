@@ -15,8 +15,6 @@ use crate::routing::RoutingTable;
 
 /// Multi-Raft coordinator managing multiple Raft groups on a single node.
 ///
-/// TDD §6.1: "The 1024 vShards are divided into distinct Raft Groups."
-///
 /// This coordinator:
 /// - Manages all Raft groups hosted on this node
 /// - Batches heartbeats across groups sharing the same leader
