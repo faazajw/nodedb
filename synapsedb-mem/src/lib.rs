@@ -33,12 +33,18 @@
 
 pub mod arena;
 pub mod budget;
+#[cfg(feature = "datafusion")]
+pub mod datafusion_pool;
 pub mod engine;
 pub mod error;
 pub mod governor;
 pub mod metrics;
+pub mod pressure;
 
 pub use budget::Budget;
+#[cfg(feature = "datafusion")]
+pub use datafusion_pool::GovernedMemoryPool;
 pub use engine::EngineId;
 pub use error::{MemError, Result};
 pub use governor::MemoryGovernor;
+pub use pressure::{PressureLevel, PressureThresholds};

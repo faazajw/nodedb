@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use crate::budget::Budget;
 use crate::engine::EngineId;
 use crate::error::{MemError, Result};
+use crate::pressure::{PressureLevel, PressureThresholds};
 
 /// Configuration for the memory governor.
 #[derive(Debug, Clone)]
@@ -39,12 +40,16 @@ impl GovernorConfig {
 /// The central memory governor.
 ///
 /// Thread-safe: all budget operations use atomics internally.
+#[derive(Debug)]
 pub struct MemoryGovernor {
     /// Per-engine budgets.
     budgets: HashMap<EngineId, Budget>,
 
     /// Global ceiling in bytes.
     global_ceiling: usize,
+
+    /// Pressure thresholds for graduated backpressure.
+    thresholds: PressureThresholds,
 }
 
 impl MemoryGovernor {
@@ -60,6 +65,7 @@ impl MemoryGovernor {
         Ok(Self {
             budgets,
             global_ceiling: config.global_ceiling,
+            thresholds: PressureThresholds::default(),
         })
     }
 
@@ -124,6 +130,24 @@ impl MemoryGovernor {
             return 100;
         }
         ((self.total_allocated() * 100) / self.global_ceiling).min(100) as u8
+    }
+
+    /// Current pressure level for a specific engine.
+    pub fn engine_pressure(&self, engine: EngineId) -> PressureLevel {
+        self.budgets
+            .get(&engine)
+            .map(|b| self.thresholds.level_for(b.utilization_percent()))
+            .unwrap_or(PressureLevel::Emergency)
+    }
+
+    /// Current global pressure level.
+    pub fn global_pressure(&self) -> PressureLevel {
+        self.thresholds.level_for(self.global_utilization_percent())
+    }
+
+    /// Set custom pressure thresholds.
+    pub fn set_thresholds(&mut self, thresholds: PressureThresholds) {
+        self.thresholds = thresholds;
     }
 
     /// Snapshot of all engine budget states (for metrics/debugging).
@@ -231,6 +255,40 @@ mod tests {
         assert_eq!(vector_snap.allocated, 2048);
         assert_eq!(vector_snap.limit, 4096);
         assert_eq!(vector_snap.utilization_percent, 50);
+    }
+
+    #[test]
+    fn engine_pressure_levels() {
+        let gov = MemoryGovernor::new(test_config()).unwrap();
+
+        // Vector budget is 4096. At 0% → Normal.
+        assert_eq!(gov.engine_pressure(EngineId::Vector), PressureLevel::Normal);
+
+        // Allocate 70% → Warning.
+        gov.try_reserve(EngineId::Vector, 2868).unwrap(); // ~70%
+        assert_eq!(
+            gov.engine_pressure(EngineId::Vector),
+            PressureLevel::Warning
+        );
+
+        // Allocate to 87% → Critical.
+        gov.try_reserve(EngineId::Vector, 700).unwrap(); // ~87%
+        assert_eq!(
+            gov.engine_pressure(EngineId::Vector),
+            PressureLevel::Critical
+        );
+    }
+
+    #[test]
+    fn global_pressure_tracks_total() {
+        let gov = MemoryGovernor::new(test_config()).unwrap();
+        assert_eq!(gov.global_pressure(), PressureLevel::Normal);
+
+        // Fill to ~70% of global ceiling (8192).
+        gov.try_reserve(EngineId::Vector, 4096).unwrap();
+        gov.try_reserve(EngineId::Query, 1700).unwrap();
+        // ~70% = 5796/8192
+        assert!(gov.global_pressure() >= PressureLevel::Warning);
     }
 
     #[test]

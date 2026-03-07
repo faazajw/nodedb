@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 ///
 /// Tracks current allocation against a configurable limit using atomic
 /// counters (safe to read from any thread — metrics exporter, governor, etc.).
+#[derive(Debug)]
 pub struct Budget {
     /// Hard limit in bytes. Allocations beyond this are rejected.
     limit: AtomicUsize,
