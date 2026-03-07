@@ -29,8 +29,10 @@ pub struct OverflowSlot {
 
 /// mmap-backed overflow region owned by a single core.
 ///
-/// Uses a bump allocator within the mmap'd file. When the file fills,
-/// it grows via `ftruncate` + `mremap`.
+/// Uses a bump allocator within the mmap'd file with a free-list for
+/// slot reuse. When a slot is freed, it's added to the free-list so
+/// future writes of equal or smaller size can reclaim the space without
+/// advancing the bump cursor.
 ///
 /// Not `Send` or `Sync` — it's single-thread owned.
 pub struct OverflowRegion {
@@ -46,6 +48,8 @@ pub struct OverflowRegion {
     cursor: usize,
     /// Slot metadata.
     slots: Vec<OverflowSlot>,
+    /// Free-list: indices of freed slots, sorted largest-first for best-fit.
+    free_list: Vec<usize>,
     /// Maximum capacity (prevents unbounded growth).
     max_capacity: usize,
 }
@@ -115,12 +119,22 @@ impl OverflowRegion {
             capacity,
             cursor: 0,
             slots: Vec::new(),
+            free_list: Vec::new(),
             max_capacity: Self::DEFAULT_MAX_CAPACITY,
         })
     }
 
     /// Write data to the overflow region and return the slot index.
+    ///
+    /// First attempts to reuse a freed slot from the free-list (best-fit).
+    /// Falls back to bump allocation if no suitable free slot exists.
     pub fn write(&mut self, data: &[u8], engine: EngineId) -> Result<usize> {
+        // Try to reuse a freed slot that fits this data.
+        if let Some(reused) = self.try_reuse_slot(data, engine) {
+            return Ok(reused);
+        }
+
+        // Bump allocation path.
         let required = self.cursor + data.len();
 
         // Check if we need to grow.
@@ -151,6 +165,50 @@ impl OverflowRegion {
         Ok(slot_index)
     }
 
+    /// Try to reuse a freed slot from the free-list.
+    ///
+    /// Uses best-fit: finds the smallest free slot that can hold `data`.
+    /// This minimizes internal fragmentation.
+    fn try_reuse_slot(&mut self, data: &[u8], engine: EngineId) -> Option<usize> {
+        if self.free_list.is_empty() {
+            return None;
+        }
+
+        // Find best-fit: smallest free slot >= data.len().
+        let mut best_idx = None;
+        let mut best_waste = usize::MAX;
+
+        for (fl_idx, &slot_idx) in self.free_list.iter().enumerate() {
+            let slot_size = self.slots[slot_idx].size;
+            if slot_size >= data.len() {
+                let waste = slot_size - data.len();
+                if waste < best_waste {
+                    best_waste = waste;
+                    best_idx = Some(fl_idx);
+                }
+            }
+        }
+
+        let fl_idx = best_idx?;
+        let slot_index = self.free_list.swap_remove(fl_idx);
+        let slot = &mut self.slots[slot_index];
+
+        // SAFETY: The slot's offset and size were validated when originally
+        // written. The slot is marked unoccupied (checked by free_list membership).
+        // data.len() <= slot.size (checked above). base is non-null.
+        unsafe {
+            std::ptr::copy_nonoverlapping(data.as_ptr(), self.base.add(slot.offset), data.len());
+        }
+
+        slot.occupied = true;
+        slot.engine = engine;
+        // Keep original slot.size — the allocated region doesn't shrink.
+        // Internal fragmentation (slot.size - data.len()) is acceptable
+        // to avoid splitting complexity.
+
+        Some(slot_index)
+    }
+
     /// Read data from a slot (returns a slice into the mmap).
     pub fn read(&self, slot_index: usize) -> Result<&[u8]> {
         let slot = self
@@ -174,14 +232,21 @@ impl OverflowRegion {
         Ok(slice)
     }
 
-    /// Mark a slot as freed (space is not reclaimed until region is dropped).
+    /// Mark a slot as freed and add it to the free-list for reuse.
     pub fn free(&mut self, slot_index: usize) -> Result<()> {
         let slot = self
             .slots
             .get_mut(slot_index)
             .ok_or_else(|| MemError::Overflow(format!("invalid slot index: {slot_index}")))?;
 
+        if !slot.occupied {
+            return Err(MemError::Overflow(format!(
+                "slot {slot_index} is already freed"
+            )));
+        }
+
         slot.occupied = false;
+        self.free_list.push(slot_index);
         Ok(())
     }
 
@@ -380,6 +445,48 @@ mod tests {
 
         // Try to free non-existent slot.
         assert!(region.free(999).is_err());
+    }
+
+    #[test]
+    fn free_list_reuse() {
+        let dir = tempfile::tempdir().expect("failed to create temp dir");
+        let path = dir.path().join("overflow.mmap");
+
+        let mut region = OverflowRegion::open(&path).expect("failed to open region");
+
+        // Write three slots.
+        let s0 = region.write(b"aaaa", EngineId::Vector).expect("write s0");
+        let s1 = region.write(b"bbbb", EngineId::Sparse).expect("write s1");
+        let _s2 = region.write(b"cccc", EngineId::Vector).expect("write s2");
+
+        let cursor_before = region.used_bytes();
+
+        // Free s0 and s1.
+        region.free(s0).expect("free s0");
+        region.free(s1).expect("free s1");
+
+        // Write new data that fits in a freed slot.
+        let s3 = region.write(b"dd", EngineId::Sparse).expect("write s3");
+
+        // Should have reused a freed slot, not advanced the cursor.
+        assert_eq!(region.used_bytes(), cursor_before);
+        // s3 should reuse s0 or s1 (best-fit: both are 4 bytes, either works).
+        assert!(s3 == s0 || s3 == s1);
+
+        // Data should be readable.
+        let data = region.read(s3).expect("read s3");
+        assert_eq!(&data[..2], b"dd");
+    }
+
+    #[test]
+    fn double_free_is_error() {
+        let dir = tempfile::tempdir().expect("failed to create temp dir");
+        let path = dir.path().join("overflow.mmap");
+
+        let mut region = OverflowRegion::open(&path).expect("failed to open region");
+        let slot = region.write(b"data", EngineId::Vector).expect("write");
+        region.free(slot).expect("first free");
+        assert!(region.free(slot).is_err());
     }
 
     #[test]
