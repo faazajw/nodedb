@@ -21,13 +21,19 @@
 
 pub mod constraint;
 pub mod dead_letter;
+pub mod deferred;
 pub mod error;
+pub mod policy;
 pub mod pre_validate;
 pub mod state;
 pub mod validator;
 
 pub use constraint::{Constraint, ConstraintKind, ConstraintSet};
 pub use dead_letter::{CompensationHint, DeadLetterQueue};
+pub use deferred::DeferredQueue;
 pub use error::{CrdtError, Result};
+pub use policy::{
+    CollectionPolicy, ConflictPolicy, PolicyRegistry, PolicyResolution, ResolvedAction,
+};
 pub use state::CrdtState;
 pub use validator::{ValidationOutcome, Validator};

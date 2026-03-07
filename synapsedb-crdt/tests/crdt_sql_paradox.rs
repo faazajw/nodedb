@@ -15,6 +15,7 @@ use loro::LoroValue;
 use synapsedb_crdt::CrdtError;
 use synapsedb_crdt::constraint::ConstraintSet;
 use synapsedb_crdt::dead_letter::CompensationHint;
+use synapsedb_crdt::policy::{CollectionPolicy, PolicyRegistry};
 use synapsedb_crdt::pre_validate::{self, PreValidationResult};
 use synapsedb_crdt::state::CrdtState;
 use synapsedb_crdt::validator::{ProposedChange, ValidationOutcome, Validator};
@@ -31,7 +32,13 @@ fn user_schema() -> ConstraintSet {
 #[test]
 fn split_brain_unique_violation_with_compensation() {
     let leader_state = CrdtState::new(0); // Leader's committed state.
-    let mut validator = Validator::new(user_schema(), 100);
+
+    // Create a policy registry with strict mode to route violations to DLQ
+    let mut policies = PolicyRegistry::new();
+    let strict_policy = CollectionPolicy::strict();
+    policies.set("users", strict_policy);
+
+    let mut validator = Validator::new_with_policies(user_schema(), 100, policies, 100);
 
     // Agent B (online) creates a user first — succeeds.
     let agent_b_change = ProposedChange {
@@ -126,7 +133,13 @@ fn split_brain_unique_violation_with_compensation() {
 #[test]
 fn offline_agent_references_deleted_user() {
     let leader_state = CrdtState::new(0);
-    let mut validator = Validator::new(user_schema(), 100);
+
+    // Create a policy registry with strict mode
+    let mut policies = PolicyRegistry::new();
+    let strict_policy = CollectionPolicy::strict();
+    policies.set("posts", strict_policy);
+
+    let mut validator = Validator::new_with_policies(user_schema(), 100, policies, 100);
 
     // Agent creates a post referencing user "u1" — but "u1" was deleted while offline.
     let change = ProposedChange {
