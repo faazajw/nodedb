@@ -8,11 +8,11 @@
 
 use std::io::Write;
 
-use synapsedb_wal::reader::WalReader;
-use synapsedb_wal::record::RecordType;
-use synapsedb_wal::recovery::recover;
-use synapsedb_wal::writer::WalWriter;
-use synapsedb_wal::{Result, WalRecord};
+use nodedb_wal::reader::WalReader;
+use nodedb_wal::record::RecordType;
+use nodedb_wal::recovery::recover;
+use nodedb_wal::writer::WalWriter;
+use nodedb_wal::{Result, WalRecord};
 
 /// Helper: write N records and sync.
 fn write_records(path: &std::path::Path, count: u32) -> Vec<u64> {

@@ -8,7 +8,7 @@ use fluxbench::prelude::*;
 use fluxbench::{bench, synthetic, verify};
 use std::hint::black_box;
 
-use synapsedb_bridge::buffer::RingBuffer;
+use nodedb_bridge::buffer::RingBuffer;
 
 const MSG_SIZE: usize = 256;
 

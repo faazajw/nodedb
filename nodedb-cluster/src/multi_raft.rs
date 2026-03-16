@@ -3,9 +3,9 @@ use std::time::Duration;
 
 use tracing::debug;
 
-use synapsedb_raft::node::RaftConfig;
-use synapsedb_raft::storage::MemStorage;
-use synapsedb_raft::{
+use nodedb_raft::node::RaftConfig;
+use nodedb_raft::storage::MemStorage;
+use nodedb_raft::{
     AppendEntriesRequest, AppendEntriesResponse, RaftNode, Ready, RequestVoteRequest,
     RequestVoteResponse,
 };

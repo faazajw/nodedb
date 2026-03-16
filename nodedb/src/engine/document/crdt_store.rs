@@ -72,8 +72,8 @@ mod tests {
     use super::*;
     use crate::engine::crdt::tenant_state::TenantCrdtEngine;
     use crate::types::TenantId;
-    use synapsedb_crdt::constraint::ConstraintSet;
-    use synapsedb_crdt::validator::ProposedChange;
+    use nodedb_crdt::constraint::ConstraintSet;
+    use nodedb_crdt::validator::ProposedChange;
 
     fn make_crdt_engine() -> TenantCrdtEngine {
         TenantCrdtEngine::new(TenantId::new(1), 1, ConstraintSet::new())

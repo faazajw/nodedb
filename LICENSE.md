@@ -1,10 +1,10 @@
-# SynapseDB License
+# NodeDB License
 
 ### Commercial Licensing Notice
 
-SynapseDB is free for internal use, self-hosting, and powering your SaaS/AI applications under the Business Source License (BSL) 1.1 below. However, offering SynapseDB as a managed Database-as-a-Service (DBaaS) or commercial database tooling is restricted.
+NodeDB free for internal use, self-hosting, and powering your SaaS/AI applications under the Business Source License (BSL) 1.1 below. However, offering NodNodeDBmanaged Database-as-a-Service (DBaaS) or commercial database tooling is restricted.
 
-If you wish to provide commercial hosting, DBaaS, or distribute SynapseDB as part of a competitive database product, please contact us to purchase a Commercial License.
+If you wish to provide commercial hosting, DBaaS, or distribute NodeDB part of a competitive database product, please contact us to purchase a Commercial License.
 
 ---
 
@@ -13,7 +13,7 @@ If you wish to provide commercial hosting, DBaaS, or distribute SynapseDB as par
 **Parameters**
 
 - **Licensor:** Farhan Syah
-- **Licensed Work:** SynapseDB 0.0
+- **Licensed Work:** NodeDB0
 - **Change Date:** 2030-01-01
 - **Change License:** Apache License, Version 2.0
 

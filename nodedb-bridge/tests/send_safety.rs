@@ -5,7 +5,7 @@
 //! - DataHandle is Send (can be transferred to TPC core during setup)
 //! - PinnedDataHandle is !Send (cannot leave the TPC core)
 
-use synapsedb_bridge::{BridgeChannel, ControlHandle, DataHandle};
+use nodedb_bridge::{BridgeChannel, ControlHandle, DataHandle};
 
 // Static assertions using trait bounds.
 const _: () = {
@@ -24,7 +24,7 @@ const _: () = {
 ///
 /// ```compile_fail,E0277
 /// fn requires_send<T: Send>() {}
-/// requires_send::<synapsedb_bridge::PinnedDataHandle<u64, u64>>();
+/// requires_send::<nodedb_bridge::PinnedDataHandle<u64, u64>>();
 /// ```
 #[test]
 fn pin_workflow_roundtrip() {

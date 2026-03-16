@@ -13,10 +13,10 @@ use std::sync::Arc;
 
 use datafusion_execution::memory_pool::{MemoryConsumer, MemoryPool};
 
-use synapsedb_mem::datafusion_pool::GovernedMemoryPool;
-use synapsedb_mem::engine::EngineId;
-use synapsedb_mem::governor::{GovernorConfig, MemoryGovernor};
-use synapsedb_mem::pressure::PressureLevel;
+use nodedb_mem::datafusion_pool::GovernedMemoryPool;
+use nodedb_mem::engine::EngineId;
+use nodedb_mem::governor::{GovernorConfig, MemoryGovernor};
+use nodedb_mem::pressure::PressureLevel;
 
 fn make_governor() -> Arc<MemoryGovernor> {
     let mut engine_limits = HashMap::new();

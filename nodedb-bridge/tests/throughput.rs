@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use synapsedb_bridge::buffer::RingBuffer;
+use nodedb_bridge::buffer::RingBuffer;
 
 /// Payload size per message (simulates a typical request/response envelope).
 const PAYLOAD_SIZE: usize = 256;
@@ -71,10 +71,10 @@ fn bridge_throughput_flat_memory() {
                         break;
                     }
                 }
-                Err(synapsedb_bridge::BridgeError::Empty) => {
+                Err(nodedb_bridge::BridgeError::Empty) => {
                     thread::yield_now();
                 }
-                Err(synapsedb_bridge::BridgeError::Disconnected { .. }) => break,
+                Err(nodedb_bridge::BridgeError::Disconnected { .. }) => break,
                 Err(e) => panic!("unexpected error: {e}"),
             }
         }
@@ -94,7 +94,7 @@ fn bridge_throughput_flat_memory() {
                 pushed += 1;
                 total_produced.store(pushed, Ordering::Relaxed);
             }
-            Err(synapsedb_bridge::BridgeError::Full { .. }) => {
+            Err(nodedb_bridge::BridgeError::Full { .. }) => {
                 full_spins += 1;
                 thread::yield_now();
             }
@@ -150,7 +150,7 @@ fn bridge_bidirectional_roundtrip() {
                     loop {
                         match rsp_tx.try_push(req_id * 2) {
                             Ok(()) => break,
-                            Err(synapsedb_bridge::BridgeError::Full { .. }) => {
+                            Err(nodedb_bridge::BridgeError::Full { .. }) => {
                                 thread::yield_now();
                             }
                             Err(e) => panic!("rsp push error: {e}"),
@@ -158,7 +158,7 @@ fn bridge_bidirectional_roundtrip() {
                     }
                     processed += 1;
                 }
-                Err(synapsedb_bridge::BridgeError::Empty) => {
+                Err(nodedb_bridge::BridgeError::Empty) => {
                     thread::yield_now();
                 }
                 Err(e) => panic!("req pop error: {e}"),
@@ -176,7 +176,7 @@ fn bridge_bidirectional_roundtrip() {
         while sent < count {
             match req_tx.try_push(sent + 1) {
                 Ok(()) => sent += 1,
-                Err(synapsedb_bridge::BridgeError::Full { .. }) => break,
+                Err(nodedb_bridge::BridgeError::Full { .. }) => break,
                 Err(e) => panic!("req push error: {e}"),
             }
         }

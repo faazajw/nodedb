@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use synapsedb_bridge::async_bridge::BridgeChannel;
+use nodedb_bridge::async_bridge::BridgeChannel;
 
 const MESSAGE_COUNT: u64 = 10_000;
 
@@ -26,7 +26,7 @@ const MESSAGE_COUNT: u64 = 10_000;
 /// This is what Glommio/monoio would do internally — poll an fd, wake up,
 /// process work, signal the other side.
 fn tpc_event_loop(
-    mut data: synapsedb_bridge::async_bridge::DataHandle<u64, u64>,
+    mut data: nodedb_bridge::async_bridge::DataHandle<u64, u64>,
     done: Arc<AtomicBool>,
 ) {
     let epoll_fd = unsafe { libc::epoll_create1(0) };
@@ -69,7 +69,7 @@ fn tpc_event_loop(
             loop {
                 match data.try_send_response(req * 2) {
                     Ok(()) => break,
-                    Err(synapsedb_bridge::BridgeError::Full { .. }) => {
+                    Err(nodedb_bridge::BridgeError::Full { .. }) => {
                         thread::yield_now();
                     }
                     Err(e) => panic!("TPC send error: {e}"),
@@ -98,7 +98,7 @@ async fn tokio_to_tpc_via_eventfd() {
     });
 
     // Tokio side: wrap in AsyncControlHandle.
-    let mut async_ctrl = synapsedb_bridge::tokio_fd::AsyncControlHandle::new(control).unwrap();
+    let mut async_ctrl = nodedb_bridge::tokio_fd::AsyncControlHandle::new(control).unwrap();
 
     // Interleave sends and receives to avoid filling both queues.
     let mut sent = 0u64;
@@ -109,7 +109,7 @@ async fn tokio_to_tpc_via_eventfd() {
         while sent < MESSAGE_COUNT {
             match async_ctrl.inner.try_send_request(sent + 1) {
                 Ok(()) => sent += 1,
-                Err(synapsedb_bridge::BridgeError::Full { .. }) => break,
+                Err(nodedb_bridge::BridgeError::Full { .. }) => break,
                 Err(e) => panic!("send error: {e}"),
             }
         }
@@ -118,9 +118,9 @@ async fn tokio_to_tpc_via_eventfd() {
         loop {
             match async_ctrl.try_recv_response() {
                 Ok(rsp) => responses.push(rsp),
-                Err(synapsedb_bridge::BridgeError::Empty) => break,
+                Err(nodedb_bridge::BridgeError::Empty) => break,
                 // Producer may drop after sending all responses; drain what's left.
-                Err(synapsedb_bridge::BridgeError::Disconnected { .. }) => break,
+                Err(nodedb_bridge::BridgeError::Disconnected { .. }) => break,
                 Err(e) => panic!("recv error: {e}"),
             }
         }
@@ -153,7 +153,7 @@ async fn tpc_wakes_tokio_on_response() {
     let mut data = bridge.data;
     let control = bridge.control;
 
-    let mut async_ctrl = synapsedb_bridge::tokio_fd::AsyncControlHandle::new(control).unwrap();
+    let mut async_ctrl = nodedb_bridge::tokio_fd::AsyncControlHandle::new(control).unwrap();
 
     // Spawn a task waiting for a response (will block on eventfd).
     let recv_task = tokio::spawn(async move {

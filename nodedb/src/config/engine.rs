@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// These fractions control how the memory governor distributes the global
 /// `memory_limit` across engines. The governor maps these to
-/// `synapsedb_mem::EngineId` budgets at startup.
+/// `nodedb_mem::EngineId` budgets at startup.
 ///
 /// Fractions MUST sum to <= 1.0. Any remainder is unallocated headroom
 /// for transient allocations (e.g., sort buffers, network buffers).

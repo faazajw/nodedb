@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use tracing::{debug, warn};
 
-use synapsedb_bridge::buffer::{Consumer, Producer};
-use synapsedb_crdt::constraint::ConstraintSet;
+use nodedb_bridge::buffer::{Consumer, Producer};
+use nodedb_crdt::constraint::ConstraintSet;
 
 use crate::bridge::dispatch::{BridgeRequest, BridgeResponse};
 use crate::bridge::envelope::{ErrorCode, PhysicalPlan, Response, Status};
@@ -522,8 +522,8 @@ mod tests {
     use crate::bridge::envelope::{Priority, Request};
     use crate::engine::graph::edge_store::Direction;
     use crate::types::*;
+    use nodedb_bridge::buffer::RingBuffer;
     use std::time::{Duration, Instant};
-    use synapsedb_bridge::buffer::RingBuffer;
 
     fn make_core() -> (CoreLoop, Producer<BridgeRequest>, Consumer<BridgeResponse>) {
         let dir = tempfile::tempdir().unwrap();

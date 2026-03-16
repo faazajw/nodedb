@@ -3,9 +3,9 @@ use std::sync::Mutex;
 
 use tracing::info;
 
-use synapsedb_wal::WalRecord;
-use synapsedb_wal::record::RecordType;
-use synapsedb_wal::writer::{WalWriter, WalWriterConfig};
+use nodedb_wal::WalRecord;
+use nodedb_wal::record::RecordType;
+use nodedb_wal::writer::{WalWriter, WalWriterConfig};
 
 use crate::types::{Lsn, TenantId, VShardId};
 
@@ -129,10 +129,10 @@ impl WalManager {
     /// Returns records in LSN order. Used during crash recovery.
     pub fn replay(&self) -> crate::Result<Vec<WalRecord>> {
         let reader =
-            synapsedb_wal::reader::WalReader::open(&self.wal_path).map_err(crate::Error::Wal)?;
+            nodedb_wal::reader::WalReader::open(&self.wal_path).map_err(crate::Error::Wal)?;
         let records: Vec<_> = reader
             .records()
-            .collect::<synapsedb_wal::Result<_>>()
+            .collect::<nodedb_wal::Result<_>>()
             .map_err(crate::Error::Wal)?;
 
         info!(records = records.len(), "WAL replay complete");

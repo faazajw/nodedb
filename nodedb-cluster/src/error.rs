@@ -5,7 +5,7 @@ pub type Result<T> = std::result::Result<T, ClusterError>;
 #[derive(Debug, Error)]
 pub enum ClusterError {
     #[error("raft error: {0}")]
-    Raft(#[from] synapsedb_raft::RaftError),
+    Raft(#[from] nodedb_raft::RaftError),
 
     #[error("vshard {vshard_id} not mapped to any raft group")]
     VShardNotMapped { vshard_id: u16 },

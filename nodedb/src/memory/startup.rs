@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use tracing::info;
 
-use synapsedb_mem::EngineId;
-use synapsedb_mem::governor::{GovernorConfig, MemoryGovernor};
+use nodedb_mem::EngineId;
+use nodedb_mem::governor::{GovernorConfig, MemoryGovernor};
 
 use crate::config::engine::EngineByteBudgets;
 

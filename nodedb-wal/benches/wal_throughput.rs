@@ -9,9 +9,9 @@ use fluxbench::{bench, synthetic, verify};
 use std::hint::black_box;
 use std::sync::{Arc, Mutex};
 
-use synapsedb_wal::group_commit::{GroupCommitter, PendingWrite};
-use synapsedb_wal::record::RecordType;
-use synapsedb_wal::writer::WalWriter;
+use nodedb_wal::group_commit::{GroupCommitter, PendingWrite};
+use nodedb_wal::record::RecordType;
+use nodedb_wal::writer::WalWriter;
 
 /// Single-threaded WAL append + fsync — 1000 x 128-byte records per iteration.
 #[bench(id = "wal_append_fsync_1k_128b", group = "wal_write", tags = "core")]

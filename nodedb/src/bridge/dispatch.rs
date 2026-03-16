@@ -1,7 +1,7 @@
 use tracing::warn;
 
-use synapsedb_bridge::backpressure::{BackpressureConfig, BackpressureController};
-use synapsedb_bridge::buffer::{Consumer, Producer, RingBuffer};
+use nodedb_bridge::backpressure::{BackpressureConfig, BackpressureController};
+use nodedb_bridge::buffer::{Consumer, Producer, RingBuffer};
 
 use crate::bridge::envelope;
 use crate::control::router::vshard::VShardRouter;

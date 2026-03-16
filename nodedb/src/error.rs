@@ -61,7 +61,7 @@ pub enum Error {
 
     // --- Infrastructure errors ---
     #[error("WAL error: {0}")]
-    Wal(#[from] synapsedb_wal::WalError),
+    Wal(#[from] nodedb_wal::WalError),
 
     #[error("dispatch error: {detail}")]
     Dispatch { detail: String },
@@ -79,7 +79,7 @@ pub enum Error {
     MemoryExhausted { engine: String },
 
     #[error("CRDT engine error: {0}")]
-    Crdt(#[from] synapsedb_crdt::CrdtError),
+    Crdt(#[from] nodedb_crdt::CrdtError),
 
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
@@ -127,7 +127,7 @@ mod tests {
 
     #[test]
     fn crdt_error_converts() {
-        let crdt_err = synapsedb_crdt::CrdtError::ConstraintViolation {
+        let crdt_err = nodedb_crdt::CrdtError::ConstraintViolation {
             constraint: "test".into(),
             collection: "col".into(),
             detail: "detail".into(),

@@ -113,7 +113,7 @@ impl RecordHeader {
 /// Record type discriminants.
 ///
 /// Types 0-255 are reserved for synapseDB core.
-/// Types 256+ are available for SynapseDBecific records.
+/// Types 256+ are available for NodeDBecific records.
 ///
 /// Bit 15 (0x8000) marks a record as **required** — unknown required records
 /// cause a replay failure. Unknown records without bit 15 set are safely skipped.

@@ -16,7 +16,7 @@ use tracing::{info, warn};
 use crate::data::eventfd::{EventFd, EventFdNotifier};
 use crate::data::executor::core_loop::CoreLoop;
 
-use synapsedb_bridge::buffer::{Consumer, Producer};
+use nodedb_bridge::buffer::{Consumer, Producer};
 
 use crate::bridge::dispatch::{BridgeRequest, BridgeResponse};
 
@@ -46,7 +46,7 @@ pub fn spawn_core(
         .name(format!("data-core-{core_id}"))
         .spawn(move || {
             // 1. Pin to dedicated jemalloc arena.
-            match synapsedb_mem::arena::pin_thread_arena(core_id as u32) {
+            match nodedb_mem::arena::pin_thread_arena(core_id as u32) {
                 Ok(arena) => info!(core_id, arena, "pinned to jemalloc arena"),
                 Err(e) => warn!(core_id, error = %e, "failed to pin jemalloc arena, continuing with default"),
             }

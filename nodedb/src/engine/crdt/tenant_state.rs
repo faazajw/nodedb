@@ -1,10 +1,10 @@
 use loro::LoroValue;
 
-use synapsedb_crdt::constraint::ConstraintSet;
-use synapsedb_crdt::policy::CollectionPolicy;
-use synapsedb_crdt::pre_validate::{self, PreValidationResult};
-use synapsedb_crdt::state::CrdtState;
-use synapsedb_crdt::validator::{ProposedChange, Validator};
+use nodedb_crdt::constraint::ConstraintSet;
+use nodedb_crdt::policy::CollectionPolicy;
+use nodedb_crdt::pre_validate::{self, PreValidationResult};
+use nodedb_crdt::state::CrdtState;
+use nodedb_crdt::validator::{ProposedChange, Validator};
 
 use crate::types::TenantId;
 
@@ -132,10 +132,10 @@ impl TenantCrdtEngine {
     }
 
     fn validate_conflict_policy(
-        policy: &synapsedb_crdt::policy::ConflictPolicy,
+        policy: &nodedb_crdt::policy::ConflictPolicy,
         field_name: &str,
     ) -> crate::Result<()> {
-        use synapsedb_crdt::policy::ConflictPolicy;
+        use nodedb_crdt::policy::ConflictPolicy;
         match policy {
             ConflictPolicy::CascadeDefer {
                 max_retries,

@@ -12,13 +12,13 @@
 
 use loro::LoroValue;
 
-use synapsedb_crdt::CrdtError;
-use synapsedb_crdt::constraint::ConstraintSet;
-use synapsedb_crdt::dead_letter::CompensationHint;
-use synapsedb_crdt::policy::{CollectionPolicy, PolicyRegistry};
-use synapsedb_crdt::pre_validate::{self, PreValidationResult};
-use synapsedb_crdt::state::CrdtState;
-use synapsedb_crdt::validator::{ProposedChange, ValidationOutcome, Validator};
+use nodedb_crdt::CrdtError;
+use nodedb_crdt::constraint::ConstraintSet;
+use nodedb_crdt::dead_letter::CompensationHint;
+use nodedb_crdt::policy::{CollectionPolicy, PolicyRegistry};
+use nodedb_crdt::pre_validate::{self, PreValidationResult};
+use nodedb_crdt::state::CrdtState;
+use nodedb_crdt::validator::{ProposedChange, ValidationOutcome, Validator};
 
 fn user_schema() -> ConstraintSet {
     let mut cs = ConstraintSet::new();
