@@ -104,37 +104,62 @@ impl NodeDbPgHandler {
     }
 
     /// Check if the identity has permission for the given plan.
+    ///
+    /// Uses the full permission resolution stack:
+    /// 1. Superuser → always allowed
+    /// 2. Ownership → owner has all permissions on their objects
+    /// 3. Built-in role grants (ReadWrite → Read+Write, etc.)
+    /// 4. Explicit collection-level grants (GRANT ON <collection>)
+    /// 5. Inherited custom role grants (via RoleStore)
     fn check_permission(
         &self,
         identity: &AuthenticatedIdentity,
         plan: &PhysicalPlan,
     ) -> PgWireResult<()> {
-        if identity.is_superuser {
-            return Ok(());
-        }
-
         let required = required_permission(plan);
-        let has_permission = identity
-            .roles
-            .iter()
-            .any(|role| role_grants_permission(role, required));
 
-        if has_permission {
+        // Extract collection name from the plan for collection-level checks.
+        let collection = extract_collection(plan);
+
+        let allowed = match collection {
+            Some(coll) => {
+                // Collection-specific check: uses PermissionStore with full resolution.
+                self.state
+                    .permissions
+                    .check(identity, required, coll, &self.state.roles)
+            }
+            None => {
+                // No collection context (e.g. WAL append, cancel) — fall back to role check.
+                identity.is_superuser
+                    || identity
+                        .roles
+                        .iter()
+                        .any(|role| role_grants_permission(role, required))
+            }
+        };
+
+        if allowed {
             Ok(())
         } else {
             self.state.audit_record(
                 AuditEvent::AuthzDenied,
                 Some(identity.tenant_id),
                 &identity.username,
-                &format!("permission {:?} denied", required),
+                &format!(
+                    "permission {:?} denied on {}",
+                    required,
+                    collection.unwrap_or("<none>")
+                ),
             );
 
             Err(PgWireError::UserError(Box::new(ErrorInfo::new(
                 "ERROR".to_owned(),
                 "42501".to_owned(),
                 format!(
-                    "permission denied: user '{}' lacks {:?} permission",
-                    identity.username, required
+                    "permission denied: user '{}' lacks {:?} permission{}",
+                    identity.username,
+                    required,
+                    collection.map(|c| format!(" on '{c}'")).unwrap_or_default()
                 ),
             ))))
         }
@@ -274,6 +299,30 @@ enum PlanKind {
     SingleDocument,
     MultiRow,
     Execution,
+}
+
+/// Extract the collection name from a physical plan (if applicable).
+fn extract_collection(plan: &PhysicalPlan) -> Option<&str> {
+    match plan {
+        PhysicalPlan::PointGet { collection, .. }
+        | PhysicalPlan::VectorSearch { collection, .. }
+        | PhysicalPlan::RangeScan { collection, .. }
+        | PhysicalPlan::CrdtRead { collection, .. }
+        | PhysicalPlan::CrdtApply { collection, .. }
+        | PhysicalPlan::VectorInsert { collection, .. }
+        | PhysicalPlan::PointPut { collection, .. }
+        | PhysicalPlan::PointDelete { collection, .. }
+        | PhysicalPlan::GraphRagFusion { collection, .. }
+        | PhysicalPlan::SetCollectionPolicy { collection, .. } => Some(collection.as_str()),
+        PhysicalPlan::EdgePut { .. }
+        | PhysicalPlan::EdgeDelete { .. }
+        | PhysicalPlan::GraphHop { .. }
+        | PhysicalPlan::GraphNeighbors { .. }
+        | PhysicalPlan::GraphPath { .. }
+        | PhysicalPlan::GraphSubgraph { .. }
+        | PhysicalPlan::WalAppend { .. }
+        | PhysicalPlan::Cancel { .. } => None,
+    }
 }
 
 fn describe_plan(plan: &PhysicalPlan) -> PlanKind {
