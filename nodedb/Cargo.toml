@@ -48,6 +48,10 @@ loro = { workspace = true }
 argon2 = { workspace = true }
 sha2 = "0.10"
 
+# TLS
+tokio-rustls = { workspace = true }
+rustls-pemfile = { workspace = true }
+
 # PostgreSQL wire protocol
 pgwire = { workspace = true }
 async-trait = { workspace = true }

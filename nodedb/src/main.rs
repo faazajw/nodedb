@@ -14,6 +14,33 @@ use nodedb::control::state::SharedState;
 use nodedb::data::runtime::spawn_core;
 use nodedb::wal::WalManager;
 
+fn build_tls_acceptor(
+    tls: &nodedb::config::server::TlsSettings,
+) -> anyhow::Result<pgwire::tokio::TlsAcceptor> {
+    use std::fs::File;
+    use std::io::BufReader;
+
+    let cert_file = File::open(&tls.cert_path)
+        .map_err(|e| anyhow::anyhow!("failed to open TLS cert {}: {e}", tls.cert_path.display()))?;
+    let key_file = File::open(&tls.key_path)
+        .map_err(|e| anyhow::anyhow!("failed to open TLS key {}: {e}", tls.key_path.display()))?;
+
+    let certs: Vec<_> = rustls_pemfile::certs(&mut BufReader::new(cert_file))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| anyhow::anyhow!("failed to parse TLS certs: {e}"))?;
+
+    let key = rustls_pemfile::private_key(&mut BufReader::new(key_file))
+        .map_err(|e| anyhow::anyhow!("failed to parse TLS key: {e}"))?
+        .ok_or_else(|| anyhow::anyhow!("no private key found in {}", tls.key_path.display()))?;
+
+    let server_config = tokio_rustls::rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+        .map_err(|e| anyhow::anyhow!("TLS config error: {e}"))?;
+
+    Ok(pgwire::tokio::TlsAcceptor::from(Arc::new(server_config)))
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Initialize tracing.
@@ -122,6 +149,15 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    // Audit log flush (10-second timer).
+    let shared_audit = Arc::clone(&shared);
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            shared_audit.flush_audit_log();
+        }
+    });
+
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
     // Bind both listeners before starting accept loops.
@@ -136,11 +172,24 @@ async fn main() -> anyhow::Result<()> {
         let _ = shutdown_tx.send(true);
     });
 
+    // Build TLS acceptor if configured.
+    let tls_acceptor = match &config.tls {
+        Some(tls) => {
+            let acceptor = build_tls_acceptor(tls)?;
+            info!("pgwire TLS enabled");
+            Some(acceptor)
+        }
+        None => None,
+    };
+
     // Run pgwire listener in a separate task.
     let shared_pg = Arc::clone(&shared);
     let shutdown_rx_pg = shutdown_rx.clone();
     tokio::spawn(async move {
-        if let Err(e) = pg_listener.run(shared_pg, auth_mode, shutdown_rx_pg).await {
+        if let Err(e) = pg_listener
+            .run(shared_pg, auth_mode, tls_acceptor, shutdown_rx_pg)
+            .await
+        {
             tracing::error!(error = %e, "pgwire listener failed");
         }
     });

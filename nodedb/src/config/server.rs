@@ -29,6 +29,19 @@ pub struct ServerConfig {
     /// Authentication and authorization configuration.
     #[serde(default)]
     pub auth: super::AuthConfig,
+
+    /// Client TLS configuration. If present, pgwire connections support SSL.
+    #[serde(default)]
+    pub tls: Option<super::server::TlsSettings>,
+}
+
+/// Client-facing TLS settings (distinct from inter-node mTLS in mtls.rs).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TlsSettings {
+    /// Path to server certificate (PEM).
+    pub cert_path: PathBuf,
+    /// Path to server private key (PEM).
+    pub key_path: PathBuf,
 }
 
 impl Default for ServerConfig {
@@ -45,6 +58,7 @@ impl Default for ServerConfig {
             memory_limit: 1024 * 1024 * 1024, // 1 GiB default
             engines: EngineConfig::default(),
             auth: super::AuthConfig::default(),
+            tls: None,
         }
     }
 }

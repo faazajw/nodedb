@@ -14,8 +14,8 @@ use super::factory::NodeDbPgHandlerFactory;
 /// PostgreSQL wire protocol listener.
 ///
 /// Accepts TCP connections and handles them using the pgwire crate.
-/// Runs on the Control Plane (Tokio). Shares the same `SharedState`
-/// as the native wire protocol listener.
+/// Optionally supports TLS (SSLRequest negotiation + upgrade).
+/// Runs on the Control Plane (Tokio).
 pub struct PgListener {
     tcp: TcpListener,
     addr: SocketAddr,
@@ -37,15 +37,20 @@ impl PgListener {
     }
 
     /// Run the accept loop for pgwire connections.
+    ///
+    /// `tls_acceptor`: if Some, pgwire will negotiate SSL on SSLRequest.
+    /// If None, all connections are plaintext.
     pub async fn run(
         self,
         state: Arc<SharedState>,
         auth_mode: AuthMode,
+        tls_acceptor: Option<pgwire::tokio::TlsAcceptor>,
         mut shutdown: tokio::sync::watch::Receiver<bool>,
     ) -> crate::Result<()> {
         let factory = Arc::new(NodeDbPgHandlerFactory::new(state, auth_mode));
 
-        info!(addr = %self.addr, "accepting pgwire connections");
+        let tls_label = if tls_acceptor.is_some() { "tls" } else { "plain" };
+        info!(addr = %self.addr, tls = tls_label, "accepting pgwire connections");
 
         loop {
             tokio::select! {
@@ -54,8 +59,9 @@ impl PgListener {
                         Ok((stream, peer_addr)) => {
                             info!(%peer_addr, "new pgwire connection");
                             let factory = Arc::clone(&factory);
+                            let tls = tls_acceptor.clone();
                             tokio::spawn(async move {
-                                if let Err(e) = process_socket(stream, None, factory).await {
+                                if let Err(e) = process_socket(stream, tls, factory).await {
                                     warn!(%peer_addr, error = %e, "pgwire session error");
                                 }
                             });
