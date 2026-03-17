@@ -49,6 +49,15 @@ pub struct SharedState {
 
     /// Cluster topology (None in single-node mode).
     pub cluster_topology: Option<Arc<RwLock<nodedb_cluster::ClusterTopology>>>,
+
+    /// Cluster routing table (None in single-node mode).
+    pub cluster_routing: Option<Arc<RwLock<nodedb_cluster::RoutingTable>>>,
+
+    /// Cluster transport for forwarding requests (None in single-node mode).
+    pub cluster_transport: Option<Arc<nodedb_cluster::NexarTransport>>,
+
+    /// This node's ID (0 in single-node mode).
+    pub node_id: u64,
 }
 
 impl SharedState {
@@ -65,6 +74,9 @@ impl SharedState {
             permissions: PermissionStore::new(),
             tenants: Mutex::new(TenantIsolation::new(TenantQuota::default())),
             cluster_topology: None,
+            cluster_routing: None,
+            cluster_transport: None,
+            node_id: 0,
         })
     }
 
@@ -109,6 +121,9 @@ impl SharedState {
             permissions,
             tenants: Mutex::new(TenantIsolation::new(TenantQuota::default())),
             cluster_topology: None,
+            cluster_routing: None,
+            cluster_transport: None,
+            node_id: 0,
         }))
     }
 

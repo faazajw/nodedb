@@ -261,6 +261,12 @@ impl NodeDbPgHandler {
             return Ok(vec![Response::Execution(Tag::new("OK"))]);
         }
 
+        // In cluster mode, check if all tasks target a remote leader.
+        // If so, forward the entire SQL to the leader node.
+        if let Some(leader) = self.remote_leader_for_tasks(&tasks) {
+            return self.forward_sql(sql, tenant_id, leader).await;
+        }
+
         let mut responses = Vec::with_capacity(tasks.len());
         for task in tasks {
             self.check_permission(identity, &task.plan)?;
@@ -289,6 +295,103 @@ impl NodeDbPgHandler {
         }
 
         Ok(responses)
+    }
+
+    /// Check if all tasks target a single remote leader. Returns the leader's
+    /// node_id if forwarding is needed, None if all tasks are local.
+    fn remote_leader_for_tasks(&self, tasks: &[PhysicalTask]) -> Option<u64> {
+        let routing = self.state.cluster_routing.as_ref()?;
+        let routing = routing.read().unwrap_or_else(|p| p.into_inner());
+        let my_node = self.state.node_id;
+
+        let mut remote_leader: Option<u64> = None;
+
+        for task in tasks {
+            let vshard_id = task.vshard_id.as_u16();
+            let group_id = routing.group_for_vshard(vshard_id).ok()?;
+            let info = routing.group_info(group_id)?;
+            let leader = info.leader;
+
+            if leader == 0 || leader == my_node {
+                // Local or no leader — dispatch locally.
+                return None;
+            }
+
+            match remote_leader {
+                None => remote_leader = Some(leader),
+                Some(prev) if prev != leader => {
+                    // Tasks target different remote leaders — can't forward as one.
+                    // Fall back to local dispatch (scatter-gather is a later feature).
+                    return None;
+                }
+                _ => {}
+            }
+        }
+
+        remote_leader
+    }
+
+    /// Forward a SQL query to a remote leader node via QUIC.
+    async fn forward_sql(
+        &self,
+        sql: &str,
+        tenant_id: TenantId,
+        leader: u64,
+    ) -> PgWireResult<Vec<Response>> {
+        let transport = match &self.state.cluster_transport {
+            Some(t) => t,
+            None => {
+                return Err(PgWireError::UserError(Box::new(ErrorInfo::new(
+                    "ERROR".to_owned(),
+                    "55000".to_owned(),
+                    "cluster transport not available".to_owned(),
+                ))));
+            }
+        };
+
+        let req = nodedb_cluster::rpc_codec::RaftRpc::ForwardRequest(
+            nodedb_cluster::rpc_codec::ForwardRequest {
+                sql: sql.to_owned(),
+                tenant_id: tenant_id.as_u32(),
+                deadline_remaining_ms: DEFAULT_DEADLINE.as_millis() as u64,
+                trace_id: 0,
+            },
+        );
+
+        let resp = transport.send_rpc(leader, req).await.map_err(|e| {
+            PgWireError::UserError(Box::new(ErrorInfo::new(
+                "ERROR".to_owned(),
+                "08006".to_owned(),
+                format!("forward to leader node {leader} failed: {e}"),
+            )))
+        })?;
+
+        match resp {
+            nodedb_cluster::rpc_codec::RaftRpc::ForwardResponse(fwd) => {
+                if !fwd.success {
+                    return Err(PgWireError::UserError(Box::new(ErrorInfo::new(
+                        "ERROR".to_owned(),
+                        "XX000".to_owned(),
+                        format!("remote execution failed: {}", fwd.error_message),
+                    ))));
+                }
+
+                // Convert forwarded payloads back to pgwire Responses.
+                let mut responses = Vec::with_capacity(fwd.payloads.len());
+                for payload in &fwd.payloads {
+                    responses.push(payload_to_response(payload, PlanKind::MultiRow));
+                }
+                if responses.is_empty() {
+                    responses.push(Response::Execution(Tag::new("OK")));
+                }
+                Ok(responses)
+            }
+            other => Err(PgWireError::UserError(Box::new(ErrorInfo::new(
+                "ERROR".to_owned(),
+                "XX000".to_owned(),
+                format!("unexpected response from leader: {other:?}"),
+            )))),
+        }
     }
 }
 
