@@ -164,6 +164,73 @@ impl<S: LogStorage> RaftNode<S> {
         self.volatile.last_applied = applied_to;
     }
 
+    /// Current peer list (excluding self).
+    pub fn peers(&self) -> &[u64] {
+        &self.config.peers
+    }
+
+    /// Dynamically update the peer list (for membership changes).
+    ///
+    /// This reconfigures quorum calculation and, if leader, updates
+    /// per-peer replication tracking (new peers start catching up from
+    /// the end of the log; removed peers stop receiving RPCs).
+    pub fn set_peers(&mut self, new_peers: Vec<u64>) {
+        let last_index = self.log.last_index();
+
+        // Update leader state if we're the leader.
+        if let Some(ref mut leader) = self.leader_state {
+            // Add tracking for new peers.
+            for &peer in &new_peers {
+                if !self.config.peers.contains(&peer) {
+                    leader.add_peer(peer, last_index);
+                    info!(
+                        node = self.config.node_id,
+                        group = self.config.group_id,
+                        peer,
+                        "added peer to leader tracking"
+                    );
+                }
+            }
+            // Remove tracking for departed peers.
+            for &peer in &self.config.peers {
+                if !new_peers.contains(&peer) {
+                    leader.remove_peer(peer);
+                    info!(
+                        node = self.config.node_id,
+                        group = self.config.group_id,
+                        peer,
+                        "removed peer from leader tracking"
+                    );
+                }
+            }
+        }
+
+        self.config.peers = new_peers;
+
+        // If this node was removed from the group (not in new peers and not self),
+        // step down if we're leader. The node should eventually be shut down
+        // for this group by the cluster layer.
+    }
+
+    /// Add a single peer to this Raft group.
+    pub fn add_peer(&mut self, peer: u64) {
+        if peer == self.config.node_id || self.config.peers.contains(&peer) {
+            return;
+        }
+        let mut new_peers = self.config.peers.clone();
+        new_peers.push(peer);
+        self.set_peers(new_peers);
+    }
+
+    /// Remove a single peer from this Raft group.
+    pub fn remove_peer(&mut self, peer: u64) {
+        if !self.config.peers.contains(&peer) {
+            return;
+        }
+        let new_peers: Vec<u64> = self.config.peers.iter().copied().filter(|&id| id != peer).collect();
+        self.set_peers(new_peers);
+    }
+
     /// Drive time-based events: election timeout, heartbeat.
     pub fn tick(&mut self) {
         let now = Instant::now();

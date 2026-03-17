@@ -102,6 +102,26 @@ impl LeaderState {
             entry.1 = index;
         }
     }
+
+    /// Add a new peer to leader tracking. Initializes next_index to
+    /// `last_log_index + 1` (the peer needs to catch up from the end of the log).
+    pub fn add_peer(&mut self, peer: u64, last_log_index: u64) {
+        if !self.next_index.iter().any(|&(id, _)| id == peer) {
+            self.next_index.push((peer, last_log_index + 1));
+            self.match_index.push((peer, 0));
+        }
+    }
+
+    /// Remove a peer from leader tracking.
+    pub fn remove_peer(&mut self, peer: u64) {
+        self.next_index.retain(|&(id, _)| id != peer);
+        self.match_index.retain(|&(id, _)| id != peer);
+    }
+
+    /// Current peer list tracked by this leader state.
+    pub fn peers(&self) -> Vec<u64> {
+        self.next_index.iter().map(|&(id, _)| id).collect()
+    }
 }
 
 #[cfg(test)]

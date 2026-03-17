@@ -118,6 +118,13 @@ impl RoutingTable {
         self.group_members.keys().copied().collect()
     }
 
+    /// Update the members of a Raft group (for membership changes).
+    pub fn set_group_members(&mut self, group_id: u64, members: Vec<u64>) {
+        if let Some(info) = self.group_members.get_mut(&group_id) {
+            info.members = members;
+        }
+    }
+
     /// Access the vshard-to-group mapping (for persistence / wire transfer).
     pub fn vshard_to_group(&self) -> &[u64] {
         &self.vshard_to_group

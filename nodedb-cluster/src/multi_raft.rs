@@ -225,6 +225,89 @@ impl MultiRaft {
         &mut self.groups
     }
 
+    /// Propose a configuration change to a Raft group.
+    ///
+    /// The change is proposed as a regular Raft log entry with a special
+    /// prefix. When committed, the state machine applies it via
+    /// [`reconfigure_group`].
+    ///
+    /// Returns `(group_id, log_index)` on success.
+    pub fn propose_conf_change(
+        &mut self,
+        group_id: u64,
+        change: &crate::conf_change::ConfChange,
+    ) -> Result<(u64, u64)> {
+        let node = self
+            .groups
+            .get_mut(&group_id)
+            .ok_or(ClusterError::GroupNotFound { group_id })?;
+        let data = change.to_entry_data();
+        let log_index = node.propose(data)?;
+        Ok((group_id, log_index))
+    }
+
+    /// Apply a committed configuration change to a Raft group.
+    ///
+    /// Called by the state machine after a ConfChange entry is committed.
+    /// Also updates the RoutingTable's group membership.
+    pub fn apply_conf_change(
+        &mut self,
+        group_id: u64,
+        change: &crate::conf_change::ConfChange,
+    ) -> Result<()> {
+        use crate::conf_change::ConfChangeType;
+
+        let node = self
+            .groups
+            .get_mut(&group_id)
+            .ok_or(ClusterError::GroupNotFound { group_id })?;
+
+        match change.change_type {
+            ConfChangeType::AddNode | ConfChangeType::PromoteLearner => {
+                node.add_peer(change.node_id);
+                // Update routing table members.
+                if let Some(info) = self.routing.group_info(group_id) {
+                    if !info.members.contains(&change.node_id) {
+                        let mut new_members = info.members.clone();
+                        new_members.push(change.node_id);
+                        self.routing.set_group_members(group_id, new_members);
+                    }
+                }
+            }
+            ConfChangeType::RemoveNode => {
+                node.remove_peer(change.node_id);
+                if let Some(info) = self.routing.group_info(group_id) {
+                    let new_members: Vec<u64> = info
+                        .members
+                        .iter()
+                        .copied()
+                        .filter(|&id| id != change.node_id)
+                        .collect();
+                    self.routing.set_group_members(group_id, new_members);
+                }
+            }
+            ConfChangeType::AddLearner => {
+                // Learners don't vote — just start replicating to them.
+                // The RaftNode doesn't need to know about learners for voting,
+                // but the leader needs to send AppendEntries to them.
+                // For now, add as a regular peer (simplified — full learner
+                // support would track them separately).
+                node.add_peer(change.node_id);
+            }
+        }
+
+        debug!(
+            node = self.node_id,
+            group = group_id,
+            change_type = ?change.change_type,
+            target_node = change.node_id,
+            new_peers = ?self.groups.get(&group_id).map(|n| n.peers()),
+            "applied conf change"
+        );
+
+        Ok(())
+    }
+
     /// Snapshot of all Raft group states for observability.
     pub fn group_statuses(&self) -> Vec<GroupStatus> {
         let mut statuses = Vec::with_capacity(self.groups.len());

@@ -15,6 +15,7 @@ use tracing::{debug, warn};
 use nodedb_raft::message::LogEntry;
 use nodedb_raft::transport::RaftTransport;
 
+use crate::conf_change::ConfChange;
 use crate::error::{ClusterError, Result};
 use crate::forward::RequestForwarder;
 use crate::health;
@@ -176,6 +177,17 @@ impl<A: CommitApplier, F: RequestForwarder> RaftLoop<A, F> {
 
             // Apply committed entries synchronously.
             if !group_ready.committed_entries.is_empty() {
+                // First, detect and apply any ConfChange entries to MultiRaft.
+                for entry in &group_ready.committed_entries {
+                    if let Some(cc) = ConfChange::from_entry_data(&entry.data) {
+                        let mut mr = self.multi_raft.lock().unwrap_or_else(|p| p.into_inner());
+                        if let Err(e) = mr.apply_conf_change(group_id, &cc) {
+                            warn!(group_id, error = %e, "failed to apply conf change");
+                        }
+                    }
+                }
+
+                // Then pass all entries (including ConfChanges) to the state machine.
                 let last_applied = self
                     .applier
                     .apply_committed(group_id, &group_ready.committed_entries);
@@ -206,6 +218,18 @@ impl<A: CommitApplier, F: RequestForwarder> RaftLoop<A, F> {
     pub fn group_statuses(&self) -> Vec<crate::multi_raft::GroupStatus> {
         let mr = self.multi_raft.lock().unwrap_or_else(|p| p.into_inner());
         mr.group_statuses()
+    }
+
+    /// Propose a configuration change to a Raft group.
+    ///
+    /// Returns `(group_id, log_index)` on success.
+    pub fn propose_conf_change(
+        &self,
+        group_id: u64,
+        change: &ConfChange,
+    ) -> Result<(u64, u64)> {
+        let mut mr = self.multi_raft.lock().unwrap_or_else(|p| p.into_inner());
+        mr.propose_conf_change(group_id, change)
     }
 }
 

@@ -1,6 +1,7 @@
 pub mod bootstrap;
 pub mod catalog;
 pub mod circuit_breaker;
+pub mod conf_change;
 pub mod error;
 pub mod forward;
 pub mod ghost;
@@ -16,6 +17,7 @@ pub mod wire;
 
 pub use bootstrap::{ClusterConfig, ClusterState, start_cluster};
 pub use catalog::ClusterCatalog;
+pub use conf_change::{ConfChange, ConfChangeType};
 pub use error::{ClusterError, Result};
 pub use forward::{NoopForwarder, RequestForwarder};
 pub use ghost::{GhostStub, GhostTable};

@@ -72,6 +72,9 @@ pub fn dispatch(
     if upper.starts_with("SHOW RAFT GROUP ") {
         return Some(super::cluster::show_raft_group(state, identity, &parts));
     }
+    if upper.starts_with("ALTER RAFT GROUP ") {
+        return Some(super::cluster::alter_raft_group(state, identity, &parts));
+    }
     if upper.starts_with("SHOW PEER HEALTH") {
         return Some(super::cluster::show_peer_health(state, identity));
     }

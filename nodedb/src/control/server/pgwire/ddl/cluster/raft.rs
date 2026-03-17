@@ -1,9 +1,9 @@
-//! Raft group DDL commands: SHOW RAFT GROUPS, SHOW RAFT GROUP <id>.
+//! Raft group DDL commands: SHOW RAFT GROUPS, SHOW RAFT GROUP, ALTER RAFT GROUP.
 
 use std::sync::Arc;
 
 use futures::stream;
-use pgwire::api::results::{DataRowEncoder, QueryResponse, Response};
+use pgwire::api::results::{DataRowEncoder, QueryResponse, Response, Tag};
 use pgwire::error::PgWireResult;
 
 use crate::control::security::identity::AuthenticatedIdentity;
@@ -182,4 +182,91 @@ pub fn show_raft_group(
         schema,
         stream::iter(rows),
     ))])
+}
+
+/// ALTER RAFT GROUP <id> ADD|REMOVE NODE <node_id>
+///
+/// Proposes a membership change to the Raft group via a ConfChange entry.
+/// The change takes effect when the entry is committed by quorum.
+///
+/// Superuser only.
+pub fn alter_raft_group(
+    state: &SharedState,
+    identity: &AuthenticatedIdentity,
+    parts: &[&str],
+) -> PgWireResult<Vec<Response>> {
+    if !identity.is_superuser {
+        return Err(sqlstate_error(
+            "42501",
+            "permission denied: only superuser can alter raft groups",
+        ));
+    }
+
+    // ALTER RAFT GROUP <id> ADD|REMOVE NODE <node_id>
+    if parts.len() < 7 {
+        return Err(sqlstate_error(
+            "42601",
+            "syntax: ALTER RAFT GROUP <group_id> ADD|REMOVE NODE <node_id>",
+        ));
+    }
+
+    let group_id: u64 = parts[3]
+        .parse()
+        .map_err(|_| sqlstate_error("42601", &format!("invalid group_id: '{}'", parts[3])))?;
+
+    let action = parts[4].to_uppercase();
+    let node_id: u64 = parts[6]
+        .parse()
+        .map_err(|_| sqlstate_error("42601", &format!("invalid node_id: '{}'", parts[6])))?;
+
+    let change_type = match action.as_str() {
+        "ADD" => nodedb_cluster::ConfChangeType::AddNode,
+        "REMOVE" => nodedb_cluster::ConfChangeType::RemoveNode,
+        _ => {
+            return Err(sqlstate_error(
+                "42601",
+                &format!("expected ADD or REMOVE, got '{action}'"),
+            ));
+        }
+    };
+
+    let proposer = match &state.raft_proposer {
+        Some(p) => p,
+        None => {
+            return Err(sqlstate_error(
+                "55000",
+                "cluster mode not enabled (single-node instance)",
+            ));
+        }
+    };
+
+    let change = nodedb_cluster::ConfChange {
+        change_type,
+        node_id,
+    };
+    let data = change.to_entry_data();
+
+    // Find a vShard that maps to this group to propose through Raft.
+    let routing = match &state.cluster_routing {
+        Some(r) => r,
+        None => {
+            return Err(sqlstate_error("55000", "cluster routing not available"));
+        }
+    };
+
+    let routing = routing.read().unwrap_or_else(|p| p.into_inner());
+    let vshards = routing.vshards_for_group(group_id);
+    if vshards.is_empty() {
+        return Err(sqlstate_error(
+            "42704",
+            &format!("raft group {group_id} has no vShards"),
+        ));
+    }
+    let vshard_id = vshards[0];
+    drop(routing);
+
+    match proposer(vshard_id, data) {
+        Ok((_gid, _idx)) => Ok(vec![Response::Execution(Tag::new("ALTER RAFT GROUP"))]),
+        Err(e) => Err(sqlstate_error("XX000", &format!("propose failed: {e}"))),
+    }
 }
