@@ -148,7 +148,9 @@ impl ClusterCatalog {
             Some(guard) => {
                 let bytes = guard.value();
                 if bytes.len() == 8 {
-                    let id = u64::from_le_bytes(bytes.try_into().unwrap());
+                    let mut arr = [0u8; 8];
+                    arr.copy_from_slice(bytes);
+                    let id = u64::from_le_bytes(arr);
                     Ok(Some(id))
                 } else {
                     Ok(None)
