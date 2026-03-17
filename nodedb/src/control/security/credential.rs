@@ -503,6 +503,11 @@ impl CredentialStore {
     pub fn is_empty(&self) -> bool {
         read_lock(&self.users).map(|u| u.is_empty()).unwrap_or(true)
     }
+
+    /// Access the underlying system catalog (for API key persistence).
+    pub fn catalog(&self) -> &Option<SystemCatalog> {
+        &self.catalog
+    }
 }
 
 // ── Password hashing ───────────────────────────────────────────────

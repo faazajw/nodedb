@@ -12,7 +12,10 @@ use tracing::info;
 /// Table: username (string) → MessagePack-serialized user record.
 const USERS: TableDefinition<&str, &[u8]> = TableDefinition::new("_system.users");
 
-/// Table: "next_user_id" → u64 (single key for ID generation).
+/// Table: key_id (string) → MessagePack-serialized API key record.
+const API_KEYS: TableDefinition<&str, &[u8]> = TableDefinition::new("_system.api_keys");
+
+/// Table: metadata key → value bytes (counters, config).
 const METADATA: TableDefinition<&str, &[u8]> = TableDefinition::new("_system.metadata");
 
 fn catalog_err<E: std::fmt::Display>(ctx: &str, e: E) -> crate::Error {
@@ -36,6 +39,25 @@ pub struct StoredUser {
     pub is_active: bool,
 }
 
+/// Serializable API key record for redb storage.
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct StoredApiKey {
+    /// Unique key identifier (used as prefix in the token).
+    pub key_id: String,
+    /// SHA-256 hash of the secret portion.
+    pub secret_hash: Vec<u8>,
+    /// User this key belongs to.
+    pub username: String,
+    pub user_id: u64,
+    pub tenant_id: u32,
+    /// Unix timestamp (seconds) when the key expires. 0 = no expiry.
+    pub expires_at: u64,
+    /// Whether this key has been revoked.
+    pub is_revoked: bool,
+    /// Unix timestamp (seconds) when the key was created.
+    pub created_at: u64,
+}
+
 /// Persistent system catalog backed by redb.
 pub struct SystemCatalog {
     db: Database,
@@ -56,6 +78,9 @@ impl SystemCatalog {
             let _ = write_txn
                 .open_table(USERS)
                 .map_err(|e| catalog_err("init users table", e))?;
+            let _ = write_txn
+                .open_table(API_KEYS)
+                .map_err(|e| catalog_err("init api_keys table", e))?;
             let _ = write_txn
                 .open_table(METADATA)
                 .map_err(|e| catalog_err("init metadata table", e))?;
@@ -174,6 +199,72 @@ impl SystemCatalog {
             table
                 .insert("next_user_id", id.to_le_bytes().as_slice())
                 .map_err(|e| catalog_err("insert next_user_id", e))?;
+        }
+        write_txn.commit().map_err(|e| catalog_err("commit", e))?;
+
+        Ok(())
+    }
+
+    // ── API Key operations ──────────────────────────────────────────
+
+    /// Write an API key record.
+    pub fn put_api_key(&self, key: &StoredApiKey) -> crate::Result<()> {
+        let bytes = rmp_serde::to_vec(key).map_err(|e| catalog_err("serialize api key", e))?;
+
+        let write_txn = self
+            .db
+            .begin_write()
+            .map_err(|e| catalog_err("write txn", e))?;
+        {
+            let mut table = write_txn
+                .open_table(API_KEYS)
+                .map_err(|e| catalog_err("open api_keys", e))?;
+            table
+                .insert(key.key_id.as_str(), bytes.as_slice())
+                .map_err(|e| catalog_err("insert api key", e))?;
+        }
+        write_txn.commit().map_err(|e| catalog_err("commit", e))?;
+
+        Ok(())
+    }
+
+    /// Load all API keys.
+    pub fn load_all_api_keys(&self) -> crate::Result<Vec<StoredApiKey>> {
+        let read_txn = self
+            .db
+            .begin_read()
+            .map_err(|e| catalog_err("read txn", e))?;
+        let table = read_txn
+            .open_table(API_KEYS)
+            .map_err(|e| catalog_err("open api_keys", e))?;
+
+        let mut keys = Vec::new();
+        let range = table
+            .range::<&str>(..)
+            .map_err(|e| catalog_err("range api_keys", e))?;
+        for entry in range {
+            let (_, value) = entry.map_err(|e| catalog_err("read entry", e))?;
+            let key: StoredApiKey = rmp_serde::from_slice(value.value())
+                .map_err(|e| catalog_err("deserialize api key", e))?;
+            keys.push(key);
+        }
+
+        Ok(keys)
+    }
+
+    /// Delete an API key by key_id.
+    pub fn delete_api_key(&self, key_id: &str) -> crate::Result<()> {
+        let write_txn = self
+            .db
+            .begin_write()
+            .map_err(|e| catalog_err("write txn", e))?;
+        {
+            let mut table = write_txn
+                .open_table(API_KEYS)
+                .map_err(|e| catalog_err("open api_keys", e))?;
+            table
+                .remove(key_id)
+                .map_err(|e| catalog_err("remove api key", e))?;
         }
         write_txn.commit().map_err(|e| catalog_err("commit", e))?;
 

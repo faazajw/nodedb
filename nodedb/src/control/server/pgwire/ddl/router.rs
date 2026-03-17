@@ -43,6 +43,17 @@ pub fn dispatch(
         return Some(super::grant::handle_revoke(state, identity, &parts));
     }
 
+    // API keys.
+    if upper.starts_with("CREATE API KEY ") {
+        return Some(super::apikey::create_api_key(state, identity, &parts));
+    }
+    if upper.starts_with("REVOKE API KEY ") {
+        return Some(super::apikey::revoke_api_key(state, identity, &parts));
+    }
+    if upper.starts_with("LIST API KEYS") {
+        return Some(super::apikey::list_api_keys(state, identity, &parts));
+    }
+
     // Introspection.
     if upper.starts_with("SHOW USERS") {
         return Some(super::inspect::show_users(state, identity));

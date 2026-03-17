@@ -1,3 +1,4 @@
+pub mod apikey;
 pub mod grant;
 pub mod inspect;
 pub mod router;

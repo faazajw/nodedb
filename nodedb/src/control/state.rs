@@ -4,6 +4,7 @@ use tracing::warn;
 
 use crate::bridge::dispatch::Dispatcher;
 use crate::control::request_tracker::RequestTracker;
+use crate::control::security::apikey::ApiKeyStore;
 use crate::control::security::audit::AuditLog;
 use crate::control::security::credential::CredentialStore;
 use crate::control::security::tenant::{QuotaCheck, TenantIsolation, TenantQuota};
@@ -32,6 +33,9 @@ pub struct SharedState {
     /// Audit log for security-relevant events.
     pub audit: Mutex<AuditLog>,
 
+    /// API key store.
+    pub api_keys: ApiKeyStore,
+
     /// Per-tenant quota enforcement.
     pub tenants: Mutex<TenantIsolation>,
 }
@@ -45,6 +49,7 @@ impl SharedState {
             wal,
             credentials: Arc::new(CredentialStore::new()),
             audit: Mutex::new(AuditLog::new(10_000)),
+            api_keys: ApiKeyStore::new(),
             tenants: Mutex::new(TenantIsolation::new(TenantQuota::default())),
         })
     }
@@ -61,12 +66,19 @@ impl SharedState {
             auth_config.max_failed_logins,
             auth_config.lockout_duration_secs,
         );
+
+        let api_keys = ApiKeyStore::new();
+        if let Some(catalog) = credentials.catalog() {
+            api_keys.load_from(catalog)?;
+        }
+
         Ok(Arc::new(Self {
             dispatcher: Mutex::new(dispatcher),
             tracker: RequestTracker::new(),
             wal,
             credentials: Arc::new(credentials),
             audit: Mutex::new(AuditLog::new(10_000)),
+            api_keys,
             tenants: Mutex::new(TenantIsolation::new(TenantQuota::default())),
         }))
     }
