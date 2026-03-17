@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use tracing::warn;
 
@@ -46,6 +46,9 @@ pub struct SharedState {
 
     /// Per-tenant quota enforcement.
     pub tenants: Mutex<TenantIsolation>,
+
+    /// Cluster topology (None in single-node mode).
+    pub cluster_topology: Option<Arc<RwLock<nodedb_cluster::ClusterTopology>>>,
 }
 
 impl SharedState {
@@ -61,6 +64,7 @@ impl SharedState {
             roles: RoleStore::new(),
             permissions: PermissionStore::new(),
             tenants: Mutex::new(TenantIsolation::new(TenantQuota::default())),
+            cluster_topology: None,
         })
     }
 
@@ -104,6 +108,7 @@ impl SharedState {
             roles,
             permissions,
             tenants: Mutex::new(TenantIsolation::new(TenantQuota::default())),
+            cluster_topology: None,
         }))
     }
 

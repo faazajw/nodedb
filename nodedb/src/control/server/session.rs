@@ -366,11 +366,11 @@ mod tests {
         // Start a Data Plane core in a background thread.
         let data_side = data_sides.into_iter().next().unwrap();
         let core_dir = dir.path().to_path_buf();
+        let (core_stop_tx, core_stop_rx) = std::sync::mpsc::channel::<()>();
         let core_handle = tokio::task::spawn_blocking(move || {
             let mut core =
                 CoreLoop::open(0, data_side.request_rx, data_side.response_tx, &core_dir).unwrap();
-            // Run ticks for up to 5 seconds to process any requests.
-            for _ in 0..5000 {
+            while core_stop_rx.try_recv().is_err() {
                 core.tick();
                 std::thread::sleep(Duration::from_millis(1));
             }
@@ -378,10 +378,14 @@ mod tests {
 
         // Start response poller.
         let shared_poller = Arc::clone(&shared);
+        let (poller_stop_tx, mut poller_stop_rx) = tokio::sync::watch::channel(false);
         let poller_handle = tokio::spawn(async move {
-            for _ in 0..5000 {
+            loop {
                 shared_poller.poll_and_route_responses();
-                tokio::time::sleep(Duration::from_millis(1)).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_millis(1)) => {}
+                    _ = poller_stop_rx.changed() => break,
+                }
             }
         });
 
@@ -424,10 +428,12 @@ mod tests {
             "expected request_id in response, got: {resp_str}"
         );
 
-        // Clean up: drop client to close session.
+        // Clean up: signal background tasks to stop.
         drop(client);
         let _ = session_handle.await;
+        let _ = poller_stop_tx.send(true);
         let _ = poller_handle.await;
+        let _ = core_stop_tx.send(());
         let _ = core_handle.await;
     }
 }

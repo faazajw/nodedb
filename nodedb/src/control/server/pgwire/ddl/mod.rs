@@ -1,4 +1,5 @@
 pub mod apikey;
+pub mod cluster;
 pub mod grant;
 pub mod inspect;
 pub mod role;

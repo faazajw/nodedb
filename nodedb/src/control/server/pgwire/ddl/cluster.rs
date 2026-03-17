@@ -1,0 +1,207 @@
+use std::sync::Arc;
+
+use futures::stream;
+use pgwire::api::results::{DataRowEncoder, QueryResponse, Response, Tag};
+use pgwire::error::PgWireResult;
+
+use crate::control::security::identity::AuthenticatedIdentity;
+use crate::control::state::SharedState;
+
+use super::super::types::{int8_field, sqlstate_error, text_field};
+
+/// SHOW NODES — list all cluster members with state.
+///
+/// Superuser only.
+pub fn show_nodes(
+    state: &SharedState,
+    identity: &AuthenticatedIdentity,
+) -> PgWireResult<Vec<Response>> {
+    if !identity.is_superuser {
+        return Err(sqlstate_error(
+            "42501",
+            "permission denied: only superuser can list nodes",
+        ));
+    }
+
+    let topo = match &state.cluster_topology {
+        Some(t) => t,
+        None => {
+            return Err(sqlstate_error(
+                "55000",
+                "cluster mode not enabled (single-node instance)",
+            ));
+        }
+    };
+
+    let topo = topo.read().unwrap_or_else(|p| p.into_inner());
+
+    let schema = Arc::new(vec![
+        int8_field("node_id"),
+        text_field("address"),
+        text_field("state"),
+        text_field("raft_groups"),
+    ]);
+
+    let mut rows = Vec::new();
+    let mut encoder = DataRowEncoder::new(schema.clone());
+
+    let mut nodes: Vec<_> = topo.all_nodes().collect();
+    nodes.sort_by_key(|n| n.node_id);
+
+    for node in nodes {
+        encoder
+            .encode_field(&(node.node_id as i64))
+            .map_err(encode_err)?;
+        encoder.encode_field(&node.addr).map_err(encode_err)?;
+        let state_str = match node.state {
+            nodedb_cluster::NodeState::Joining => "joining",
+            nodedb_cluster::NodeState::Active => "active",
+            nodedb_cluster::NodeState::Draining => "draining",
+            nodedb_cluster::NodeState::Decommissioned => "decommissioned",
+        };
+        encoder.encode_field(&state_str).map_err(encode_err)?;
+        let groups_str: String = node
+            .raft_groups
+            .iter()
+            .map(|g| g.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        encoder.encode_field(&groups_str).map_err(encode_err)?;
+        rows.push(Ok(encoder.take_row()));
+    }
+
+    Ok(vec![Response::Query(QueryResponse::new(
+        schema,
+        stream::iter(rows),
+    ))])
+}
+
+/// SHOW NODE <node_id> — detailed info for a specific node.
+///
+/// Superuser only.
+pub fn show_node(
+    state: &SharedState,
+    identity: &AuthenticatedIdentity,
+    parts: &[&str],
+) -> PgWireResult<Vec<Response>> {
+    if !identity.is_superuser {
+        return Err(sqlstate_error(
+            "42501",
+            "permission denied: only superuser can inspect nodes",
+        ));
+    }
+
+    // SHOW NODE <node_id>
+    if parts.len() < 3 {
+        return Err(sqlstate_error("42601", "syntax: SHOW NODE <node_id>"));
+    }
+
+    let node_id: u64 = parts[2]
+        .parse()
+        .map_err(|_| sqlstate_error("42601", &format!("invalid node_id: '{}'", parts[2])))?;
+
+    let topo = match &state.cluster_topology {
+        Some(t) => t,
+        None => {
+            return Err(sqlstate_error(
+                "55000",
+                "cluster mode not enabled (single-node instance)",
+            ));
+        }
+    };
+
+    let topo = topo.read().unwrap_or_else(|p| p.into_inner());
+
+    let node = match topo.get_node(node_id) {
+        Some(n) => n,
+        None => {
+            return Err(sqlstate_error(
+                "42704",
+                &format!("node {node_id} not found in cluster topology"),
+            ));
+        }
+    };
+
+    let schema = Arc::new(vec![text_field("property"), text_field("value")]);
+
+    let mut rows = Vec::new();
+    let mut encoder = DataRowEncoder::new(schema.clone());
+
+    let props = [
+        ("node_id", node.node_id.to_string()),
+        ("address", node.addr.clone()),
+        ("state", format!("{:?}", node.state)),
+        (
+            "raft_groups",
+            node.raft_groups
+                .iter()
+                .map(|g| g.to_string())
+                .collect::<Vec<_>>()
+                .join(", "),
+        ),
+    ];
+
+    for (key, value) in &props {
+        encoder.encode_field(key).map_err(encode_err)?;
+        encoder.encode_field(value).map_err(encode_err)?;
+        rows.push(Ok(encoder.take_row()));
+    }
+
+    Ok(vec![Response::Query(QueryResponse::new(
+        schema,
+        stream::iter(rows),
+    ))])
+}
+
+/// REMOVE NODE <node_id> — mark a node as decommissioned.
+///
+/// Superuser only. This updates the local topology state.
+/// In production, this would be replicated via Raft.
+pub fn remove_node(
+    state: &SharedState,
+    identity: &AuthenticatedIdentity,
+    parts: &[&str],
+) -> PgWireResult<Vec<Response>> {
+    if !identity.is_superuser {
+        return Err(sqlstate_error(
+            "42501",
+            "permission denied: only superuser can remove nodes",
+        ));
+    }
+
+    // REMOVE NODE <node_id>
+    if parts.len() < 3 {
+        return Err(sqlstate_error("42601", "syntax: REMOVE NODE <node_id>"));
+    }
+
+    let node_id: u64 = parts[2]
+        .parse()
+        .map_err(|_| sqlstate_error("42601", &format!("invalid node_id: '{}'", parts[2])))?;
+
+    let topo = match &state.cluster_topology {
+        Some(t) => t,
+        None => {
+            return Err(sqlstate_error(
+                "55000",
+                "cluster mode not enabled (single-node instance)",
+            ));
+        }
+    };
+
+    let mut topo = topo.write().unwrap_or_else(|p| p.into_inner());
+
+    if !topo.contains(node_id) {
+        return Err(sqlstate_error(
+            "42704",
+            &format!("node {node_id} not found in cluster topology"),
+        ));
+    }
+
+    topo.set_state(node_id, nodedb_cluster::NodeState::Decommissioned);
+
+    Ok(vec![Response::Execution(Tag::new("REMOVE NODE"))])
+}
+
+fn encode_err(e: pgwire::error::PgWireError) -> pgwire::error::PgWireError {
+    e
+}

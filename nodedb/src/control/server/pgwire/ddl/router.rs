@@ -62,6 +62,17 @@ pub fn dispatch(
         return Some(super::apikey::list_api_keys(state, identity, &parts));
     }
 
+    // Cluster management.
+    if upper.starts_with("SHOW NODES") {
+        return Some(super::cluster::show_nodes(state, identity));
+    }
+    if upper.starts_with("SHOW NODE ") {
+        return Some(super::cluster::show_node(state, identity, &parts));
+    }
+    if upper.starts_with("REMOVE NODE ") {
+        return Some(super::cluster::remove_node(state, identity, &parts));
+    }
+
     // Introspection.
     if upper.starts_with("SHOW USERS") {
         return Some(super::inspect::show_users(state, identity));

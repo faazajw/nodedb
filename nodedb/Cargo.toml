@@ -17,6 +17,7 @@ path = "src/lib.rs"
 [dependencies]
 # Internal foundation crates
 nodedb-bridge = { workspace = true }
+nodedb-cluster = { workspace = true }
 nodedb-wal = { workspace = true }
 nodedb-mem = { workspace = true }
 nodedb-crdt = { workspace = true }
