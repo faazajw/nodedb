@@ -23,6 +23,10 @@ rkyv = { version = "0.8", features = ["alloc"] }
 # Checksums
 crc32c = { workspace = true }
 
+# Persistence
+redb = { workspace = true }
+rmp-serde = { workspace = true }
+
 # QUIC transport (nexar for TLS utilities, quinn for bidi streams)
 nexar = { workspace = true }
 quinn = { workspace = true }
@@ -31,3 +35,4 @@ rustls = { version = "0.23", default-features = false, features = ["ring"] }
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber = { workspace = true }
+tempfile = "3"

@@ -174,8 +174,46 @@ impl NexarTransport {
         Ok(conn)
     }
 
+    /// Send an RPC to an address directly (for bootstrap/join before peer IDs are known).
+    pub async fn send_rpc_to_addr(&self, addr: SocketAddr, rpc: RaftRpc) -> Result<RaftRpc> {
+        let frame = rpc_codec::encode(&rpc)?;
+
+        let conn = self
+            .listener
+            .endpoint()
+            .connect_with(self.client_config.clone(), addr, SNI_HOSTNAME)
+            .map_err(|e| ClusterError::Transport {
+                detail: format!("connect to {addr}: {e}"),
+            })?
+            .await
+            .map_err(|e| ClusterError::Transport {
+                detail: format!("handshake with {addr}: {e}"),
+            })?;
+
+        let (mut send, mut recv) = conn.open_bi().await.map_err(|e| ClusterError::Transport {
+            detail: format!("open_bi to {addr}: {e}"),
+        })?;
+
+        send.write_all(&frame)
+            .await
+            .map_err(|e| ClusterError::Transport {
+                detail: format!("write to {addr}: {e}"),
+            })?;
+        send.finish().map_err(|e| ClusterError::Transport {
+            detail: format!("finish send to {addr}: {e}"),
+        })?;
+
+        let response_frame = tokio::time::timeout(self.rpc_timeout, server::read_frame(&mut recv))
+            .await
+            .map_err(|_| ClusterError::Transport {
+                detail: format!("RPC timeout ({}ms) to {addr}", self.rpc_timeout.as_millis()),
+            })??;
+
+        rpc_codec::decode(&response_frame)
+    }
+
     /// Send an RPC to a peer and await the response.
-    async fn send_rpc(&self, target: u64, rpc: RaftRpc) -> Result<RaftRpc> {
+    pub async fn send_rpc(&self, target: u64, rpc: RaftRpc) -> Result<RaftRpc> {
         let frame = rpc_codec::encode(&rpc)?;
         let conn = self.get_or_connect(target).await?;
 

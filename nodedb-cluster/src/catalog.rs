@@ -1,0 +1,282 @@
+//! Cluster catalog — persistent storage for topology and routing tables.
+//!
+//! Uses redb (embedded B-Tree ACID storage) with MessagePack serialization.
+//! Stores the cluster topology and routing table so nodes can recover
+//! cluster state after a restart without contacting peers.
+
+use std::path::Path;
+
+use redb::{Database, TableDefinition};
+
+use crate::error::{ClusterError, Result};
+use crate::routing::RoutingTable;
+use crate::topology::ClusterTopology;
+
+/// Single-row table for the serialized ClusterTopology.
+const TOPOLOGY_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("_cluster.topology");
+
+/// Single-row table for the serialized RoutingTable.
+const ROUTING_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("_cluster.routing");
+
+/// Cluster metadata (cluster_id, bootstrap version, etc.).
+const METADATA_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("_cluster.metadata");
+
+const KEY_TOPOLOGY: &str = "topology";
+const KEY_ROUTING: &str = "routing";
+const KEY_CLUSTER_ID: &str = "cluster_id";
+
+/// Persistent cluster catalog backed by redb.
+pub struct ClusterCatalog {
+    db: Database,
+}
+
+impl ClusterCatalog {
+    /// Open or create the cluster catalog at the given path.
+    pub fn open(path: &Path) -> Result<Self> {
+        let db = Database::create(path).map_err(|e| ClusterError::Transport {
+            detail: format!("open cluster catalog {}: {e}", path.display()),
+        })?;
+
+        // Ensure tables exist.
+        let txn = db.begin_write().map_err(catalog_err)?;
+        {
+            let _ = txn.open_table(TOPOLOGY_TABLE).map_err(catalog_err)?;
+            let _ = txn.open_table(ROUTING_TABLE).map_err(catalog_err)?;
+            let _ = txn.open_table(METADATA_TABLE).map_err(catalog_err)?;
+        }
+        txn.commit().map_err(catalog_err)?;
+
+        Ok(Self { db })
+    }
+
+    // ── Topology ────────────────────────────────────────────────────
+
+    /// Persist the cluster topology.
+    pub fn save_topology(&self, topology: &ClusterTopology) -> Result<()> {
+        let bytes = rmp_serde::to_vec(topology).map_err(|e| ClusterError::Codec {
+            detail: format!("serialize topology: {e}"),
+        })?;
+
+        let txn = self.db.begin_write().map_err(catalog_err)?;
+        {
+            let mut table = txn.open_table(TOPOLOGY_TABLE).map_err(catalog_err)?;
+            table
+                .insert(KEY_TOPOLOGY, bytes.as_slice())
+                .map_err(catalog_err)?;
+        }
+        txn.commit().map_err(catalog_err)?;
+        Ok(())
+    }
+
+    /// Load the cluster topology. Returns None if no topology has been saved.
+    pub fn load_topology(&self) -> Result<Option<ClusterTopology>> {
+        let txn = self.db.begin_read().map_err(catalog_err)?;
+        let table = txn.open_table(TOPOLOGY_TABLE).map_err(catalog_err)?;
+
+        match table.get(KEY_TOPOLOGY).map_err(catalog_err)? {
+            Some(guard) => {
+                let bytes = guard.value();
+                let topo: ClusterTopology =
+                    rmp_serde::from_slice(bytes).map_err(|e| ClusterError::Codec {
+                        detail: format!("deserialize topology: {e}"),
+                    })?;
+                Ok(Some(topo))
+            }
+            None => Ok(None),
+        }
+    }
+
+    // ── Routing Table ───────────────────────────────────────────────
+
+    /// Persist the routing table.
+    pub fn save_routing(&self, routing: &RoutingTable) -> Result<()> {
+        let bytes = rmp_serde::to_vec(routing).map_err(|e| ClusterError::Codec {
+            detail: format!("serialize routing: {e}"),
+        })?;
+
+        let txn = self.db.begin_write().map_err(catalog_err)?;
+        {
+            let mut table = txn.open_table(ROUTING_TABLE).map_err(catalog_err)?;
+            table
+                .insert(KEY_ROUTING, bytes.as_slice())
+                .map_err(catalog_err)?;
+        }
+        txn.commit().map_err(catalog_err)?;
+        Ok(())
+    }
+
+    /// Load the routing table. Returns None if no routing table has been saved.
+    pub fn load_routing(&self) -> Result<Option<RoutingTable>> {
+        let txn = self.db.begin_read().map_err(catalog_err)?;
+        let table = txn.open_table(ROUTING_TABLE).map_err(catalog_err)?;
+
+        match table.get(KEY_ROUTING).map_err(catalog_err)? {
+            Some(guard) => {
+                let bytes = guard.value();
+                let rt: RoutingTable =
+                    rmp_serde::from_slice(bytes).map_err(|e| ClusterError::Codec {
+                        detail: format!("deserialize routing: {e}"),
+                    })?;
+                Ok(Some(rt))
+            }
+            None => Ok(None),
+        }
+    }
+
+    // ── Metadata ────────────────────────────────────────────────────
+
+    /// Store the cluster ID (generated at bootstrap, immutable).
+    pub fn save_cluster_id(&self, cluster_id: u64) -> Result<()> {
+        let bytes = cluster_id.to_le_bytes();
+        let txn = self.db.begin_write().map_err(catalog_err)?;
+        {
+            let mut table = txn.open_table(METADATA_TABLE).map_err(catalog_err)?;
+            table
+                .insert(KEY_CLUSTER_ID, bytes.as_slice())
+                .map_err(catalog_err)?;
+        }
+        txn.commit().map_err(catalog_err)?;
+        Ok(())
+    }
+
+    /// Load the cluster ID. Returns None if not yet bootstrapped.
+    pub fn load_cluster_id(&self) -> Result<Option<u64>> {
+        let txn = self.db.begin_read().map_err(catalog_err)?;
+        let table = txn.open_table(METADATA_TABLE).map_err(catalog_err)?;
+
+        match table.get(KEY_CLUSTER_ID).map_err(catalog_err)? {
+            Some(guard) => {
+                let bytes = guard.value();
+                if bytes.len() == 8 {
+                    let id = u64::from_le_bytes(bytes.try_into().unwrap());
+                    Ok(Some(id))
+                } else {
+                    Ok(None)
+                }
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Check if this catalog has been bootstrapped (has a cluster_id).
+    pub fn is_bootstrapped(&self) -> Result<bool> {
+        self.load_cluster_id().map(|id| id.is_some())
+    }
+}
+
+fn catalog_err(e: impl std::fmt::Display) -> ClusterError {
+    ClusterError::Transport {
+        detail: format!("cluster catalog: {e}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::topology::{NodeInfo, NodeState};
+
+    fn temp_catalog() -> (tempfile::TempDir, ClusterCatalog) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cluster.redb");
+        let catalog = ClusterCatalog::open(&path).unwrap();
+        (dir, catalog)
+    }
+
+    #[test]
+    fn topology_save_load_roundtrip() {
+        let (_dir, catalog) = temp_catalog();
+
+        let mut topo = ClusterTopology::new();
+        topo.add_node(NodeInfo::new(
+            1,
+            "10.0.0.1:9400".parse().unwrap(),
+            NodeState::Active,
+        ));
+        topo.add_node(NodeInfo::new(
+            2,
+            "10.0.0.2:9400".parse().unwrap(),
+            NodeState::Active,
+        ));
+        topo.add_node(NodeInfo::new(
+            3,
+            "10.0.0.3:9400".parse().unwrap(),
+            NodeState::Joining,
+        ));
+
+        catalog.save_topology(&topo).unwrap();
+        let loaded = catalog.load_topology().unwrap().unwrap();
+
+        assert_eq!(loaded.node_count(), 3);
+        assert_eq!(loaded.version(), 3);
+        assert_eq!(loaded.active_nodes().len(), 2);
+        assert_eq!(loaded.get_node(1).unwrap().addr, "10.0.0.1:9400");
+    }
+
+    #[test]
+    fn routing_save_load_roundtrip() {
+        let (_dir, catalog) = temp_catalog();
+
+        let rt = RoutingTable::uniform(4, &[1, 2, 3], 3);
+        catalog.save_routing(&rt).unwrap();
+        let loaded = catalog.load_routing().unwrap().unwrap();
+
+        assert_eq!(loaded.num_groups(), 4);
+        assert_eq!(loaded.vshard_to_group().len(), 1024);
+        // Verify vShard routing matches.
+        for i in 0..1024u16 {
+            assert_eq!(
+                rt.group_for_vshard(i).unwrap(),
+                loaded.group_for_vshard(i).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn cluster_id_persistence() {
+        let (_dir, catalog) = temp_catalog();
+
+        assert!(!catalog.is_bootstrapped().unwrap());
+        assert_eq!(catalog.load_cluster_id().unwrap(), None);
+
+        catalog.save_cluster_id(42).unwrap();
+        assert!(catalog.is_bootstrapped().unwrap());
+        assert_eq!(catalog.load_cluster_id().unwrap(), Some(42));
+    }
+
+    #[test]
+    fn empty_catalog_returns_none() {
+        let (_dir, catalog) = temp_catalog();
+
+        assert!(catalog.load_topology().unwrap().is_none());
+        assert!(catalog.load_routing().unwrap().is_none());
+    }
+
+    #[test]
+    fn overwrite_topology() {
+        let (_dir, catalog) = temp_catalog();
+
+        let mut topo1 = ClusterTopology::new();
+        topo1.add_node(NodeInfo::new(
+            1,
+            "10.0.0.1:9400".parse().unwrap(),
+            NodeState::Active,
+        ));
+        catalog.save_topology(&topo1).unwrap();
+
+        let mut topo2 = ClusterTopology::new();
+        topo2.add_node(NodeInfo::new(
+            1,
+            "10.0.0.1:9400".parse().unwrap(),
+            NodeState::Active,
+        ));
+        topo2.add_node(NodeInfo::new(
+            2,
+            "10.0.0.2:9400".parse().unwrap(),
+            NodeState::Active,
+        ));
+        catalog.save_topology(&topo2).unwrap();
+
+        let loaded = catalog.load_topology().unwrap().unwrap();
+        assert_eq!(loaded.node_count(), 2);
+    }
+}

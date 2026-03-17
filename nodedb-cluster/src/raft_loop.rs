@@ -144,7 +144,9 @@ impl<A: CommitApplier> RaftLoop<A> {
                     .apply_committed(group_id, &group_ready.committed_entries);
                 if last_applied > 0 {
                     let mut mr = self.multi_raft.lock().unwrap_or_else(|p| p.into_inner());
-                    let _ = mr.advance_applied(group_id, last_applied);
+                    if let Err(e) = mr.advance_applied(group_id, last_applied) {
+                        warn!(group_id, error = %e, "failed to advance applied index");
+                    }
                 }
             }
 

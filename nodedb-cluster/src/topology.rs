@@ -1,0 +1,234 @@
+//! Cluster topology — tracks which nodes exist and their state.
+
+use std::collections::HashMap;
+use std::net::SocketAddr;
+
+/// Node lifecycle states.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum NodeState {
+    /// Node is connecting, receiving initial topology.
+    Joining,
+    /// Node is fully operational, hosting Raft groups.
+    Active,
+    /// Node is being decommissioned, migrating data off.
+    Draining,
+    /// Node has been removed from the cluster.
+    Decommissioned,
+}
+
+impl NodeState {
+    pub fn as_u8(self) -> u8 {
+        match self {
+            Self::Joining => 0,
+            Self::Active => 1,
+            Self::Draining => 2,
+            Self::Decommissioned => 3,
+        }
+    }
+
+    pub fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            0 => Some(Self::Joining),
+            1 => Some(Self::Active),
+            2 => Some(Self::Draining),
+            3 => Some(Self::Decommissioned),
+            _ => None,
+        }
+    }
+}
+
+/// Information about a single node in the cluster.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct NodeInfo {
+    pub node_id: u64,
+    /// Listen address for Raft RPCs (as string for serialization portability).
+    pub addr: String,
+    pub state: NodeState,
+    /// Raft groups hosted on this node.
+    pub raft_groups: Vec<u64>,
+}
+
+impl NodeInfo {
+    pub fn new(node_id: u64, addr: SocketAddr, state: NodeState) -> Self {
+        Self {
+            node_id,
+            addr: addr.to_string(),
+            state,
+            raft_groups: Vec::new(),
+        }
+    }
+
+    pub fn socket_addr(&self) -> Option<SocketAddr> {
+        self.addr.parse().ok()
+    }
+}
+
+/// Cluster topology — authoritative registry of all nodes.
+///
+/// Updated atomically via Raft (metadata group) in production.
+/// Persisted to the cluster catalog (redb).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ClusterTopology {
+    nodes: HashMap<u64, NodeInfo>,
+    /// Monotonically increasing version for stale detection.
+    version: u64,
+}
+
+impl ClusterTopology {
+    pub fn new() -> Self {
+        Self {
+            nodes: HashMap::new(),
+            version: 0,
+        }
+    }
+
+    /// Add or update a node. Bumps the version.
+    pub fn add_node(&mut self, info: NodeInfo) {
+        self.nodes.insert(info.node_id, info);
+        self.version += 1;
+    }
+
+    /// Remove a node. Bumps the version.
+    pub fn remove_node(&mut self, node_id: u64) -> Option<NodeInfo> {
+        let removed = self.nodes.remove(&node_id);
+        if removed.is_some() {
+            self.version += 1;
+        }
+        removed
+    }
+
+    pub fn get_node(&self, node_id: u64) -> Option<&NodeInfo> {
+        self.nodes.get(&node_id)
+    }
+
+    pub fn get_node_mut(&mut self, node_id: u64) -> Option<&mut NodeInfo> {
+        self.nodes.get_mut(&node_id)
+    }
+
+    /// Update a node's state. Bumps the version.
+    pub fn set_state(&mut self, node_id: u64, state: NodeState) -> bool {
+        if let Some(info) = self.nodes.get_mut(&node_id) {
+            info.state = state;
+            self.version += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// All nodes with Active state.
+    pub fn active_nodes(&self) -> Vec<&NodeInfo> {
+        self.nodes
+            .values()
+            .filter(|n| n.state == NodeState::Active)
+            .collect()
+    }
+
+    /// All nodes (any state).
+    pub fn all_nodes(&self) -> impl Iterator<Item = &NodeInfo> {
+        self.nodes.values()
+    }
+
+    pub fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
+
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+
+    pub fn contains(&self, node_id: u64) -> bool {
+        self.nodes.contains_key(&node_id)
+    }
+}
+
+impl Default for ClusterTopology {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn add_and_lookup() {
+        let mut topo = ClusterTopology::new();
+        topo.add_node(NodeInfo::new(
+            1,
+            "127.0.0.1:9400".parse().unwrap(),
+            NodeState::Active,
+        ));
+        topo.add_node(NodeInfo::new(
+            2,
+            "127.0.0.1:9401".parse().unwrap(),
+            NodeState::Joining,
+        ));
+
+        assert_eq!(topo.node_count(), 2);
+        assert_eq!(topo.version(), 2);
+        assert_eq!(topo.active_nodes().len(), 1);
+        assert!(topo.contains(1));
+        assert!(topo.contains(2));
+    }
+
+    #[test]
+    fn remove_node() {
+        let mut topo = ClusterTopology::new();
+        topo.add_node(NodeInfo::new(
+            1,
+            "127.0.0.1:9400".parse().unwrap(),
+            NodeState::Active,
+        ));
+        let removed = topo.remove_node(1);
+        assert!(removed.is_some());
+        assert_eq!(topo.node_count(), 0);
+        assert_eq!(topo.version(), 2); // add + remove
+    }
+
+    #[test]
+    fn set_state() {
+        let mut topo = ClusterTopology::new();
+        topo.add_node(NodeInfo::new(
+            1,
+            "127.0.0.1:9400".parse().unwrap(),
+            NodeState::Joining,
+        ));
+        assert!(topo.set_state(1, NodeState::Active));
+        assert_eq!(topo.get_node(1).unwrap().state, NodeState::Active);
+    }
+
+    #[test]
+    fn node_state_roundtrip() {
+        for state in [
+            NodeState::Joining,
+            NodeState::Active,
+            NodeState::Draining,
+            NodeState::Decommissioned,
+        ] {
+            assert_eq!(NodeState::from_u8(state.as_u8()), Some(state));
+        }
+        assert_eq!(NodeState::from_u8(255), None);
+    }
+
+    #[test]
+    fn serde_roundtrip() {
+        let mut topo = ClusterTopology::new();
+        topo.add_node(NodeInfo::new(
+            1,
+            "127.0.0.1:9400".parse().unwrap(),
+            NodeState::Active,
+        ));
+        topo.add_node(NodeInfo::new(
+            2,
+            "127.0.0.1:9401".parse().unwrap(),
+            NodeState::Active,
+        ));
+
+        let bytes = rmp_serde::to_vec(&topo).unwrap();
+        let decoded: ClusterTopology = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(decoded.node_count(), 2);
+        assert_eq!(decoded.version(), 2);
+    }
+}

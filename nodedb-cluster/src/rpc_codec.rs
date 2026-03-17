@@ -40,16 +40,65 @@ const RPC_REQUEST_VOTE_REQ: u8 = 3;
 const RPC_REQUEST_VOTE_RESP: u8 = 4;
 const RPC_INSTALL_SNAPSHOT_REQ: u8 = 5;
 const RPC_INSTALL_SNAPSHOT_RESP: u8 = 6;
+const RPC_JOIN_REQ: u8 = 7;
+const RPC_JOIN_RESP: u8 = 8;
 
-/// A Raft RPC message — one of the six request/response types.
+// ── Cluster management wire types ───────────────────────────────────
+
+/// Request to join an existing cluster.
+#[derive(Debug, Clone, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub struct JoinRequest {
+    pub node_id: u64,
+    /// Listen address for Raft RPCs (e.g. "10.0.0.5:9400").
+    pub listen_addr: String,
+}
+
+/// Response to a join request — carries full cluster state.
+#[derive(Debug, Clone, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub struct JoinResponse {
+    pub success: bool,
+    pub error: String,
+    /// All nodes in the cluster.
+    pub nodes: Vec<JoinNodeInfo>,
+    /// vShard → Raft group mapping (1024 entries).
+    pub vshard_to_group: Vec<u64>,
+    /// Raft group membership.
+    pub groups: Vec<JoinGroupInfo>,
+}
+
+/// Node info in the join response wire format.
+#[derive(Debug, Clone, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub struct JoinNodeInfo {
+    pub node_id: u64,
+    pub addr: String,
+    /// NodeState as u8 (0=Joining, 1=Active, 2=Draining, 3=Decommissioned).
+    pub state: u8,
+    pub raft_groups: Vec<u64>,
+}
+
+/// Raft group membership in the join response wire format.
+#[derive(Debug, Clone, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub struct JoinGroupInfo {
+    pub group_id: u64,
+    pub leader: u64,
+    pub members: Vec<u64>,
+}
+
+// ── RPC enum ────────────────────────────────────────────────────────
+
+/// An RPC message — Raft consensus or cluster management.
 #[derive(Debug, Clone)]
 pub enum RaftRpc {
+    // Raft consensus
     AppendEntriesRequest(AppendEntriesRequest),
     AppendEntriesResponse(AppendEntriesResponse),
     RequestVoteRequest(RequestVoteRequest),
     RequestVoteResponse(RequestVoteResponse),
     InstallSnapshotRequest(InstallSnapshotRequest),
     InstallSnapshotResponse(InstallSnapshotResponse),
+    // Cluster management
+    JoinRequest(JoinRequest),
+    JoinResponse(JoinResponse),
 }
 
 impl RaftRpc {
@@ -61,6 +110,8 @@ impl RaftRpc {
             Self::RequestVoteResponse(_) => RPC_REQUEST_VOTE_RESP,
             Self::InstallSnapshotRequest(_) => RPC_INSTALL_SNAPSHOT_REQ,
             Self::InstallSnapshotResponse(_) => RPC_INSTALL_SNAPSHOT_RESP,
+            Self::JoinRequest(_) => RPC_JOIN_REQ,
+            Self::JoinResponse(_) => RPC_JOIN_RESP,
         }
     }
 }
@@ -155,6 +206,8 @@ fn serialize_payload(rpc: &RaftRpc) -> Result<Vec<u8>> {
         RaftRpc::RequestVoteResponse(msg) => rkyv::to_bytes::<rkyv::rancor::Error>(msg),
         RaftRpc::InstallSnapshotRequest(msg) => rkyv::to_bytes::<rkyv::rancor::Error>(msg),
         RaftRpc::InstallSnapshotResponse(msg) => rkyv::to_bytes::<rkyv::rancor::Error>(msg),
+        RaftRpc::JoinRequest(msg) => rkyv::to_bytes::<rkyv::rancor::Error>(msg),
+        RaftRpc::JoinResponse(msg) => rkyv::to_bytes::<rkyv::rancor::Error>(msg),
     };
     bytes.map(|b| b.to_vec()).map_err(|e| ClusterError::Codec {
         detail: format!("rkyv serialize failed: {e}"),
@@ -209,6 +262,24 @@ fn deserialize_payload(rpc_type: u8, payload: &[u8]) -> Result<RaftRpc> {
                     detail: format!("rkyv deserialize InstallSnapshotResponse: {e}"),
                 })?;
             Ok(RaftRpc::InstallSnapshotResponse(msg))
+        }
+        RPC_JOIN_REQ => {
+            let msg =
+                rkyv::from_bytes::<JoinRequest, rkyv::rancor::Error>(&aligned).map_err(|e| {
+                    ClusterError::Codec {
+                        detail: format!("rkyv deserialize JoinRequest: {e}"),
+                    }
+                })?;
+            Ok(RaftRpc::JoinRequest(msg))
+        }
+        RPC_JOIN_RESP => {
+            let msg =
+                rkyv::from_bytes::<JoinResponse, rkyv::rancor::Error>(&aligned).map_err(|e| {
+                    ClusterError::Codec {
+                        detail: format!("rkyv deserialize JoinResponse: {e}"),
+                    }
+                })?;
+            Ok(RaftRpc::JoinResponse(msg))
         }
         _ => Err(ClusterError::Codec {
             detail: format!("unknown rpc_type: {rpc_type}"),
@@ -551,6 +622,69 @@ mod tests {
                 assert_eq!(d.data, data);
             }
             other => panic!("expected InstallSnapshotRequest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn roundtrip_join_request() {
+        let req = JoinRequest {
+            node_id: 42,
+            listen_addr: "10.0.0.5:9400".into(),
+        };
+
+        let rpc = RaftRpc::JoinRequest(req);
+        let encoded = encode(&rpc).unwrap();
+        let decoded = decode(&encoded).unwrap();
+
+        match decoded {
+            RaftRpc::JoinRequest(d) => {
+                assert_eq!(d.node_id, 42);
+                assert_eq!(d.listen_addr, "10.0.0.5:9400");
+            }
+            other => panic!("expected JoinRequest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn roundtrip_join_response() {
+        let resp = JoinResponse {
+            success: true,
+            error: String::new(),
+            nodes: vec![
+                JoinNodeInfo {
+                    node_id: 1,
+                    addr: "10.0.0.1:9400".into(),
+                    state: 1,
+                    raft_groups: vec![0, 1],
+                },
+                JoinNodeInfo {
+                    node_id: 2,
+                    addr: "10.0.0.2:9400".into(),
+                    state: 1,
+                    raft_groups: vec![0, 1],
+                },
+            ],
+            vshard_to_group: (0..1024u64).map(|i| i % 4).collect(),
+            groups: vec![JoinGroupInfo {
+                group_id: 0,
+                leader: 1,
+                members: vec![1, 2],
+            }],
+        };
+
+        let rpc = RaftRpc::JoinResponse(resp);
+        let encoded = encode(&rpc).unwrap();
+        let decoded = decode(&encoded).unwrap();
+
+        match decoded {
+            RaftRpc::JoinResponse(d) => {
+                assert!(d.success);
+                assert_eq!(d.nodes.len(), 2);
+                assert_eq!(d.vshard_to_group.len(), 1024);
+                assert_eq!(d.groups.len(), 1);
+                assert_eq!(d.groups[0].leader, 1);
+            }
+            other => panic!("expected JoinResponse, got {other:?}"),
         }
     }
 }

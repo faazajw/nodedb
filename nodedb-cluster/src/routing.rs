@@ -15,7 +15,7 @@ pub const VSHARD_COUNT: u16 = 1024;
 /// - A shard migration completes (Phase 3 atomic cut-over)
 /// - A Raft group membership changes
 /// - A node joins or decommissions
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RoutingTable {
     /// vshard_id → raft_group_id.
     vshard_to_group: Vec<u64>,
@@ -23,7 +23,7 @@ pub struct RoutingTable {
     group_members: HashMap<u64, GroupInfo>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GroupInfo {
     /// Current leader node ID (0 = no leader known).
     pub leader: u64,
@@ -116,6 +116,24 @@ impl RoutingTable {
     /// All group IDs.
     pub fn group_ids(&self) -> Vec<u64> {
         self.group_members.keys().copied().collect()
+    }
+
+    /// Access the vshard-to-group mapping (for persistence / wire transfer).
+    pub fn vshard_to_group(&self) -> &[u64] {
+        &self.vshard_to_group
+    }
+
+    /// Access all group members (for persistence / wire transfer).
+    pub fn group_members(&self) -> &HashMap<u64, GroupInfo> {
+        &self.group_members
+    }
+
+    /// Reconstruct a RoutingTable from persisted data.
+    pub fn from_parts(vshard_to_group: Vec<u64>, group_members: HashMap<u64, GroupInfo>) -> Self {
+        Self {
+            vshard_to_group,
+            group_members,
+        }
     }
 }
 
