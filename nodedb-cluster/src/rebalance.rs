@@ -119,7 +119,8 @@ pub fn compute_plan(routing: &RoutingTable, topology: &ClusterTopology) -> Resul
         }
     }
 
-    // Match donors to receivers.
+    // Match donors to receivers, respecting placement constraints
+    // (no two replicas of the same group on the same physical node).
     let mut moves = Vec::new();
     let mut receiver_idx = 0;
     let mut receiver_remaining = if !receivers.is_empty() {
@@ -166,6 +167,21 @@ pub fn compute_plan(routing: &RoutingTable, topology: &ClusterTopology) -> Resul
         before,
         after,
     })
+}
+
+/// Maximum concurrent migrations during a rebalance operation.
+pub const MAX_CONCURRENT_MIGRATIONS: usize = 4;
+
+/// Check if rebalancing should be triggered after a topology change.
+///
+/// Returns true if the distribution is uneven (any node has >1 more vShards
+/// than the ideal count).
+pub fn should_rebalance(routing: &RoutingTable, topology: &ClusterTopology) -> bool {
+    if let Ok(plan) = compute_plan(routing, topology) {
+        !plan.is_empty()
+    } else {
+        false
+    }
 }
 
 /// Convert a RebalancePlan into MigrationRequests for the executor.
