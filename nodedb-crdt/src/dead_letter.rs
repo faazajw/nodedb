@@ -64,6 +64,14 @@ pub struct DeadLetter {
     /// The peer that produced this delta.
     pub peer_id: u64,
 
+    /// The authenticated user_id that submitted this delta (0 = unauthenticated/legacy).
+    #[serde(default)]
+    pub user_id: u64,
+
+    /// The tenant this delta belongs to (0 = system).
+    #[serde(default)]
+    pub tenant_id: u32,
+
     /// The raw delta bytes that were rejected.
     pub delta: Vec<u8>,
 
@@ -106,10 +114,13 @@ impl DeadLetterQueue {
         }
     }
 
-    /// Enqueue a rejected delta.
+    /// Enqueue a rejected delta with full auth context.
+    #[allow(clippy::too_many_arguments)]
     pub fn enqueue(
         &mut self,
         peer_id: u64,
+        user_id: u64,
+        tenant_id: u32,
         delta: Vec<u8>,
         constraint: &Constraint,
         reason: String,
@@ -133,6 +144,8 @@ impl DeadLetterQueue {
         self.entries.push_back(DeadLetter {
             id,
             peer_id,
+            user_id,
+            tenant_id,
             delta,
             violated_constraint: constraint.name.clone(),
             collection: constraint.collection.clone(),
@@ -220,6 +233,8 @@ mod tests {
         let id = dlq
             .enqueue(
                 42,
+                0,
+                0,
                 b"delta-bytes".to_vec(),
                 &c,
                 "email already exists".into(),
@@ -248,12 +263,12 @@ mod tests {
             reason: "test".into(),
         };
 
-        dlq.enqueue(1, vec![], &c, "r1".into(), hint.clone())
+        dlq.enqueue(1, 0, 0, vec![], &c, "r1".into(), hint.clone())
             .unwrap();
-        dlq.enqueue(2, vec![], &c, "r2".into(), hint.clone())
+        dlq.enqueue(2, 0, 0, vec![], &c, "r2".into(), hint.clone())
             .unwrap();
 
-        let err = dlq.enqueue(3, vec![], &c, "r3".into(), hint);
+        let err = dlq.enqueue(3, 0, 0, vec![], &c, "r3".into(), hint);
         assert!(matches!(err, Err(CrdtError::DlqFull { .. })));
     }
 
@@ -265,11 +280,11 @@ mod tests {
             reason: "test".into(),
         };
 
-        dlq.enqueue(1, vec![], &c, "a".into(), hint.clone())
+        dlq.enqueue(1, 0, 0, vec![], &c, "a".into(), hint.clone())
             .unwrap();
-        dlq.enqueue(2, vec![], &c, "b".into(), hint.clone())
+        dlq.enqueue(2, 0, 0, vec![], &c, "b".into(), hint.clone())
             .unwrap();
-        dlq.enqueue(1, vec![], &c, "c".into(), hint).unwrap();
+        dlq.enqueue(1, 0, 0, vec![], &c, "c".into(), hint).unwrap();
 
         let peer1 = dlq.drain_peer(1);
         assert_eq!(peer1.len(), 2);
@@ -285,9 +300,9 @@ mod tests {
         };
 
         let id1 = dlq
-            .enqueue(1, vec![], &c, "a".into(), hint.clone())
+            .enqueue(1, 0, 0, vec![], &c, "a".into(), hint.clone())
             .unwrap();
-        let _id2 = dlq.enqueue(1, vec![], &c, "b".into(), hint).unwrap();
+        let _id2 = dlq.enqueue(1, 0, 0, vec![], &c, "b".into(), hint).unwrap();
 
         let removed = dlq.remove(id1).unwrap();
         assert_eq!(removed.reason, "a");

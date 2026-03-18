@@ -19,6 +19,18 @@
 //! 4. **Pre-validation** — optional fast-reject against the leader's state
 //!    before the full Raft round-trip, reducing wasted consensus bandwidth.
 
+/// Authentication context threaded through CRDT validation.
+///
+/// Carries the identity of who submitted the delta so the DLQ and deferred
+/// queue can attribute entries to the correct user/tenant.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CrdtAuthContext {
+    /// Authenticated user_id (0 = unauthenticated/legacy).
+    pub user_id: u64,
+    /// Tenant this operation belongs to.
+    pub tenant_id: u32,
+}
+
 pub mod constraint;
 pub mod dead_letter;
 pub mod deferred;

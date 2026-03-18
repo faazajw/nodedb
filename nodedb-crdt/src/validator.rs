@@ -5,6 +5,7 @@
 //! committed state. If any constraint is violated, the delta is rejected
 //! with a compensation hint.
 
+use crate::CrdtAuthContext;
 use crate::constraint::{Constraint, ConstraintKind, ConstraintSet};
 use crate::dead_letter::{CompensationHint, DeadLetterQueue};
 use crate::deferred::DeferredQueue;
@@ -117,16 +118,16 @@ impl Validator {
         &mut self,
         state: &CrdtState,
         peer_id: u64,
+        auth: CrdtAuthContext,
         change: &ProposedChange,
         delta_bytes: Vec<u8>,
     ) -> Result<()> {
-        // Use a dummy HLC timestamp (caller should upgrade to validate_with_policy for proper semantics)
         let hlc_timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
 
-        match self.validate_with_policy(state, peer_id, change, delta_bytes, hlc_timestamp)? {
+        match self.validate_with_policy(state, peer_id, auth, change, delta_bytes, hlc_timestamp)? {
             PolicyResolution::AutoResolved(_) => Ok(()),
             PolicyResolution::Deferred { .. } => {
                 // Violation was deferred for retry; return error to signal this
@@ -206,6 +207,7 @@ impl Validator {
         &mut self,
         state: &CrdtState,
         peer_id: u64,
+        auth: CrdtAuthContext,
         change: &ProposedChange,
         delta_bytes: Vec<u8>,
         hlc_timestamp: u64,
@@ -298,6 +300,8 @@ impl Validator {
 
                         let id = self.deferred.enqueue(
                             peer_id,
+                            auth.user_id,
+                            auth.tenant_id,
                             delta_bytes,
                             change.collection.clone(),
                             constraint.name.clone(),
@@ -342,6 +346,8 @@ impl Validator {
                         // Explicit fallback to DLQ
                         self.dlq.enqueue(
                             peer_id,
+                            auth.user_id,
+                            auth.tenant_id,
                             delta_bytes,
                             &constraint,
                             v.reason.clone(),
@@ -645,7 +651,13 @@ mod tests {
         };
 
         let err = validator
-            .validate_or_reject(&state, 42, &change, b"delta-bytes".to_vec())
+            .validate_or_reject(
+                &state,
+                42,
+                CrdtAuthContext::default(),
+                &change,
+                b"delta-bytes".to_vec(),
+            )
             .unwrap_err();
 
         assert!(matches!(err, CrdtError::ConstraintViolation { .. }));
@@ -684,7 +696,14 @@ mod tests {
             .as_millis() as u64;
 
         let resolution = validator
-            .validate_with_policy(&state, 42, &change, b"delta".to_vec(), now)
+            .validate_with_policy(
+                &state,
+                42,
+                CrdtAuthContext::default(),
+                &change,
+                b"delta".to_vec(),
+                now,
+            )
             .unwrap();
 
         assert!(matches!(
@@ -734,7 +753,14 @@ mod tests {
             .as_millis() as u64;
 
         let resolution = validator
-            .validate_with_policy(&state, 42, &change, b"delta".to_vec(), now)
+            .validate_with_policy(
+                &state,
+                42,
+                CrdtAuthContext::default(),
+                &change,
+                b"delta".to_vec(),
+                now,
+            )
             .unwrap();
 
         match resolution {
@@ -772,7 +798,14 @@ mod tests {
             .as_millis() as u64;
 
         let resolution = validator
-            .validate_with_policy(&state, 42, &change, b"delta".to_vec(), now)
+            .validate_with_policy(
+                &state,
+                42,
+                CrdtAuthContext::default(),
+                &change,
+                b"delta".to_vec(),
+                now,
+            )
             .unwrap();
 
         match resolution {
@@ -812,7 +845,14 @@ mod tests {
             .as_millis() as u64;
 
         let resolution = validator
-            .validate_with_policy(&state, 42, &change, b"delta".to_vec(), now)
+            .validate_with_policy(
+                &state,
+                42,
+                CrdtAuthContext::default(),
+                &change,
+                b"delta".to_vec(),
+                now,
+            )
             .unwrap();
 
         assert!(matches!(resolution, PolicyResolution::Escalate));

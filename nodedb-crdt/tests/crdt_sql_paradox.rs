@@ -87,6 +87,7 @@ fn split_brain_unique_violation_with_compensation() {
     let result = validator.validate_or_reject(
         &leader_state,
         1, // Agent A's peer ID
+        nodedb_crdt::CrdtAuthContext::default(),
         &agent_a_change,
         b"agent-a-delta".to_vec(),
     );
@@ -148,7 +149,13 @@ fn offline_agent_references_deleted_user() {
         fields: vec![("author_id".into(), LoroValue::String("u1".into()))],
     };
 
-    let result = validator.validate_or_reject(&leader_state, 42, &change, b"post-delta".to_vec());
+    let result = validator.validate_or_reject(
+        &leader_state,
+        42,
+        nodedb_crdt::CrdtAuthContext::default(),
+        &change,
+        b"post-delta".to_vec(),
+    );
 
     assert!(result.is_err());
 

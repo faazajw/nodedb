@@ -79,11 +79,12 @@ impl TenantCrdtEngine {
     pub fn validate_and_apply(
         &mut self,
         peer_id: u64,
+        auth: nodedb_crdt::CrdtAuthContext,
         change: &ProposedChange,
         delta_bytes: Vec<u8>,
     ) -> crate::Result<()> {
         self.validator
-            .validate_or_reject(&self.state, peer_id, change, delta_bytes)
+            .validate_or_reject(&self.state, peer_id, auth, change, delta_bytes)
             .map_err(crate::Error::Crdt)?;
 
         // Validation passed — apply to state.
@@ -216,7 +217,12 @@ mod tests {
         };
 
         engine
-            .validate_and_apply(1, &change, b"delta".to_vec())
+            .validate_and_apply(
+                1,
+                nodedb_crdt::CrdtAuthContext::default(),
+                &change,
+                b"delta".to_vec(),
+            )
             .unwrap();
 
         assert!(engine.row_exists("users", "u1"));
@@ -240,7 +246,12 @@ mod tests {
         };
 
         let err = engine
-            .validate_and_apply(42, &change, b"delta".to_vec())
+            .validate_and_apply(
+                42,
+                nodedb_crdt::CrdtAuthContext::default(),
+                &change,
+                b"delta".to_vec(),
+            )
             .unwrap_err();
 
         assert!(matches!(err, crate::Error::Crdt(_)));
@@ -286,7 +297,12 @@ mod tests {
             ],
         };
         engine
-            .validate_and_apply(1, &first, b"d1".to_vec())
+            .validate_and_apply(
+                1,
+                nodedb_crdt::CrdtAuthContext::default(),
+                &first,
+                b"d1".to_vec(),
+            )
             .unwrap();
 
         // Second write with same email should fail.
@@ -303,7 +319,12 @@ mod tests {
         };
         assert!(
             engine
-                .validate_and_apply(2, &second, b"d2".to_vec())
+                .validate_and_apply(
+                    2,
+                    nodedb_crdt::CrdtAuthContext::default(),
+                    &second,
+                    b"d2".to_vec()
+                )
                 .is_err()
         );
         assert_eq!(engine.dlq_len(), 1);

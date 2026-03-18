@@ -105,8 +105,13 @@ mod tests {
                 ("age".into(), LoroValue::I64(30)),
             ],
         };
-        crdt.validate_and_apply(1, &change, b"delta".to_vec())
-            .unwrap();
+        crdt.validate_and_apply(
+            1,
+            nodedb_crdt::CrdtAuthContext::default(),
+            &change,
+            b"delta".to_vec(),
+        )
+        .unwrap();
 
         let doc_engine = CrdtDocumentEngine::new(&mut crdt);
         let doc = doc_engine.get("users", "u1").expect("should exist");
@@ -124,16 +129,26 @@ mod tests {
             row_id: "u1".into(),
             fields: vec![("name".into(), LoroValue::String("Alice".into()))],
         };
-        crdt.validate_and_apply(1, &change1, b"d1".to_vec())
-            .unwrap();
+        crdt.validate_and_apply(
+            1,
+            nodedb_crdt::CrdtAuthContext::default(),
+            &change1,
+            b"d1".to_vec(),
+        )
+        .unwrap();
 
         let change2 = ProposedChange {
             collection: "users".into(),
             row_id: "u1".into(),
             fields: vec![("name".into(), LoroValue::String("Bob".into()))],
         };
-        crdt.validate_and_apply(1, &change2, b"d2".to_vec())
-            .unwrap();
+        crdt.validate_and_apply(
+            1,
+            nodedb_crdt::CrdtAuthContext::default(),
+            &change2,
+            b"d2".to_vec(),
+        )
+        .unwrap();
 
         let doc_engine = CrdtDocumentEngine::new(&mut crdt);
         let doc = doc_engine.get("users", "u1").expect("should exist");

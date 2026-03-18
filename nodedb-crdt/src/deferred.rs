@@ -15,6 +15,12 @@ pub struct DeferredEntry {
     /// The peer that produced this delta.
     pub peer_id: u64,
 
+    /// The authenticated user_id that submitted this delta (0 = unauthenticated).
+    pub user_id: u64,
+
+    /// The tenant this delta belongs to (0 = system).
+    pub tenant_id: u32,
+
     /// The raw delta bytes.
     pub delta: Vec<u8>,
 
@@ -72,6 +78,8 @@ impl DeferredQueue {
     pub fn enqueue(
         &mut self,
         peer_id: u64,
+        user_id: u64,
+        tenant_id: u32,
         delta: Vec<u8>,
         collection: String,
         constraint_name: String,
@@ -87,6 +95,8 @@ impl DeferredQueue {
         let entry = DeferredEntry {
             id,
             peer_id,
+            user_id,
+            tenant_id,
             delta,
             collection,
             constraint_name,
@@ -185,6 +195,8 @@ mod tests {
         // Enqueue an entry ready to retry at now + 500ms
         queue.enqueue(
             42,
+            0,
+            0,
             b"delta".to_vec(),
             "posts".to_string(),
             "posts_author_fk".to_string(),
@@ -213,6 +225,8 @@ mod tests {
         // Enqueue with TTL of 10 seconds
         queue.enqueue(
             42,
+            0,
+            0,
             b"delta".to_vec(),
             "posts".to_string(),
             "posts_author_fk".to_string(),
@@ -241,6 +255,8 @@ mod tests {
         // Enqueue initial entry
         let id = queue.enqueue(
             42,
+            0,
+            0,
             b"delta".to_vec(),
             "posts".to_string(),
             "posts_author_fk".to_string(),
@@ -284,6 +300,8 @@ mod tests {
         // Enqueue with max_retries=3
         queue.enqueue(
             42,
+            0,
+            0,
             b"delta".to_vec(),
             "posts".to_string(),
             "posts_author_fk".to_string(),
@@ -318,6 +336,8 @@ mod tests {
         for i in 0..3 {
             queue.enqueue(
                 40 + i,
+                0,
+                0,
                 format!("delta{}", i).into_bytes(),
                 "posts".to_string(),
                 "posts_author_fk".to_string(),
@@ -347,6 +367,8 @@ mod tests {
 
         queue.enqueue(
             1,
+            0,
+            0,
             b"d1".to_vec(),
             "c".into(),
             "cn".into(),
@@ -358,6 +380,8 @@ mod tests {
         );
         queue.enqueue(
             2,
+            0,
+            0,
             b"d2".to_vec(),
             "c".into(),
             "cn".into(),
@@ -373,6 +397,8 @@ mod tests {
         // Capacity is 2, so this still works (no error checking in enqueue)
         queue.enqueue(
             3,
+            0,
+            0,
             b"d3".to_vec(),
             "c".into(),
             "cn".into(),
@@ -392,6 +418,8 @@ mod tests {
 
         queue.enqueue(
             1,
+            0,
+            0,
             b"d1".to_vec(),
             "c".into(),
             "cn".into(),
@@ -403,6 +431,8 @@ mod tests {
         );
         queue.enqueue(
             2,
+            0,
+            0,
             b"d2".to_vec(),
             "c".into(),
             "cn".into(),
