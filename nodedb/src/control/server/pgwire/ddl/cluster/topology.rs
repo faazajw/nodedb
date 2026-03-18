@@ -20,10 +20,6 @@ pub(super) fn node_state_str(state: nodedb_cluster::NodeState) -> &'static str {
     }
 }
 
-fn encode_err(e: pgwire::error::PgWireError) -> pgwire::error::PgWireError {
-    e
-}
-
 /// SHOW NODES — list all cluster members with state.
 ///
 /// Superuser only.
@@ -64,19 +60,17 @@ pub fn show_nodes(
     nodes.sort_by_key(|n| n.node_id);
 
     for node in nodes {
-        encoder
-            .encode_field(&(node.node_id as i64))
-            .map_err(encode_err)?;
-        encoder.encode_field(&node.addr).map_err(encode_err)?;
+        encoder.encode_field(&(node.node_id as i64))?;
+        encoder.encode_field(&node.addr)?;
         let state_str = node_state_str(node.state);
-        encoder.encode_field(&state_str).map_err(encode_err)?;
+        encoder.encode_field(&state_str)?;
         let groups_str: String = node
             .raft_groups
             .iter()
             .map(|g| g.to_string())
             .collect::<Vec<_>>()
             .join(", ");
-        encoder.encode_field(&groups_str).map_err(encode_err)?;
+        encoder.encode_field(&groups_str)?;
         rows.push(Ok(encoder.take_row()));
     }
 
@@ -150,8 +144,8 @@ pub fn show_node(
     ];
 
     for (key, value) in &props {
-        encoder.encode_field(key).map_err(encode_err)?;
-        encoder.encode_field(value).map_err(encode_err)?;
+        encoder.encode_field(key)?;
+        encoder.encode_field(value)?;
         rows.push(Ok(encoder.take_row()));
     }
 
@@ -251,8 +245,8 @@ pub fn show_cluster(
     }
 
     for (key, value) in &props {
-        encoder.encode_field(key).map_err(encode_err)?;
-        encoder.encode_field(value).map_err(encode_err)?;
+        encoder.encode_field(key)?;
+        encoder.encode_field(value)?;
         rows.push(Ok(encoder.take_row()));
     }
 

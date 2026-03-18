@@ -12,10 +12,6 @@ use crate::control::state::SharedState;
 use super::super::super::types::{int8_field, sqlstate_error, text_field};
 use super::topology::node_state_str;
 
-fn encode_err(e: pgwire::error::PgWireError) -> pgwire::error::PgWireError {
-    e
-}
-
 /// SHOW PEER HEALTH — circuit breaker state for all known peers.
 ///
 /// Superuser only.
@@ -68,22 +64,18 @@ pub fn show_peer_health(
     nodes.sort_by_key(|n| n.node_id);
 
     for node in nodes {
-        encoder
-            .encode_field(&(node.node_id as i64))
-            .map_err(encode_err)?;
-        encoder.encode_field(&node.addr).map_err(encode_err)?;
+        encoder.encode_field(&(node.node_id as i64))?;
+        encoder.encode_field(&node.addr)?;
         let state_str = node_state_str(node.state);
-        encoder.encode_field(&state_str).map_err(encode_err)?;
+        encoder.encode_field(&state_str)?;
         let circuit = cb.state(node.node_id);
         let circuit_str = match circuit {
             nodedb_cluster::circuit_breaker::CircuitState::Closed => "closed",
             nodedb_cluster::circuit_breaker::CircuitState::Open => "OPEN",
             nodedb_cluster::circuit_breaker::CircuitState::HalfOpen => "half-open",
         };
-        encoder.encode_field(&circuit_str).map_err(encode_err)?;
-        encoder
-            .encode_field(&(cb.failure_count(node.node_id) as i64))
-            .map_err(encode_err)?;
+        encoder.encode_field(&circuit_str)?;
+        encoder.encode_field(&(cb.failure_count(node.node_id) as i64))?;
         rows.push(Ok(encoder.take_row()));
     }
 

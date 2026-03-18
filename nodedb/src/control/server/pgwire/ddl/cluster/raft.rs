@@ -11,10 +11,6 @@ use crate::control::state::SharedState;
 
 use super::super::super::types::{int8_field, sqlstate_error, text_field};
 
-fn encode_err(e: pgwire::error::PgWireError) -> pgwire::error::PgWireError {
-    e
-}
-
 /// SHOW RAFT GROUPS — list all Raft groups with leader, term, and status.
 ///
 /// Superuser only.
@@ -56,26 +52,14 @@ pub fn show_raft_groups(
     let mut encoder = DataRowEncoder::new(schema.clone());
 
     for s in &statuses {
-        encoder
-            .encode_field(&(s.group_id as i64))
-            .map_err(encode_err)?;
-        encoder.encode_field(&s.role).map_err(encode_err)?;
-        encoder
-            .encode_field(&(s.leader_id as i64))
-            .map_err(encode_err)?;
-        encoder.encode_field(&(s.term as i64)).map_err(encode_err)?;
-        encoder
-            .encode_field(&(s.commit_index as i64))
-            .map_err(encode_err)?;
-        encoder
-            .encode_field(&(s.last_applied as i64))
-            .map_err(encode_err)?;
-        encoder
-            .encode_field(&(s.member_count as i64))
-            .map_err(encode_err)?;
-        encoder
-            .encode_field(&(s.vshard_count as i64))
-            .map_err(encode_err)?;
+        encoder.encode_field(&(s.group_id as i64))?;
+        encoder.encode_field(&s.role)?;
+        encoder.encode_field(&(s.leader_id as i64))?;
+        encoder.encode_field(&(s.term as i64))?;
+        encoder.encode_field(&(s.commit_index as i64))?;
+        encoder.encode_field(&(s.last_applied as i64))?;
+        encoder.encode_field(&(s.member_count as i64))?;
+        encoder.encode_field(&(s.vshard_count as i64))?;
         rows.push(Ok(encoder.take_row()));
     }
 
@@ -168,13 +152,13 @@ pub fn show_raft_group(
     }
 
     for (key, value) in &props {
-        encoder.encode_field(key).map_err(encode_err)?;
-        encoder.encode_field(value).map_err(encode_err)?;
+        encoder.encode_field(key)?;
+        encoder.encode_field(value)?;
         rows.push(Ok(encoder.take_row()));
     }
     for (key, value) in &extra_props {
-        encoder.encode_field(key).map_err(encode_err)?;
-        encoder.encode_field(value).map_err(encode_err)?;
+        encoder.encode_field(key)?;
+        encoder.encode_field(value)?;
         rows.push(Ok(encoder.take_row()));
     }
 

@@ -11,10 +11,6 @@ use crate::control::state::SharedState;
 
 use super::super::super::types::{int8_field, sqlstate_error, text_field};
 
-fn encode_err(e: pgwire::error::PgWireError) -> pgwire::error::PgWireError {
-    e
-}
-
 /// SHOW MIGRATIONS — list active and recent migrations.
 ///
 /// Superuser only.
@@ -52,15 +48,11 @@ pub fn show_migrations(
     let mut encoder = DataRowEncoder::new(schema.clone());
 
     for s in &snapshots {
-        encoder
-            .encode_field(&(s.vshard_id as i64))
-            .map_err(encode_err)?;
-        encoder.encode_field(&s.phase).map_err(encode_err)?;
-        encoder
-            .encode_field(&(s.elapsed_ms as i64))
-            .map_err(encode_err)?;
+        encoder.encode_field(&(s.vshard_id as i64))?;
+        encoder.encode_field(&s.phase)?;
+        encoder.encode_field(&(s.elapsed_ms as i64))?;
         let active_str = if s.is_active { "yes" } else { "no" };
-        encoder.encode_field(&active_str).map_err(encode_err)?;
+        encoder.encode_field(&active_str)?;
         rows.push(Ok(encoder.take_row()));
     }
 
