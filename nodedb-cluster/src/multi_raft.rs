@@ -335,6 +335,11 @@ impl MultiRaft {
         Ok(())
     }
 
+    /// Query a peer's match_index from a specific Raft group's leader state.
+    pub fn match_index_for(&self, group_id: u64, peer: u64) -> Option<u64> {
+        self.groups.get(&group_id)?.match_index_for(peer)
+    }
+
     /// Snapshot of all Raft group states for observability.
     pub fn group_statuses(&self) -> Vec<GroupStatus> {
         let mut statuses = Vec::with_capacity(self.groups.len());

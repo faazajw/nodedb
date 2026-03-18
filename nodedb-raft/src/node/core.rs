@@ -161,6 +161,14 @@ impl<S: LogStorage> RaftNode<S> {
         self.volatile.last_applied = applied_to;
     }
 
+    /// Query a peer's match_index from the leader's replication state.
+    /// Returns None if this node is not the leader or the peer is unknown.
+    pub fn match_index_for(&self, peer: u64) -> Option<u64> {
+        self.leader_state
+            .as_ref()
+            .map(|ls| ls.match_index_for(peer))
+    }
+
     pub fn log_snapshot_index(&self) -> u64 {
         self.log.snapshot_index()
     }
