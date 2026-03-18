@@ -22,6 +22,7 @@ const ROUTING_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("_clust
 const METADATA_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("_cluster.metadata");
 
 const KEY_TOPOLOGY: &str = "topology";
+const KEY_CA_CERT: &str = "ca_cert";
 const KEY_ROUTING: &str = "routing";
 const KEY_CLUSTER_ID: &str = "cluster_id";
 
@@ -163,6 +164,31 @@ impl ClusterCatalog {
     /// Check if this catalog has been bootstrapped (has a cluster_id).
     pub fn is_bootstrapped(&self) -> Result<bool> {
         self.load_cluster_id().map(|id| id.is_some())
+    }
+
+    // ── TLS Certificates ────────────────────────────────────────────
+
+    /// Store the cluster CA certificate (DER-encoded).
+    pub fn save_ca_cert(&self, ca_cert_der: &[u8]) -> Result<()> {
+        let txn = self.db.begin_write().map_err(catalog_err)?;
+        {
+            let mut table = txn.open_table(METADATA_TABLE).map_err(catalog_err)?;
+            table
+                .insert(KEY_CA_CERT, ca_cert_der)
+                .map_err(catalog_err)?;
+        }
+        txn.commit().map_err(catalog_err)?;
+        Ok(())
+    }
+
+    /// Load the cluster CA certificate. Returns None if not bootstrapped.
+    pub fn load_ca_cert(&self) -> Result<Option<Vec<u8>>> {
+        let txn = self.db.begin_read().map_err(catalog_err)?;
+        let table = txn.open_table(METADATA_TABLE).map_err(catalog_err)?;
+        match table.get(KEY_CA_CERT).map_err(catalog_err)? {
+            Some(guard) => Ok(Some(guard.value().to_vec())),
+            None => Ok(None),
+        }
     }
 }
 
