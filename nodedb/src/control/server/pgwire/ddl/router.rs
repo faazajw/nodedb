@@ -75,6 +75,9 @@ pub fn dispatch(
     if upper.starts_with("ALTER RAFT GROUP ") {
         return Some(super::cluster::alter_raft_group(state, identity, &parts));
     }
+    if upper.starts_with("SHOW MIGRATIONS") {
+        return Some(super::cluster::show_migrations(state, identity));
+    }
     if upper.starts_with("SHOW PEER HEALTH") {
         return Some(super::cluster::show_peer_health(state, identity));
     }

@@ -68,6 +68,9 @@ pub struct SharedState {
 
     /// Query Raft group statuses for observability (None in single-node mode).
     pub raft_status_fn: Option<Arc<dyn Fn() -> Vec<nodedb_cluster::GroupStatus> + Send + Sync>>,
+
+    /// Migration tracker for observability (None in single-node mode).
+    pub migration_tracker: Option<Arc<nodedb_cluster::MigrationTracker>>,
 }
 
 impl SharedState {
@@ -90,6 +93,7 @@ impl SharedState {
             propose_tracker: None,
             raft_proposer: None,
             raft_status_fn: None,
+            migration_tracker: None,
         })
     }
 
@@ -140,6 +144,7 @@ impl SharedState {
             propose_tracker: None,
             raft_proposer: None,
             raft_status_fn: None,
+            migration_tracker: None,
         }))
     }
 

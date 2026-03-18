@@ -213,6 +213,14 @@ impl MigrationState {
     pub fn elapsed(&self) -> Option<std::time::Duration> {
         self.started_at.map(|s| s.elapsed())
     }
+
+    pub fn vshard_id(&self) -> u16 {
+        self.vshard_id
+    }
+
+    pub fn phase(&self) -> &MigrationPhase {
+        &self.phase
+    }
 }
 
 #[cfg(test)]
