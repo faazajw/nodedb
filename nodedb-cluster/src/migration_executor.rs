@@ -17,6 +17,7 @@ use tracing::{debug, info};
 
 use crate::conf_change::{ConfChange, ConfChangeType};
 use crate::error::{ClusterError, Result};
+use crate::ghost::{GhostStub, GhostTable};
 use crate::migration::{MigrationPhase, MigrationState};
 use crate::multi_raft::MultiRaft;
 use crate::routing::RoutingTable;
@@ -63,6 +64,7 @@ pub struct MigrationExecutor {
     routing: Arc<RwLock<RoutingTable>>,
     topology: Arc<RwLock<ClusterTopology>>,
     transport: Arc<NexarTransport>,
+    ghost_table: Arc<Mutex<GhostTable>>,
 }
 
 impl MigrationExecutor {
@@ -77,7 +79,13 @@ impl MigrationExecutor {
             routing,
             topology,
             transport,
+            ghost_table: Arc::new(Mutex::new(GhostTable::new())),
         }
+    }
+
+    /// Access the ghost table (for scatter-gather resolution).
+    pub fn ghost_table(&self) -> &Arc<Mutex<GhostTable>> {
+        &self.ghost_table
     }
 
     /// Execute a full 3-phase migration.
@@ -318,6 +326,18 @@ impl MigrationExecutor {
         // Install ghost stub on source so scatter-gather queries that arrive
         // before the client refreshes its routing table are transparently
         // forwarded to the new owner.
+        {
+            let mut ghosts = self.ghost_table.lock().unwrap_or_else(|p| p.into_inner());
+            ghosts.insert(GhostStub {
+                node_id: format!("vshard-{}", req.vshard_id),
+                target_shard: req.vshard_id,
+                refcount: 1,
+                created_at_ms: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64,
+            });
+        }
         debug!(
             vshard = req.vshard_id,
             target = req.target_node,
