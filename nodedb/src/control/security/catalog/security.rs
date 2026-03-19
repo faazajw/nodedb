@@ -216,6 +216,28 @@ impl SystemCatalog {
         write_txn.commit().map_err(|e| catalog_err("commit", e))
     }
 
+    pub fn delete_owner(
+        &self,
+        object_type: &str,
+        tenant_id: u32,
+        object_name: &str,
+    ) -> crate::Result<()> {
+        let key = owner_key(object_type, tenant_id, object_name);
+        let write_txn = self
+            .db
+            .begin_write()
+            .map_err(|e| catalog_err("write txn", e))?;
+        {
+            let mut table = write_txn
+                .open_table(OWNERS)
+                .map_err(|e| catalog_err("open owners", e))?;
+            table
+                .remove(key.as_str())
+                .map_err(|e| catalog_err("delete owner", e))?;
+        }
+        write_txn.commit().map_err(|e| catalog_err("commit", e))
+    }
+
     pub fn load_all_owners(&self) -> crate::Result<Vec<StoredOwner>> {
         let read_txn = self
             .db

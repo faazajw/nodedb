@@ -263,6 +263,27 @@ impl PermissionStore {
         Ok(())
     }
 
+    /// Remove an ownership record.
+    pub fn remove_owner(
+        &self,
+        object_type: &str,
+        tenant_id: TenantId,
+        object_name: &str,
+        catalog: Option<&SystemCatalog>,
+    ) -> crate::Result<()> {
+        let key = owner_key(object_type, tenant_id.as_u32(), object_name);
+
+        if let Some(catalog) = catalog {
+            catalog.delete_owner(object_type, tenant_id.as_u32(), object_name)?;
+        }
+
+        let mut owners = self.owners.write().map_err(|e| crate::Error::Internal {
+            detail: format!("owner store lock poisoned: {e}"),
+        })?;
+        owners.remove(&key);
+        Ok(())
+    }
+
     /// Get the owner of an object.
     pub fn get_owner(
         &self,
