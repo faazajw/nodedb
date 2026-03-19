@@ -215,12 +215,14 @@ async fn main() -> anyhow::Result<()> {
     let shared_http = Arc::clone(&shared);
     let http_auth_mode = config.auth.mode.clone();
     let http_listen = config.http_listen;
+    let http_tls = config.tls.clone();
     let shutdown_rx_http = shutdown_rx.clone();
     tokio::spawn(async move {
         if let Err(e) = nodedb::control::server::http::server::run(
             http_listen,
             shared_http,
             http_auth_mode,
+            http_tls.as_ref(),
             shutdown_rx_http,
         )
         .await
