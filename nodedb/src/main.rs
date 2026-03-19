@@ -43,19 +43,26 @@ fn build_tls_acceptor(
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Initialize tracing.
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .init();
-
-    // Load config.
+    // Load config first (needed for log format).
     let config = match std::env::args().nth(1) {
         Some(path) => ServerConfig::from_file(&PathBuf::from(path))?,
-        None => {
-            info!("no config file provided, using defaults");
-            ServerConfig::default()
-        }
+        None => ServerConfig::default(),
     };
+
+    // Initialize tracing with format from config.
+    let filter = EnvFilter::from_default_env();
+    if config.log_format == "json" {
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .json()
+            .init();
+    } else {
+        tracing_subscriber::fmt().with_env_filter(filter).init();
+    }
+
+    if std::env::args().nth(1).is_none() {
+        info!("no config file provided, using defaults");
+    }
 
     info!(
         listen = %config.listen,

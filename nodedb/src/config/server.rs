@@ -41,6 +41,14 @@ pub struct ServerConfig {
     /// Encryption at rest configuration. If present, WAL payloads are encrypted.
     #[serde(default)]
     pub encryption: Option<super::server::EncryptionSettings>,
+
+    /// Log output format: "text" (default, human-readable) or "json" (structured).
+    #[serde(default = "default_log_format")]
+    pub log_format: String,
+}
+
+fn default_log_format() -> String {
+    "text".into()
 }
 
 /// Encryption at rest settings.
@@ -77,6 +85,7 @@ impl Default for ServerConfig {
             auth: super::AuthConfig::default(),
             tls: None,
             encryption: None,
+            log_format: "text".into(),
         }
     }
 }
