@@ -14,6 +14,20 @@ use crate::bridge::envelope::{PhysicalPlan, Priority, Request, Status};
 use crate::control::server::http::auth::{ApiError, AppState, resolve_identity};
 use crate::types::{ReadConsistency, RequestId, TenantId, VShardId};
 
+/// Extract X-Request-Id from headers, or generate one.
+pub(super) fn extract_request_id(headers: &HeaderMap) -> u64 {
+    headers
+        .get("x-request-id")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or_else(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos() as u64
+        })
+}
+
 /// Default request deadline for HTTP API operations.
 const HTTP_DEADLINE: Duration = Duration::from_secs(30);
 
@@ -28,6 +42,17 @@ pub(super) async fn dispatch_plan(
     tenant_id: TenantId,
     collection: &str,
     plan: PhysicalPlan,
+) -> Result<Vec<u8>, ApiError> {
+    dispatch_plan_with_trace(state, tenant_id, collection, plan, 0).await
+}
+
+/// Dispatch a physical plan with trace ID and await the response.
+pub(super) async fn dispatch_plan_with_trace(
+    state: &AppState,
+    tenant_id: TenantId,
+    collection: &str,
+    plan: PhysicalPlan,
+    trace_id: u64,
 ) -> Result<Vec<u8>, ApiError> {
     let vshard_id = collection_vshard(collection);
     let request_id = RequestId::new(
@@ -44,7 +69,7 @@ pub(super) async fn dispatch_plan(
         plan,
         deadline: Instant::now() + HTTP_DEADLINE,
         priority: Priority::Normal,
-        trace_id: 0,
+        trace_id,
         consistency: ReadConsistency::Strong,
     };
 
@@ -126,8 +151,10 @@ pub async fn insert_document(
         value,
     };
 
+    let trace_id = extract_request_id(&headers);
     state.shared.tenant_request_start(identity.tenant_id);
-    let result = dispatch_plan(&state, identity.tenant_id, &collection, plan).await;
+    let result =
+        dispatch_plan_with_trace(&state, identity.tenant_id, &collection, plan, trace_id).await;
     state.shared.tenant_request_end(identity.tenant_id);
 
     result?;

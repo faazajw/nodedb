@@ -195,6 +195,22 @@ impl SessionStore {
         sessions.remove(addr);
     }
 
+    /// List all active sessions as (peer_address, transaction_state) pairs.
+    pub fn all_sessions(&self) -> Vec<(String, String)> {
+        let sessions = self.sessions.read().unwrap_or_else(|p| p.into_inner());
+        sessions
+            .iter()
+            .map(|(addr, session)| {
+                let tx = match session.tx_state {
+                    TransactionState::Idle => "idle",
+                    TransactionState::InBlock => "in_transaction",
+                    TransactionState::Failed => "failed",
+                };
+                (addr.to_string(), tx.to_string())
+            })
+            .collect()
+    }
+
     /// Number of active sessions.
     pub fn count(&self) -> usize {
         let sessions = self.sessions.read().unwrap_or_else(|p| p.into_inner());

@@ -445,6 +445,26 @@ impl NodeDbPgHandler {
             return self.handle_set(addr, sql_trimmed);
         }
 
+        // SHOW CONNECTIONS — list active pgwire sessions.
+        if upper == "SHOW CONNECTIONS" {
+            let schema = Arc::new(vec![
+                text_field("peer_address"),
+                text_field("transaction_state"),
+            ]);
+            let sessions = self.sessions.all_sessions();
+            let mut rows = Vec::with_capacity(sessions.len());
+            let mut encoder = DataRowEncoder::new(schema.clone());
+            for (addr_str, tx_state) in &sessions {
+                encoder.encode_field(addr_str)?;
+                encoder.encode_field(tx_state)?;
+                rows.push(Ok(encoder.take_row()));
+            }
+            return Ok(vec![Response::Query(QueryResponse::new(
+                schema,
+                futures::stream::iter(rows),
+            ))]);
+        }
+
         // SHOW commands — return session parameter values.
         if upper.starts_with("SHOW ")
             && !upper.starts_with("SHOW USERS")
@@ -460,6 +480,8 @@ impl NodeDbPgHandler {
             && !upper.starts_with("SHOW AUDIT")
             && !upper.starts_with("SHOW PERMISSIONS")
             && !upper.starts_with("SHOW GRANTS")
+            && upper != "SHOW CONNECTIONS"
+            && !upper.starts_with("SHOW INDEXES")
         {
             return self.handle_show(addr, sql_trimmed);
         }
