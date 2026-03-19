@@ -65,6 +65,12 @@ pub enum ReplicatedWrite {
         collection: String,
         vector_id: u32,
     },
+    SetVectorParams {
+        collection: String,
+        m: usize,
+        ef_construction: usize,
+        metric: String,
+    },
     CrdtApply {
         collection: String,
         document_id: String,
@@ -163,6 +169,17 @@ pub fn to_replicated_entry(
             collection: collection.clone(),
             vector_id: *vector_id,
         },
+        PhysicalPlan::SetVectorParams {
+            collection,
+            m,
+            ef_construction,
+            metric,
+        } => ReplicatedWrite::SetVectorParams {
+            collection: collection.clone(),
+            m: *m,
+            ef_construction: *ef_construction,
+            metric: metric.clone(),
+        },
         PhysicalPlan::CrdtApply {
             collection,
             document_id,
@@ -257,6 +274,17 @@ fn to_physical_plan(write: &ReplicatedWrite) -> PhysicalPlan {
         } => PhysicalPlan::VectorDelete {
             collection: collection.clone(),
             vector_id: *vector_id,
+        },
+        ReplicatedWrite::SetVectorParams {
+            collection,
+            m,
+            ef_construction,
+            metric,
+        } => PhysicalPlan::SetVectorParams {
+            collection: collection.clone(),
+            m: *m,
+            ef_construction: *ef_construction,
+            metric: metric.clone(),
         },
         ReplicatedWrite::CrdtApply {
             collection,

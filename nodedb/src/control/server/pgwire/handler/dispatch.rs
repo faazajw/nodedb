@@ -261,7 +261,23 @@ impl NodeDbPgHandler {
                 self.state.wal.append_delete(tenant_id, vshard_id, &entry)?;
                 return Ok(());
             }
-            // Read operations, DDL, and control commands: no WAL needed.
+            PhysicalPlan::SetVectorParams {
+                collection,
+                m,
+                ef_construction,
+                metric,
+            } => {
+                let entry =
+                    rmp_serde::to_vec(&(collection, m, ef_construction, metric)).map_err(|e| {
+                        crate::Error::Serialization {
+                            format: "msgpack".into(),
+                            detail: format!("wal set vector params: {e}"),
+                        }
+                    })?;
+                self.state.wal.append_put(tenant_id, vshard_id, &entry)?;
+                return Ok(());
+            }
+            // Read operations and control commands: no WAL needed.
             _ => {}
         }
         Ok(())
