@@ -4,16 +4,15 @@
 //! - `SELECT crdt_apply('collection', 'doc_id', 'delta_hex')` → apply CRDT delta
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use futures::stream;
 use pgwire::api::results::{DataRowEncoder, QueryResponse, Response};
 use pgwire::error::PgWireResult;
 
-use crate::bridge::envelope::{PhysicalPlan, Priority, Request, Status};
+use crate::bridge::envelope::PhysicalPlan;
 use crate::control::security::identity::AuthenticatedIdentity;
 use crate::control::state::SharedState;
-use crate::types::{ReadConsistency, RequestId, VShardId};
 
 use super::super::types::{hex_decode, sqlstate_error, text_field};
 
@@ -68,7 +67,9 @@ pub fn crdt_state(
     };
 
     // Synchronous dispatch via the blocking bridge.
-    let result = dispatch_sync(state, tenant_id, collection, plan)?;
+    let result =
+        super::sync_dispatch::dispatch_sync(state, tenant_id, collection, plan, CRDT_DEADLINE)
+            .map_err(|e| sqlstate_error("XX000", &e))?;
 
     let schema = Arc::new(vec![text_field("crdt_state")]);
     let mut encoder = DataRowEncoder::new(schema.clone());
@@ -124,7 +125,8 @@ pub fn crdt_apply(
         peer_id: identity.user_id,
     };
 
-    dispatch_sync(state, tenant_id, collection, plan)?;
+    super::sync_dispatch::dispatch_sync(state, tenant_id, collection, plan, CRDT_DEADLINE)
+        .map_err(|e| sqlstate_error("XX000", &e))?;
 
     let schema = Arc::new(vec![text_field("result")]);
     let mut encoder = DataRowEncoder::new(schema.clone());
@@ -137,60 +139,4 @@ pub fn crdt_apply(
         schema,
         stream::iter(vec![Ok(row)]),
     ))])
-}
-
-/// Synchronous dispatch helper for DDL context (blocking on oneshot).
-fn dispatch_sync(
-    state: &SharedState,
-    tenant_id: crate::types::TenantId,
-    collection: &str,
-    plan: PhysicalPlan,
-) -> PgWireResult<Vec<u8>> {
-    let vshard_id = VShardId::from_collection(collection);
-    let request_id = RequestId::new(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos() as u64,
-    );
-
-    let request = Request {
-        request_id,
-        tenant_id,
-        vshard_id,
-        plan,
-        deadline: Instant::now() + CRDT_DEADLINE,
-        priority: Priority::Normal,
-        trace_id: 0,
-        consistency: ReadConsistency::Strong,
-    };
-
-    let rx = state.tracker.register(request_id);
-
-    match state.dispatcher.lock() {
-        Ok(mut d) => d
-            .dispatch(request)
-            .map_err(|e| sqlstate_error("XX000", &e.to_string()))?,
-        Err(p) => p
-            .into_inner()
-            .dispatch(request)
-            .map_err(|e| sqlstate_error("XX000", &e.to_string()))?,
-    };
-
-    // Block on the response (this is in an async context but DDL dispatch
-    // uses sync patterns — the response arrives quickly from the Data Plane).
-    let resp = rx
-        .blocking_recv()
-        .map_err(|_| sqlstate_error("XX000", "response channel closed"))?;
-
-    if resp.status != Status::Ok {
-        let detail = resp
-            .error_code
-            .as_ref()
-            .map(|c| format!("{c:?}"))
-            .unwrap_or_else(|| String::from_utf8_lossy(&resp.payload).into_owned());
-        return Err(sqlstate_error("XX000", &detail));
-    }
-
-    Ok(resp.payload.to_vec())
 }

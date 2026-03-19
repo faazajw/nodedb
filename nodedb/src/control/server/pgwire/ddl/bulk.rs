@@ -4,15 +4,14 @@
 //! Each line/record becomes a document. The first column or "id" field is the doc ID.
 
 use std::io::BufRead;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use pgwire::api::results::{Response, Tag};
 use pgwire::error::PgWireResult;
 
-use crate::bridge::envelope::{PhysicalPlan, Priority, Request, Status};
+use crate::bridge::envelope::PhysicalPlan;
 use crate::control::security::identity::AuthenticatedIdentity;
 use crate::control::state::SharedState;
-use crate::types::{ReadConsistency, RequestId, VShardId};
 
 use super::super::types::sqlstate_error;
 use super::user::extract_quoted_string;
@@ -52,7 +51,6 @@ pub fn copy_from(
         .unwrap_or_else(|| "ndjson".into());
 
     let tenant_id = identity.tenant_id;
-    let vshard_id = VShardId::from_collection(collection);
 
     // Open file.
     let file = std::fs::File::open(&path)
@@ -95,7 +93,15 @@ pub fn copy_from(
                     value,
                 };
 
-                if dispatch_sync(state, tenant_id, vshard_id, plan).is_ok() {
+                if super::sync_dispatch::dispatch_sync(
+                    state,
+                    tenant_id,
+                    collection,
+                    plan,
+                    COPY_DEADLINE,
+                )
+                .is_ok()
+                {
                     count += 1;
                 } else {
                     errors += 1;
@@ -156,7 +162,15 @@ pub fn copy_from(
                     value,
                 };
 
-                if dispatch_sync(state, tenant_id, vshard_id, plan).is_ok() {
+                if super::sync_dispatch::dispatch_sync(
+                    state,
+                    tenant_id,
+                    collection,
+                    plan,
+                    COPY_DEADLINE,
+                )
+                .is_ok()
+                {
                     count += 1;
                 } else {
                     errors += 1;
@@ -181,49 +195,4 @@ pub fn copy_from(
     Ok(vec![Response::Execution(Tag::new(&format!(
         "COPY {count}"
     )))])
-}
-
-fn dispatch_sync(
-    state: &SharedState,
-    tenant_id: crate::types::TenantId,
-    vshard_id: VShardId,
-    plan: PhysicalPlan,
-) -> Result<(), String> {
-    let request_id = RequestId::new(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos() as u64,
-    );
-
-    let request = Request {
-        request_id,
-        tenant_id,
-        vshard_id,
-        plan,
-        deadline: Instant::now() + COPY_DEADLINE,
-        priority: Priority::Normal,
-        trace_id: 0,
-        consistency: ReadConsistency::Strong,
-    };
-
-    let rx = state.tracker.register(request_id);
-
-    match state.dispatcher.lock() {
-        Ok(mut d) => d.dispatch(request).map_err(|e| e.to_string())?,
-        Err(p) => p
-            .into_inner()
-            .dispatch(request)
-            .map_err(|e| e.to_string())?,
-    };
-
-    let resp = rx
-        .blocking_recv()
-        .map_err(|_| "channel closed".to_string())?;
-
-    if resp.status != Status::Ok {
-        return Err(format!("{:?}", resp.error_code));
-    }
-
-    Ok(())
 }
