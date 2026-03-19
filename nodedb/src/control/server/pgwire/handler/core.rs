@@ -465,6 +465,30 @@ impl NodeDbPgHandler {
             ))]);
         }
 
+        // KILL CONNECTION '<address>' — terminate a session.
+        if upper.starts_with("KILL CONNECTION ") {
+            if !identity.is_superuser {
+                return Err(PgWireError::UserError(Box::new(ErrorInfo::new(
+                    "ERROR".to_owned(),
+                    "42501".to_owned(),
+                    "permission denied: only superuser can kill connections".to_owned(),
+                ))));
+            }
+            let target = sql_trimmed[16..]
+                .trim()
+                .trim_matches('\'')
+                .trim_matches('"');
+            if let Ok(target_addr) = target.parse::<std::net::SocketAddr>() {
+                self.sessions.remove(&target_addr);
+                return Ok(vec![Response::Execution(Tag::new("KILL"))]);
+            }
+            return Err(PgWireError::UserError(Box::new(ErrorInfo::new(
+                "ERROR".to_owned(),
+                "42601".to_owned(),
+                format!("invalid connection address: '{target}'. Use SHOW CONNECTIONS to list."),
+            ))));
+        }
+
         // SHOW commands — return session parameter values.
         if upper.starts_with("SHOW ")
             && !upper.starts_with("SHOW USERS")
