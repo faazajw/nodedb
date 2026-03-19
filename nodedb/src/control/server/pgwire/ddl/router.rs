@@ -181,6 +181,27 @@ pub fn dispatch(
         return Some(super::inspect::show_grants(state, identity, &parts));
     }
 
+    // DSL: SEARCH commands.
+    if upper.starts_with("SEARCH ") && upper.contains("USING VECTOR") {
+        return Some(super::dsl::search_vector(state, identity, sql));
+    }
+    if upper.starts_with("SEARCH ") && upper.contains("USING FUSION") {
+        return Some(super::dsl::search_fusion(state, identity, sql));
+    }
+
+    // DSL: CREATE VECTOR INDEX / CREATE FULLTEXT INDEX.
+    if upper.starts_with("CREATE VECTOR INDEX ") {
+        return Some(super::dsl::create_vector_index(state, identity, &parts));
+    }
+    if upper.starts_with("CREATE FULLTEXT INDEX ") {
+        return Some(super::dsl::create_fulltext_index(state, identity, &parts));
+    }
+
+    // DSL: CRDT MERGE INTO.
+    if upper.starts_with("CRDT MERGE ") {
+        return Some(super::dsl::crdt_merge(state, identity, &parts));
+    }
+
     // CRDT operations via SQL-like syntax.
     if upper.starts_with("SELECT CRDT_STATE(") || upper.starts_with("SELECT CRDT_STATE (") {
         return Some(super::crdt_ops::crdt_state(state, identity, sql));
