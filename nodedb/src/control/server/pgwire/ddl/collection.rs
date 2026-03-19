@@ -326,3 +326,55 @@ pub fn show_collections(
         stream::iter(rows),
     ))])
 }
+
+/// SHOW INDEXES [ON <collection>]
+///
+/// Lists indexes for the current tenant (optionally filtered by collection).
+pub fn show_indexes(
+    state: &SharedState,
+    identity: &AuthenticatedIdentity,
+    parts: &[&str],
+) -> PgWireResult<Vec<Response>> {
+    let tenant_id = identity.tenant_id;
+
+    // Parse optional ON <collection> filter.
+    let filter_collection = if parts.len() >= 4
+        && parts[1].eq_ignore_ascii_case("INDEXES")
+        && parts[2].eq_ignore_ascii_case("ON")
+    {
+        Some(parts[3])
+    } else {
+        None
+    };
+
+    let schema = Arc::new(vec![text_field("index_name"), text_field("owner")]);
+
+    // List all index owners for this tenant.
+    let indexes = state.permissions.list_owners("index", tenant_id);
+
+    let mut rows = Vec::new();
+    let mut encoder = DataRowEncoder::new(schema.clone());
+
+    for (index_name, owner) in &indexes {
+        // If filtering by collection, only show indexes whose name starts with the collection.
+        // Convention: index names are typically "<collection>_<field>_idx".
+        if let Some(coll) = filter_collection {
+            if !index_name.starts_with(coll) {
+                continue;
+            }
+        }
+
+        encoder
+            .encode_field(index_name)
+            .map_err(|e| sqlstate_error("XX000", &e.to_string()))?;
+        encoder
+            .encode_field(owner)
+            .map_err(|e| sqlstate_error("XX000", &e.to_string()))?;
+        rows.push(Ok(encoder.take_row()));
+    }
+
+    Ok(vec![Response::Query(QueryResponse::new(
+        schema,
+        stream::iter(rows),
+    ))])
+}

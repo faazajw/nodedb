@@ -95,6 +95,9 @@ pub fn dispatch(
     if upper.starts_with("DROP INDEX ") {
         return Some(super::collection::drop_index(state, identity, &parts));
     }
+    if upper.starts_with("SHOW INDEXES") || upper.starts_with("SHOW INDEX") {
+        return Some(super::collection::show_indexes(state, identity, &parts));
+    }
 
     // Ownership transfer.
     if upper.starts_with("ALTER COLLECTION ") && upper.contains("OWNER TO") {

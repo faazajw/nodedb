@@ -296,6 +296,24 @@ impl PermissionStore {
         owners.get(&key).cloned()
     }
 
+    /// List all objects of a given type owned in a tenant.
+    ///
+    /// Returns `(object_name, owner_username)` pairs.
+    pub fn list_owners(&self, object_type: &str, tenant_id: TenantId) -> Vec<(String, String)> {
+        let prefix = format!("{object_type}:{}:", tenant_id.as_u32());
+        let owners = match self.owners.read() {
+            Ok(o) => o,
+            Err(p) => p.into_inner(),
+        };
+        owners
+            .iter()
+            .filter_map(|(key, owner)| {
+                key.strip_prefix(&prefix)
+                    .map(|name| (name.to_string(), owner.clone()))
+            })
+            .collect()
+    }
+
     fn is_owner(&self, target: &str, username: &str) -> bool {
         let owners = match self.owners.read() {
             Ok(o) => o,
