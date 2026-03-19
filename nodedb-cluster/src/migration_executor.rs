@@ -238,6 +238,17 @@ impl MigrationExecutor {
             leader_commit, "phase 2: monitoring replication lag"
         );
 
+        // Capture the initial connection stable_id to the target.
+        // If this changes during catch-up, it means the connection was replaced
+        // (possible node crash + restart at same address), and we must abort.
+        let initial_stable_id = self.transport.peer_connection_stable_id(req.target_node);
+
+        // Also capture the target's address from topology for change detection.
+        let initial_target_addr = {
+            let topo = self.topology.read().unwrap_or_else(|p| p.into_inner());
+            topo.get_node(req.target_node).map(|n| n.addr.clone())
+        };
+
         // Poll until the target has caught up by checking the leader's
         // match_index for the target node. This confirms the target has
         // actually replicated the data, not just the leader's commit index.
@@ -247,6 +258,45 @@ impl MigrationExecutor {
 
         loop {
             tokio::time::sleep(poll_interval).await;
+
+            // Verify peer identity hasn't changed mid-transfer.
+            // Check 1: connection stable_id — detects QUIC connection replacement.
+            if let Some(initial_id) = initial_stable_id {
+                match self.transport.peer_connection_stable_id(req.target_node) {
+                    Some(current_id) if current_id != initial_id => {
+                        let reason = format!(
+                            "peer identity changed mid-migration: connection stable_id {} -> {} for node {}",
+                            initial_id, current_id, req.target_node
+                        );
+                        state.fail(reason.clone());
+                        return Err(ClusterError::Transport { detail: reason });
+                    }
+                    None => {
+                        // Connection dropped — peer may have crashed.
+                        let reason = format!(
+                            "connection to target node {} lost during migration",
+                            req.target_node
+                        );
+                        state.fail(reason.clone());
+                        return Err(ClusterError::Transport { detail: reason });
+                    }
+                    _ => {}
+                }
+            }
+
+            // Check 2: topology address — detects node replacement at different address.
+            {
+                let topo = self.topology.read().unwrap_or_else(|p| p.into_inner());
+                let current_addr = topo.get_node(req.target_node).map(|n| n.addr.clone());
+                if current_addr != initial_target_addr {
+                    let reason = format!(
+                        "target node {} address changed during migration: {:?} -> {:?}",
+                        req.target_node, initial_target_addr, current_addr
+                    );
+                    state.fail(reason.clone());
+                    return Err(ClusterError::Transport { detail: reason });
+                }
+            }
 
             let (leader_commit, target_match) = {
                 let mr = self.multi_raft.lock().unwrap_or_else(|p| p.into_inner());

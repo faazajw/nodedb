@@ -302,6 +302,22 @@ impl NexarTransport {
         Ok(rpc_codec::decode(&response_frame))
     }
 
+    /// Get the stable ID of the cached connection to a peer.
+    ///
+    /// Returns `None` if no connection is cached or the connection is closed.
+    /// Used during migrations to detect if the peer connection changed
+    /// (indicating possible node replacement).
+    pub fn peer_connection_stable_id(&self, target: u64) -> Option<usize> {
+        let peers = self.peers.read().unwrap_or_else(|p| p.into_inner());
+        peers.get(&target).and_then(|conn| {
+            if conn.close_reason().is_none() {
+                Some(conn.stable_id())
+            } else {
+                None
+            }
+        })
+    }
+
     /// Remove a cached connection (forces reconnect on next use).
     fn evict_peer(&self, target: u64) {
         let mut peers = self.peers.write().unwrap_or_else(|p| p.into_inner());
