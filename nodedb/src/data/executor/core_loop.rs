@@ -35,13 +35,13 @@ pub struct CoreLoop {
     pub(super) request_rx: Consumer<BridgeRequest>,
 
     /// SPSC channel: sends responses to Control Plane.
-    pub(super) response_tx: Producer<BridgeResponse>,
+    pub(crate) response_tx: Producer<BridgeResponse>,
 
     /// Pending tasks ordered by priority then arrival.
-    pub(super) task_queue: VecDeque<ExecutionTask>,
+    pub(crate) task_queue: VecDeque<ExecutionTask>,
 
     /// Current watermark LSN for this core's shard data.
-    pub(super) watermark: Lsn,
+    pub(crate) watermark: Lsn,
 
     /// redb-backed sparse/metadata engine for this core.
     pub(crate) sparse: SparseEngine,
@@ -955,10 +955,20 @@ mod tests {
         let resp = resp_rx.try_pop().unwrap();
         assert_eq!(resp.inner.status, Status::Ok);
 
-        let results: Vec<serde_json::Value> = serde_json::from_slice(&resp.inner.payload).unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&resp.inner.payload).unwrap();
+
+        // Response has top-level structure: { results: [...], metadata: {...} }
+        let results = body["results"].as_array().expect("results should be an array");
+        let metadata = body.get("metadata").expect("response should have metadata");
+
         // Should have results with rrf_score fields.
         assert!(!results.is_empty());
         assert!(results[0].get("rrf_score").is_some());
         assert!(results[0].get("node_id").is_some());
+
+        // Metadata should report expansion stats.
+        assert!(metadata.get("vector_candidates").is_some());
+        assert!(metadata.get("graph_expanded").is_some());
+        assert_eq!(metadata["truncated"], false);
     }
 }

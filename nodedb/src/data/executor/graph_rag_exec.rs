@@ -10,6 +10,14 @@
 //! 3. Graph-expanded result set is scored by hop distance.
 //! 4. RRF fuses vector_score and graph_score into unified ranking.
 //! 5. Final top-N results are materialized.
+//!
+//! # Memory Safety
+//!
+//! BFS expansion can produce massive intermediate result sets (supernodes
+//! with 100K+ edges fanning out to millions of nodes). All allocations
+//! are bounded by a per-query memory budget derived from the node count.
+//! If the budget is exceeded, expansion stops early and results are marked
+//! as truncated.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -20,6 +28,23 @@ use crate::engine::graph::edge_store::Direction;
 
 use super::core_loop::CoreLoop;
 use super::task::ExecutionTask;
+
+/// Maximum bytes a single GraphRAG BFS expansion may allocate for
+/// intermediate node tracking (visited set + distance map + queue).
+///
+/// Estimated at ~128 bytes per node (String key ~40 bytes + HashSet entry
+/// overhead + HashMap entry + VecDeque entry). At 256 KiB this allows
+/// ~2,000 expanded nodes which is generous for most GraphRAG queries.
+/// The `max_visited` parameter may impose a tighter limit.
+const BFS_MEMORY_BUDGET_BYTES: usize = 256 * 1024;
+
+/// Estimated per-node memory cost in the BFS working set.
+///
+/// Accounts for: String node ID (~40 bytes avg including heap allocation),
+/// HashSet<String> entry overhead (~24 bytes), HashMap<String, usize>
+/// entry overhead (~56 bytes), VecDeque<(String, usize)> entry (~48 bytes).
+/// Total: ~168 bytes, rounded up to 192 for alignment and safety.
+const BFS_BYTES_PER_NODE: usize = 192;
 
 impl CoreLoop {
     /// Execute a GraphRAG fusion query: vector search → graph expansion → RRF.
@@ -73,7 +98,7 @@ impl CoreLoop {
 
         // Step 2: Graph expansion — BFS from vector result IDs.
         let start_ids: Vec<&str> = vector_scores.keys().map(String::as_str).collect();
-        let (expanded_nodes, hop_distances) = self.bfs_with_distances(
+        let (expanded_nodes, hop_distances, bfs_truncated) = self.bfs_with_distances(
             &start_ids,
             edge_label.as_deref(),
             direction,
@@ -122,7 +147,7 @@ impl CoreLoop {
         fused.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         fused.truncate(final_top_k);
 
-        // Build response payload.
+        // Build response payload with metadata.
         let results: Vec<serde_json::Value> = fused
             .iter()
             .map(|(node_id, rrf_score)| {
@@ -141,7 +166,16 @@ impl CoreLoop {
             })
             .collect();
 
-        match serde_json::to_vec(&results) {
+        let response_body = serde_json::json!({
+            "results": results,
+            "metadata": {
+                "vector_candidates": vector_results.len(),
+                "graph_expanded": expanded_nodes.len(),
+                "truncated": bfs_truncated,
+            }
+        });
+
+        match serde_json::to_vec(&response_body) {
             Ok(payload) => self.response_with_payload(task, payload),
             Err(e) => {
                 warn!(core = self.core_id, error = %e, "graph rag fusion serialization failed");
@@ -157,7 +191,13 @@ impl CoreLoop {
 
     /// BFS traversal that also tracks hop distances from start nodes.
     ///
-    /// Returns (all_reachable_nodes, hop_distances_map).
+    /// Returns `(all_reachable_nodes, hop_distances_map, truncated)`.
+    ///
+    /// Expansion is bounded by three limits, whichever triggers first:
+    /// - `max_depth`: maximum BFS hop count from start nodes.
+    /// - `max_visited`: maximum number of nodes to visit.
+    /// - Memory budget: `BFS_MEMORY_BUDGET_BYTES` caps total working set
+    ///   to prevent OOM from supernode fan-out.
     fn bfs_with_distances(
         &self,
         start_nodes: &[&str],
@@ -165,10 +205,16 @@ impl CoreLoop {
         direction: Direction,
         max_depth: usize,
         max_visited: usize,
-    ) -> (Vec<String>, HashMap<String, usize>) {
-        let mut visited: HashSet<String> = HashSet::new();
-        let mut distances: HashMap<String, usize> = HashMap::new();
+    ) -> (Vec<String>, HashMap<String, usize>, bool) {
+        // Derive node limit from memory budget. The tighter of max_visited
+        // and the budget-derived limit wins.
+        let budget_node_limit = BFS_MEMORY_BUDGET_BYTES / BFS_BYTES_PER_NODE;
+        let effective_limit = max_visited.min(budget_node_limit);
+
+        let mut visited: HashSet<String> = HashSet::with_capacity(effective_limit.min(1024));
+        let mut distances: HashMap<String, usize> = HashMap::with_capacity(effective_limit.min(1024));
         let mut queue: VecDeque<(String, usize)> = VecDeque::new();
+        let mut truncated = false;
 
         for &node in start_nodes {
             let owned = node.to_string();
@@ -179,21 +225,45 @@ impl CoreLoop {
         }
 
         while let Some((node, depth)) = queue.pop_front() {
-            if depth >= max_depth || visited.len() >= max_visited {
+            if depth >= max_depth {
                 continue;
+            }
+
+            if visited.len() >= effective_limit {
+                truncated = true;
+                break;
             }
 
             let neighbors = self.csr.neighbors(&node, label_filter, direction);
             for (_, neighbor) in &neighbors {
+                if visited.len() >= effective_limit {
+                    truncated = true;
+                    break;
+                }
                 if !visited.contains(neighbor) {
                     visited.insert(neighbor.clone());
                     distances.insert(neighbor.clone(), depth + 1);
                     queue.push_back((neighbor.clone(), depth + 1));
                 }
             }
+
+            if truncated {
+                break;
+            }
+        }
+
+        if truncated {
+            warn!(
+                core = self.core_id,
+                visited = visited.len(),
+                limit = effective_limit,
+                budget_limit = budget_node_limit,
+                max_visited,
+                "GraphRAG BFS truncated: memory budget or max_visited reached"
+            );
         }
 
         let nodes: Vec<String> = visited.into_iter().collect();
-        (nodes, distances)
+        (nodes, distances, truncated)
     }
 }
