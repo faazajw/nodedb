@@ -44,6 +44,10 @@ pub(super) struct Node {
     /// Neighbors at each layer this node participates in.
     /// `neighbors[layer]` is the list of neighbor node IDs at that layer.
     pub neighbors: Vec<Vec<u32>>,
+    /// Tombstone flag. Soft-deleted nodes are excluded from search results
+    /// and neighbor selection, but remain in the graph for navigation.
+    /// This preserves graph connectivity without expensive restructuring.
+    pub deleted: bool,
 }
 
 /// Hierarchical Navigable Small World graph index.
@@ -133,14 +137,59 @@ impl HnswIndex {
         }
     }
 
-    /// Return the number of vectors stored in the index.
+    /// Return the total number of nodes (including tombstoned).
     pub fn len(&self) -> usize {
         self.nodes.len()
     }
 
-    /// Check whether the index contains no vectors.
+    /// Return the number of live (non-deleted) vectors.
+    pub fn live_count(&self) -> usize {
+        self.nodes.len() - self.tombstone_count()
+    }
+
+    /// Return the number of tombstoned (soft-deleted) vectors.
+    pub fn tombstone_count(&self) -> usize {
+        self.nodes.iter().filter(|n| n.deleted).count()
+    }
+
+    /// Tombstone ratio: fraction of nodes that are deleted.
+    /// High ratio (>0.3) indicates the index needs compaction.
+    pub fn tombstone_ratio(&self) -> f64 {
+        if self.nodes.is_empty() {
+            0.0
+        } else {
+            self.tombstone_count() as f64 / self.nodes.len() as f64
+        }
+    }
+
+    /// Check whether the index contains no live vectors.
     pub fn is_empty(&self) -> bool {
-        self.nodes.is_empty()
+        self.live_count() == 0
+    }
+
+    /// Soft-delete a vector by internal node ID.
+    ///
+    /// The node is marked as tombstoned: it is excluded from search results
+    /// and future neighbor selection, but its position in the graph is
+    /// preserved for navigation. This is O(1) — no graph restructuring.
+    ///
+    /// Returns `true` if the node was found and deleted, `false` if the ID
+    /// is out of range or already deleted.
+    pub fn delete(&mut self, id: u32) -> bool {
+        if let Some(node) = self.nodes.get_mut(id as usize) {
+            if node.deleted {
+                return false;
+            }
+            node.deleted = true;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Check whether a node is tombstoned.
+    pub fn is_deleted(&self, id: u32) -> bool {
+        self.nodes.get(id as usize).is_none_or(|n| n.deleted)
     }
 
     /// Return the vector dimensionality this index was created for.

@@ -28,6 +28,7 @@ impl HnswIndex {
         let node = Node {
             vector,
             neighbors: (0..=new_layer).map(|_| Vec::new()).collect(),
+            deleted: false,
         };
         self.nodes.push(node);
 

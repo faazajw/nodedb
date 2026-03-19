@@ -140,6 +140,11 @@ pub(super) fn search_layer(
     let mut results: BinaryHeap<Candidate> = BinaryHeap::new();
 
     let passes_filter = |id: u32| -> bool {
+        // Tombstoned nodes are always excluded from results (but still used
+        // for graph navigation — their edges remain intact for connectivity).
+        if index.nodes[id as usize].deleted {
+            return false;
+        }
         match filter {
             Some(f) => f.contains(id),
             None => true,
