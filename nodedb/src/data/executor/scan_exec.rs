@@ -61,15 +61,15 @@ impl CoreLoop {
                     }
                 };
 
-                // Apply filters.
+                // Apply filters using format-aware decoding (handles both
+                // MessagePack and legacy JSON blobs).
                 let filtered: Vec<_> = if filter_predicates.is_empty() {
                     docs
                 } else {
                     docs.into_iter()
                         .filter(|(_, value)| {
-                            let doc: serde_json::Value = match serde_json::from_slice(value) {
-                                Ok(v) => v,
-                                Err(_) => return false,
+                            let Some(doc) = super::doc_format::decode_document(value) else {
+                                return false;
                             };
                             filter_predicates.iter().all(|f| f.matches(&doc))
                         })
@@ -81,10 +81,10 @@ impl CoreLoop {
                 let mut sorted = filtered;
                 if !sort_keys.is_empty() {
                     sorted.sort_by(|(_, a_bytes), (_, b_bytes)| {
-                        let a_doc: serde_json::Value =
-                            serde_json::from_slice(a_bytes).unwrap_or(serde_json::Value::Null);
-                        let b_doc: serde_json::Value =
-                            serde_json::from_slice(b_bytes).unwrap_or(serde_json::Value::Null);
+                        let a_doc = super::doc_format::decode_document(a_bytes)
+                            .unwrap_or(serde_json::Value::Null);
+                        let b_doc = super::doc_format::decode_document(b_bytes)
+                            .unwrap_or(serde_json::Value::Null);
 
                         for (field, asc) in sort_keys {
                             let a_val = a_doc.get(field.as_str());
@@ -116,11 +116,8 @@ impl CoreLoop {
                     .skip(offset)
                     .take(limit)
                     .map(|(doc_id, value)| {
-                        let data: serde_json::Value = serde_json::from_slice(&value)
-                            .unwrap_or_else(|e| {
-                                warn!(error = %e, "corrupted document bytes");
-                                serde_json::Value::Null
-                            });
+                        let data = super::doc_format::decode_document(&value)
+                            .unwrap_or(serde_json::Value::Null);
                         serde_json::json!({"id": doc_id, "data": data})
                     })
                     .collect();

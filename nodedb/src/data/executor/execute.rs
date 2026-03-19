@@ -314,7 +314,9 @@ impl CoreLoop {
                 value,
             } => {
                 debug!(core = self.core_id, %collection, %document_id, "point put");
-                match self.sparse.put(tid, collection, document_id, value) {
+                // Convert JSON input to MessagePack for compact storage.
+                let stored = super::doc_format::json_to_msgpack(value);
+                match self.sparse.put(tid, collection, document_id, &stored) {
                     Ok(()) => self.response_ok(task),
                     Err(e) => self.response_error(
                         task,

@@ -34,7 +34,8 @@ impl CoreLoop {
     ) -> Response {
         debug!(core = self.core_id, %collection, group_fields = group_by.len(), aggs = aggregates.len(), "aggregate");
 
-        // Scan all documents.
+        // Single-pass: scan → deserialize once → filter → group in one iteration.
+        // Previous approach deserialized every document twice (filter pass + grouping pass).
         let fetch_limit = limit.max(10000);
         match self.sparse.scan_documents(tid, collection, fetch_limit) {
             Ok(docs) => {
@@ -44,29 +45,22 @@ impl CoreLoop {
                     serde_json::from_slice(filters).unwrap_or_default()
                 };
 
-                let filtered: Vec<_> = if filter_predicates.is_empty() {
-                    docs
-                } else {
-                    docs.into_iter()
-                        .filter(|(_, value)| {
-                            let doc: serde_json::Value = match serde_json::from_slice(value) {
-                                Ok(v) => v,
-                                Err(_) => return false,
-                            };
-                            filter_predicates.iter().all(|f| f.matches(&doc))
-                        })
-                        .collect()
-                };
-
-                // Group documents by composite key.
+                // Single-pass: deserialize → filter → group in one iteration.
                 let mut groups: std::collections::HashMap<String, Vec<serde_json::Value>> =
                     std::collections::HashMap::new();
 
-                for (_, value) in &filtered {
-                    let doc: serde_json::Value = match serde_json::from_slice(value) {
-                        Ok(v) => v,
-                        Err(_) => continue,
+                for (_, value) in &docs {
+                    let Some(doc) = super::doc_format::decode_document(value) else {
+                        continue;
                     };
+
+                    // Apply filter on the already-deserialized doc.
+                    if !filter_predicates.is_empty()
+                        && !filter_predicates.iter().all(|f| f.matches(&doc))
+                    {
+                        continue;
+                    }
+
                     let key = if group_by.is_empty() {
                         "__all__".to_string()
                     } else {
@@ -223,9 +217,8 @@ impl CoreLoop {
         let mut right_matched: std::collections::HashSet<String> = std::collections::HashSet::new();
 
         for (doc_id, value) in &right_docs {
-            let doc: serde_json::Value = match serde_json::from_slice(value) {
-                Ok(v) => v,
-                Err(_) => continue,
+            let Some(doc) = super::doc_format::decode_document(value) else {
+                continue;
             };
             let key_val = extract_key(&doc, &right_keys, doc_id);
             right_index.entry(key_val).or_default().push(doc);
@@ -261,9 +254,8 @@ impl CoreLoop {
             if results.len() >= limit {
                 break;
             }
-            let left_doc: serde_json::Value = match serde_json::from_slice(value) {
-                Ok(v) => v,
-                Err(_) => continue,
+            let Some(left_doc) = super::doc_format::decode_document(value) else {
+                continue;
             };
             let probe_key = extract_key(&left_doc, &left_keys, doc_id);
 
@@ -343,13 +335,13 @@ impl CoreLoop {
         debug!(core = self.core_id, %collection, %document_id, fields = updates.len(), "point update");
         match self.sparse.get(tid, collection, document_id) {
             Ok(Some(current_bytes)) => {
-                let mut doc: serde_json::Value = match serde_json::from_slice(&current_bytes) {
-                    Ok(v) => v,
-                    Err(e) => {
+                let mut doc = match super::doc_format::decode_document(&current_bytes) {
+                    Some(v) => v,
+                    None => {
                         return self.response_error(
                             task,
                             ErrorCode::Internal {
-                                detail: format!("failed to parse document for update: {e}"),
+                                detail: "failed to parse document for update".into(),
                             },
                         );
                     }
@@ -365,25 +357,17 @@ impl CoreLoop {
                         obj.insert(field.clone(), val);
                     }
                 }
-                match serde_json::to_vec(&doc) {
-                    Ok(updated_bytes) => {
-                        match self
-                            .sparse
-                            .put(tid, collection, document_id, &updated_bytes)
-                        {
-                            Ok(()) => self.response_ok(task),
-                            Err(e) => self.response_error(
-                                task,
-                                ErrorCode::Internal {
-                                    detail: e.to_string(),
-                                },
-                            ),
-                        }
-                    }
+                // Store back as MessagePack.
+                let updated_bytes = super::doc_format::encode_to_msgpack(&doc);
+                match self
+                    .sparse
+                    .put(tid, collection, document_id, &updated_bytes)
+                {
+                    Ok(()) => self.response_ok(task),
                     Err(e) => self.response_error(
                         task,
                         ErrorCode::Internal {
-                            detail: format!("failed to serialize updated document: {e}"),
+                            detail: e.to_string(),
                         },
                     ),
                 }
