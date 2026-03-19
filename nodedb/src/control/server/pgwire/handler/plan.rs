@@ -38,7 +38,8 @@ pub(super) fn extract_collection(plan: &PhysicalPlan) -> Option<&str> {
             ..
         }
         | PhysicalPlan::GraphRagFusion { collection, .. }
-        | PhysicalPlan::SetCollectionPolicy { collection, .. } => Some(collection.as_str()),
+        | PhysicalPlan::SetCollectionPolicy { collection, .. }
+        | PhysicalPlan::SetVectorParams { collection, .. } => Some(collection.as_str()),
         PhysicalPlan::EdgePut { .. }
         | PhysicalPlan::EdgeDelete { .. }
         | PhysicalPlan::GraphHop { .. }

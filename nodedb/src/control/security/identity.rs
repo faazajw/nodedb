@@ -176,7 +176,9 @@ pub fn required_permission(plan: &crate::bridge::envelope::PhysicalPlan) -> Perm
         | PhysicalPlan::WalAppend { .. } => Permission::Write,
 
         // DDL / schema changes.
-        PhysicalPlan::SetCollectionPolicy { .. } => Permission::Alter,
+        PhysicalPlan::SetCollectionPolicy { .. } | PhysicalPlan::SetVectorParams { .. } => {
+            Permission::Alter
+        }
 
         // Control operations.
         PhysicalPlan::Cancel { .. } => Permission::Admin,

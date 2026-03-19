@@ -86,6 +86,7 @@ pub fn search_vector(
         collection: collection.to_string(),
         query_vector: Arc::from(query_vector.as_slice()),
         top_k,
+        ef_search: 0,
         filter_bitmap,
     };
 

@@ -1,12 +1,14 @@
-//! Document mutation, aggregate, and join handlers for the Data Plane CoreLoop.
+//! Document mutation, aggregate, join, and vector-param handlers for the Data Plane CoreLoop.
 //!
 //! Extracted from `execute.rs` to keep that file under the 500-line limit.
-//! Handles `PhysicalPlan::Aggregate`, `PhysicalPlan::PointUpdate`, and
-//! `PhysicalPlan::HashJoin`.
+//! Handles `PhysicalPlan::Aggregate`, `PhysicalPlan::PointUpdate`,
+//! `PhysicalPlan::HashJoin`, and `PhysicalPlan::SetVectorParams`.
 
 use tracing::debug;
 
 use crate::bridge::envelope::{ErrorCode, Response};
+use crate::engine::vector::distance::DistanceMetric;
+use crate::engine::vector::hnsw::HnswParams;
 
 use super::core_loop::CoreLoop;
 use super::scan_filter::{ScanFilter, compute_aggregate};
@@ -27,6 +29,7 @@ impl CoreLoop {
         group_by: &[String],
         aggregates: &[(String, String)],
         filters: &[u8],
+        having: &[u8],
         limit: usize,
     ) -> Response {
         debug!(core = self.core_id, %collection, group_fields = group_by.len(), aggs = aggregates.len(), "aggregate");
@@ -105,6 +108,15 @@ impl CoreLoop {
                     }
 
                     results.push(serde_json::Value::Object(row));
+                }
+
+                // Apply HAVING filter (post-aggregation predicate).
+                if !having.is_empty() {
+                    let having_predicates: Vec<ScanFilter> =
+                        serde_json::from_slice(having).unwrap_or_default();
+                    if !having_predicates.is_empty() {
+                        results.retain(|row| having_predicates.iter().all(|f| f.matches(row)));
+                    }
                 }
 
                 // Apply limit.
@@ -384,5 +396,58 @@ impl CoreLoop {
                 },
             ),
         }
+    }
+
+    /// Set HNSW index parameters for a collection before the index is created.
+    ///
+    /// Parameters are immutable once an index exists — this call is rejected
+    /// if the collection already has a vector index.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn execute_set_vector_params(
+        &mut self,
+        task: &ExecutionTask,
+        tid: u32,
+        collection: &str,
+        m: usize,
+        ef_construction: usize,
+        metric: &str,
+    ) -> Response {
+        debug!(core = self.core_id, %collection, m, ef_construction, %metric, "set vector params");
+        let index_key = CoreLoop::vector_index_key(tid, collection);
+
+        // Reject if index already exists — params are immutable after creation.
+        if self.vector_indexes.contains_key(&index_key) {
+            return self.response_error(
+                task,
+                ErrorCode::RejectedConstraint {
+                    constraint: "cannot change HNSW params after index creation; drop and recreate the collection".into(),
+                },
+            );
+        }
+
+        let metric_enum = match metric {
+            "l2" | "euclidean" => DistanceMetric::L2,
+            "cosine" => DistanceMetric::Cosine,
+            "inner_product" | "ip" | "dot" => DistanceMetric::InnerProduct,
+            _ => {
+                return self.response_error(
+                    task,
+                    ErrorCode::RejectedConstraint {
+                        constraint: format!(
+                            "unknown metric '{metric}'; supported: l2, cosine, inner_product"
+                        ),
+                    },
+                );
+            }
+        };
+
+        let params = HnswParams {
+            m,
+            m0: m * 2,
+            ef_construction,
+            metric: metric_enum,
+        };
+        self.vector_params.insert(index_key, params);
+        self.response_ok(task)
     }
 }

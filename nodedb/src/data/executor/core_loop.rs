@@ -52,6 +52,10 @@ pub struct CoreLoop {
     /// Per-collection HNSW vector indexes, lazily initialized on first insert.
     pub(super) vector_indexes: HashMap<String, HnswIndex>,
 
+    /// Per-collection HNSW parameters set via DDL. If a collection has no
+    /// entry here, `HnswParams::default()` is used on first insert.
+    pub(super) vector_params: HashMap<String, crate::engine::vector::hnsw::HnswParams>,
+
     /// redb-backed graph edge storage for this core.
     pub(super) edge_store: EdgeStore,
 
@@ -89,6 +93,7 @@ impl CoreLoop {
             sparse,
             crdt_engines: HashMap::new(),
             vector_indexes: HashMap::new(),
+            vector_params: HashMap::new(),
             edge_store,
             csr,
             paused_vshards: std::collections::HashSet::new(),
@@ -705,6 +710,7 @@ mod tests {
                     collection: "embeddings".into(),
                     query_vector: Arc::from([5.0f32, 0.0, 0.0].as_slice()),
                     top_k: 3,
+                    ef_search: 0,
                     filter_bitmap: None,
                 }),
             })
@@ -730,6 +736,7 @@ mod tests {
                     collection: "nonexistent".into(),
                     query_vector: Arc::from([1.0f32, 0.0, 0.0].as_slice()),
                     top_k: 5,
+                    ef_search: 0,
                     filter_bitmap: None,
                 }),
             })

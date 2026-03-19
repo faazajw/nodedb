@@ -318,6 +318,7 @@ impl Session {
                     collection,
                     query_vector: Arc::from(query_vector.into_boxed_slice()),
                     top_k,
+                    ef_search: 0,
                     filter_bitmap: None,
                 }
             }

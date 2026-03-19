@@ -6,14 +6,16 @@
 use tracing::{debug, warn};
 
 use crate::bridge::envelope::{ErrorCode, PhysicalPlan, Response};
-use crate::engine::vector::hnsw::{HnswIndex, HnswParams};
+use crate::engine::vector::hnsw::HnswIndex;
 
 use super::core_loop::CoreLoop;
-use super::scan_filter::{ScanFilter, compare_json_values};
 use super::task::ExecutionTask;
 
 impl CoreLoop {
     /// Get or create a vector index, validating dimension compatibility.
+    ///
+    /// Uses per-collection HnswParams if set via DDL (`SetVectorParams`),
+    /// otherwise falls back to `HnswParams::default()`.
     fn get_or_create_vector_index(
         &mut self,
         tid: u32,
@@ -32,9 +34,14 @@ impl CoreLoop {
             }
         }
         let core_id = self.core_id;
+        let params = self
+            .vector_params
+            .get(&index_key)
+            .cloned()
+            .unwrap_or_default();
         Ok(self.vector_indexes.entry(index_key).or_insert_with(|| {
-            debug!(core = core_id, dim, "creating HNSW index");
-            HnswIndex::with_seed(dim, HnswParams::default(), core_id as u64 + 1)
+            debug!(core = core_id, dim, m = params.m, ef = params.ef_construction, ?params.metric, "creating HNSW index");
+            HnswIndex::with_seed(dim, params, core_id as u64 + 1)
         }))
     }
 
@@ -66,9 +73,10 @@ impl CoreLoop {
                 collection,
                 query_vector,
                 top_k,
+                ef_search,
                 filter_bitmap,
             } => {
-                debug!(core = self.core_id, %collection, top_k, "vector search");
+                debug!(core = self.core_id, %collection, top_k, ef_search, "vector search");
                 let index_key = CoreLoop::vector_index_key(tid, collection);
                 let Some(index) = self.vector_indexes.get(&index_key) else {
                     return self.response_error(task, ErrorCode::NotFound);
@@ -76,7 +84,12 @@ impl CoreLoop {
                 if index.is_empty() {
                     return self.response_with_payload(task, b"[]".to_vec());
                 }
-                let ef = top_k.saturating_mul(4).max(64);
+                // Use explicit ef_search if provided (non-zero), else default to 4*k.
+                let ef = if *ef_search > 0 {
+                    (*ef_search).max(*top_k)
+                } else {
+                    top_k.saturating_mul(4).max(64)
+                };
                 let results = match filter_bitmap {
                     Some(bitmap_bytes) => {
                         index.search_with_bitmap_bytes(query_vector, *top_k, ef, bitmap_bytes)
@@ -239,6 +252,15 @@ impl CoreLoop {
                 }
             }
 
+            PhysicalPlan::SetVectorParams {
+                collection,
+                m,
+                ef_construction,
+                metric,
+            } => {
+                self.execute_set_vector_params(task, tid, collection, *m, *ef_construction, metric)
+            }
+
             PhysicalPlan::VectorDelete {
                 collection,
                 vector_id,
@@ -331,110 +353,10 @@ impl CoreLoop {
                 offset,
                 sort_keys,
                 filters,
-            } => {
-                debug!(
-                    core = self.core_id,
-                    %collection,
-                    limit,
-                    offset,
-                    sort_fields = sort_keys.len(),
-                    "document scan"
-                );
-
-                // Fetch extra documents to account for filtering + offset.
-                let fetch_limit = (*limit + *offset).saturating_mul(2).max(1000);
-                match self.sparse.scan_documents(tid, collection, fetch_limit) {
-                    Ok(docs) => {
-                        // Parse filters if present.
-                        let filter_predicates: Vec<ScanFilter> = if filters.is_empty() {
-                            Vec::new()
-                        } else {
-                            match serde_json::from_slice(filters) {
-                                Ok(f) => f,
-                                Err(e) => {
-                                    warn!(core = self.core_id, error = %e, "failed to parse scan filters");
-                                    return self.response_error(
-                                        task,
-                                        ErrorCode::Internal {
-                                            detail: format!("malformed scan filters: {e}"),
-                                        },
-                                    );
-                                }
-                            }
-                        };
-
-                        // Apply filters.
-                        let filtered: Vec<_> = if filter_predicates.is_empty() {
-                            docs
-                        } else {
-                            docs.into_iter()
-                                .filter(|(_, value)| {
-                                    let doc: serde_json::Value = match serde_json::from_slice(value)
-                                    {
-                                        Ok(v) => v,
-                                        Err(_) => return false,
-                                    };
-                                    filter_predicates.iter().all(|f| f.matches(&doc))
-                                })
-                                .collect()
-                        };
-
-                        // Multi-field sort: compare by each key in order,
-                        // breaking ties with subsequent keys.
-                        let mut sorted = filtered;
-                        if !sort_keys.is_empty() {
-                            sorted.sort_by(|(_, a_bytes), (_, b_bytes)| {
-                                let a_doc: serde_json::Value = serde_json::from_slice(a_bytes)
-                                    .unwrap_or(serde_json::Value::Null);
-                                let b_doc: serde_json::Value = serde_json::from_slice(b_bytes)
-                                    .unwrap_or(serde_json::Value::Null);
-
-                                for (field, asc) in sort_keys {
-                                    let a_val = a_doc.get(field.as_str());
-                                    let b_val = b_doc.get(field.as_str());
-                                    let cmp = compare_json_values(a_val, b_val);
-                                    let ordered = if *asc { cmp } else { cmp.reverse() };
-                                    if ordered != std::cmp::Ordering::Equal {
-                                        return ordered;
-                                    }
-                                }
-                                std::cmp::Ordering::Equal
-                            });
-                        }
-
-                        // Apply offset + limit.
-                        let result: Vec<_> = sorted
-                            .into_iter()
-                            .skip(*offset)
-                            .take(*limit)
-                            .map(|(doc_id, value)| {
-                                let data: serde_json::Value = serde_json::from_slice(&value)
-                                    .unwrap_or_else(|e| {
-                                        tracing::warn!(error = %e, "corrupted document bytes");
-                                        serde_json::Value::Null
-                                    });
-                                serde_json::json!({"id": doc_id, "data": data})
-                            })
-                            .collect();
-
-                        match serde_json::to_vec(&result) {
-                            Ok(payload) => self.response_with_payload(task, payload),
-                            Err(e) => self.response_error(
-                                task,
-                                ErrorCode::Internal {
-                                    detail: e.to_string(),
-                                },
-                            ),
-                        }
-                    }
-                    Err(e) => self.response_error(
-                        task,
-                        ErrorCode::Internal {
-                            detail: e.to_string(),
-                        },
-                    ),
-                }
-            }
+                distinct,
+            } => self.execute_document_scan(
+                task, tid, collection, *limit, *offset, sort_keys, filters, *distinct,
+            ),
 
             PhysicalPlan::HashJoin {
                 left_collection,
@@ -457,10 +379,11 @@ impl CoreLoop {
                 group_by,
                 aggregates,
                 filters,
+                having,
                 limit,
-            } => {
-                self.execute_aggregate(task, tid, collection, group_by, aggregates, filters, *limit)
-            }
+            } => self.execute_aggregate(
+                task, tid, collection, group_by, aggregates, filters, having, *limit,
+            ),
 
             PhysicalPlan::EdgePut {
                 src_id,
