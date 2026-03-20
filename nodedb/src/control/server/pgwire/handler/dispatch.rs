@@ -345,6 +345,20 @@ impl NodeDbPgHandler {
 
             self.check_permission(identity, &task.plan)?;
 
+            // In transaction block: buffer write operations, dispatch reads immediately.
+            if self.sessions.transaction_state(addr)
+                == crate::control::server::pgwire::session::TransactionState::InBlock
+            {
+                let is_write = crate::control::wal_replication::to_replicated_entry(
+                    task.tenant_id, task.vshard_id, &task.plan,
+                ).is_some();
+                if is_write {
+                    self.sessions.buffer_write(addr, task);
+                    responses.push(Response::Execution(Tag::new("OK")));
+                    continue;
+                }
+            }
+
             let plan_kind = describe_plan(&task.plan);
             let resp = self.dispatch_task(task).await.map_err(|e| {
                 let (severity, code, message) = error_to_sqlstate(&e);
