@@ -219,6 +219,19 @@ pub enum PhysicalPlan {
         dim: usize,
     },
 
+    /// Multi-vector search: query across all named vector fields in a
+    /// collection and fuse results via per-field RRF.
+    ///
+    /// Each named field has its own HNSW index. Results from all fields
+    /// are scored independently, then merged using Reciprocal Rank Fusion.
+    VectorMultiSearch {
+        collection: String,
+        query_vector: Arc<[f32]>,
+        top_k: usize,
+        ef_search: usize,
+        filter_bitmap: Option<Arc<[u8]>>,
+    },
+
     /// Soft-delete a vector by internal node ID.
     VectorDelete { collection: String, vector_id: u32 },
 

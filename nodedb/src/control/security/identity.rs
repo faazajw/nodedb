@@ -152,6 +152,7 @@ pub fn required_permission(plan: &crate::bridge::envelope::PhysicalPlan) -> Perm
         PhysicalPlan::PointGet { .. }
         | PhysicalPlan::RangeScan { .. }
         | PhysicalPlan::VectorSearch { .. }
+        | PhysicalPlan::VectorMultiSearch { .. }
         | PhysicalPlan::CrdtRead { .. }
         | PhysicalPlan::GraphHop { .. }
         | PhysicalPlan::GraphNeighbors { .. }

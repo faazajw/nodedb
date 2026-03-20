@@ -45,6 +45,22 @@ impl CoreLoop {
                 dim,
             } => self.execute_vector_batch_insert(task, tid, collection, vectors, *dim),
 
+            PhysicalPlan::VectorMultiSearch {
+                collection,
+                query_vector,
+                top_k,
+                ef_search,
+                filter_bitmap,
+            } => self.execute_vector_multi_search(
+                task,
+                tid,
+                collection,
+                query_vector,
+                *top_k,
+                *ef_search,
+                filter_bitmap.as_ref(),
+            ),
+
             PhysicalPlan::VectorDelete {
                 collection,
                 vector_id,

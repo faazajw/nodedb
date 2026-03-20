@@ -174,6 +174,96 @@ impl CoreLoop {
         }
     }
 
+    /// Multi-vector search: query all named vector fields in a collection,
+    /// fuse results via RRF.
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::data::executor) fn execute_vector_multi_search(
+        &self,
+        task: &ExecutionTask,
+        tid: u32,
+        collection: &str,
+        query_vector: &[f32],
+        top_k: usize,
+        ef_search: usize,
+        filter_bitmap: Option<&std::sync::Arc<[u8]>>,
+    ) -> Response {
+        debug!(core = self.core_id, %collection, top_k, "vector multi-search");
+
+        // Find all indexes matching this tenant:collection pattern.
+        let prefix = format!("{tid}:{collection}:");
+        let plain_key = CoreLoop::vector_index_key(tid, collection, "");
+
+        let mut all_results: Vec<Vec<crate::engine::vector::hnsw::SearchResult>> = Vec::new();
+
+        for (key, index) in &self.vector_indexes {
+            if key == &plain_key || key.starts_with(&prefix) {
+                if index.is_empty() || index.dim() != query_vector.len() {
+                    continue;
+                }
+                let ef = if ef_search > 0 {
+                    ef_search.max(top_k)
+                } else {
+                    top_k.saturating_mul(4).max(64)
+                };
+                let results = match filter_bitmap {
+                    Some(bm) => index.search_with_bitmap_bytes(query_vector, top_k, ef, bm),
+                    None => index.search(query_vector, top_k, ef),
+                };
+                all_results.push(results);
+            }
+        }
+
+        if all_results.is_empty() {
+            return self.response_error(task, ErrorCode::NotFound);
+        }
+
+        // Single field — return directly.
+        if all_results.len() == 1 {
+            // Safety: len() == 1 checked above; use expect-free path anyway.
+            let Some(results) = all_results.into_iter().next() else {
+                return self.response_error(task, ErrorCode::NotFound);
+            };
+            let hits: Vec<_> = results
+                .iter()
+                .map(|r| super::super::response_codec::VectorSearchHit {
+                    id: r.id,
+                    distance: r.distance,
+                })
+                .collect();
+            return match super::super::response_codec::encode(&hits) {
+                Ok(payload) => self.response_with_payload(task, payload),
+                Err(e) => self.response_error(task, ErrorCode::Internal { detail: e }),
+            };
+        }
+
+        // RRF fusion across fields.
+        let rrf_k = 60.0_f64;
+        let mut fused: std::collections::HashMap<u32, f64> = std::collections::HashMap::new();
+        for results in &all_results {
+            for (rank, r) in results.iter().enumerate() {
+                *fused.entry(r.id).or_default() += 1.0 / (rrf_k + rank as f64 + 1.0);
+            }
+        }
+
+        let mut ranked: Vec<(u32, f64)> = fused.into_iter().collect();
+        ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        ranked.truncate(top_k);
+
+        let hits: Vec<_> = ranked
+            .iter()
+            .map(
+                |&(id, score)| super::super::response_codec::VectorSearchHit {
+                    id,
+                    distance: score as f32,
+                },
+            )
+            .collect();
+        match super::super::response_codec::encode(&hits) {
+            Ok(payload) => self.response_with_payload(task, payload),
+            Err(e) => self.response_error(task, ErrorCode::Internal { detail: e }),
+        }
+    }
+
     pub(in crate::data::executor) fn execute_set_vector_params(
         &mut self,
         task: &ExecutionTask,
