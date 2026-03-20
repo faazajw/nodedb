@@ -4,6 +4,7 @@ pub mod doc_exists;
 pub mod doc_get;
 pub(crate) mod nav;
 pub mod rrf_score;
+pub mod text_match;
 pub mod vector_distance;
 
 pub use bm25_score::Bm25Score;
@@ -11,4 +12,5 @@ pub use doc_array_contains::DocArrayContains;
 pub use doc_exists::DocExists;
 pub use doc_get::DocGet;
 pub use rrf_score::RrfScore;
+pub use text_match::TextMatch;
 pub use vector_distance::VectorDistance;

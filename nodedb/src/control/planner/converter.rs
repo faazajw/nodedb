@@ -7,8 +7,8 @@ use crate::types::{TenantId, VShardId};
 
 use super::extract::{expr_to_scan_filters, expr_to_usize, try_range_scan_from_predicate};
 use super::search::{
-    extract_table_name, try_extract_hybrid_search, try_extract_text_search,
-    try_extract_vector_search,
+    extract_table_name, try_extract_hybrid_search, try_extract_text_match_predicate,
+    try_extract_text_search, try_extract_vector_search,
 };
 
 /// Converts DataFusion logical plans into NodeDB physical tasks.
@@ -68,6 +68,23 @@ impl PlanConverter {
             }
 
             LogicalPlan::Filter(filter) => {
+                // Check for text_match() UDF in filter → TextSearch plan.
+                if let Some((collection, query_text)) =
+                    try_extract_text_match_predicate(&filter.predicate, &filter.input)
+                {
+                    let vshard = VShardId::from_collection(&collection);
+                    return Ok(vec![PhysicalTask {
+                        tenant_id,
+                        vshard_id: vshard,
+                        plan: PhysicalPlan::TextSearch {
+                            collection,
+                            query: query_text,
+                            top_k: 1000,
+                            fuzzy: true,
+                        },
+                    }]);
+                }
+
                 // Check if the filter predicate can be converted to a point get
                 // before recursing into the input.
                 if let LogicalPlan::TableScan(scan) = filter.input.as_ref() {

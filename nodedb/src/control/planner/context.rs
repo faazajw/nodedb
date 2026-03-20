@@ -26,7 +26,7 @@ impl QueryContext {
 
         // Register all NodeDB UDFs.
         use super::udf::{
-            Bm25Score, DocArrayContains, DocExists, DocGet, RrfScore, VectorDistance,
+            Bm25Score, DocArrayContains, DocExists, DocGet, RrfScore, TextMatch, VectorDistance,
         };
         use datafusion::logical_expr::ScalarUDF;
         session.register_udf(ScalarUDF::new_from_impl(DocGet::new()));
@@ -35,6 +35,7 @@ impl QueryContext {
         session.register_udf(ScalarUDF::new_from_impl(VectorDistance::new()));
         session.register_udf(ScalarUDF::new_from_impl(RrfScore::new()));
         session.register_udf(ScalarUDF::new_from_impl(Bm25Score::new()));
+        session.register_udf(ScalarUDF::new_from_impl(TextMatch::new()));
 
         Self {
             session,

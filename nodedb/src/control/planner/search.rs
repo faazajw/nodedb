@@ -157,6 +157,39 @@ pub(super) fn try_extract_hybrid_search(
     Ok(Some((collection, query_vector, query_text, top_k)))
 }
 
+/// Detect `WHERE text_match(field, 'query')` in a filter predicate.
+///
+/// Returns `(collection, query_text)` if the predicate (or any AND-branch)
+/// contains a `text_match()` call. Walks through AND conjunctions recursively.
+pub(super) fn try_extract_text_match_predicate(
+    predicate: &Expr,
+    input: &LogicalPlan,
+) -> Option<(String, String)> {
+    match predicate {
+        Expr::ScalarFunction(func) if func.name() == "text_match" => {
+            if func.args.len() < 2 {
+                return None;
+            }
+            let query_text = match &func.args[1] {
+                Expr::Literal(lit) => lit
+                    .to_string()
+                    .trim_matches('\'')
+                    .trim_matches('"')
+                    .to_string(),
+                _ => return None,
+            };
+            let collection = extract_table_name(input)?;
+            Some((collection, query_text))
+        }
+        Expr::BinaryExpr(binary) if binary.op == datafusion::logical_expr::Operator::And => {
+            // Check both branches.
+            try_extract_text_match_predicate(&binary.left, input)
+                .or_else(|| try_extract_text_match_predicate(&binary.right, input))
+        }
+        _ => None,
+    }
+}
+
 /// Detect `ORDER BY bm25_score(field, 'query') LIMIT k` and extract search parameters.
 ///
 /// Returns `(collection, query_text, top_k)` if the pattern matches.
