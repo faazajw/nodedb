@@ -326,6 +326,23 @@ impl NodeDbPgHandler {
 
         let mut responses = Vec::with_capacity(tasks.len());
         for task in tasks {
+            // Tenant isolation enforcement: every task MUST carry the
+            // authenticated session's tenant_id. The converter sets this
+            // from the identity, but we verify here as a defense-in-depth
+            // check against bugs in the converter or plan manipulation.
+            if task.tenant_id != tenant_id {
+                tracing::error!(
+                    expected = %tenant_id,
+                    actual = %task.tenant_id,
+                    "SECURITY: task tenant_id mismatch — rejecting"
+                );
+                return Err(PgWireError::UserError(Box::new(ErrorInfo::new(
+                    "ERROR".to_owned(),
+                    "42501".to_owned(),
+                    "tenant isolation violation: task targets wrong tenant".to_owned(),
+                ))));
+            }
+
             self.check_permission(identity, &task.plan)?;
 
             let plan_kind = describe_plan(&task.plan);
