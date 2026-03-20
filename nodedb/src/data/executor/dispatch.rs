@@ -251,6 +251,10 @@ impl CoreLoop {
             PhysicalPlan::Cancel { target_request_id } => {
                 self.execute_cancel(task, *target_request_id)
             }
+
+            PhysicalPlan::TransactionBatch { plans } => {
+                self.execute_transaction_batch(task, tid, plans)
+            }
         }
     }
 }

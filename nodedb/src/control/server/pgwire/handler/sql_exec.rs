@@ -86,15 +86,22 @@ impl NodeDbPgHandler {
                         })?;
                 }
 
-                for task in buffered {
-                    if let Err(e) = self.dispatch_task_no_wal(task).await {
-                        tracing::warn!(error = %e, "transaction task dispatch failed");
-                        return Err(PgWireError::UserError(Box::new(ErrorInfo::new(
-                            "ERROR".to_owned(),
-                            "40001".to_owned(),
-                            format!("transaction commit failed: {e}"),
-                        ))));
-                    }
+                // Dispatch all writes as a single TransactionBatch for
+                // atomic execution on the Data Plane.
+                let plans: Vec<crate::bridge::envelope::PhysicalPlan> =
+                    buffered.iter().map(|t| t.plan.clone()).collect();
+                let batch_task = crate::control::planner::physical::PhysicalTask {
+                    tenant_id,
+                    vshard_id,
+                    plan: crate::bridge::envelope::PhysicalPlan::TransactionBatch { plans },
+                };
+                if let Err(e) = self.dispatch_task_no_wal(batch_task).await {
+                    tracing::warn!(error = %e, "transaction batch dispatch failed");
+                    return Err(PgWireError::UserError(Box::new(ErrorInfo::new(
+                        "ERROR".to_owned(),
+                        "40001".to_owned(),
+                        format!("transaction commit failed: {e}"),
+                    ))));
                 }
             }
 
