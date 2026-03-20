@@ -13,7 +13,7 @@ use crate::engine::graph::csr::CsrIndex;
 use crate::engine::graph::edge_store::EdgeStore;
 use crate::engine::sparse::btree::SparseEngine;
 use crate::engine::sparse::inverted::InvertedIndex;
-use crate::engine::vector::hnsw::HnswIndex;
+use crate::engine::vector::collection::VectorCollection;
 use crate::types::{Lsn, TenantId};
 
 use super::task::{ExecutionTask, TaskState};
@@ -49,8 +49,13 @@ pub struct CoreLoop {
     /// Per-tenant CRDT engines, lazily initialized on first access.
     pub(in crate::data::executor) crdt_engines: HashMap<TenantId, TenantCrdtEngine>,
 
-    /// Per-collection HNSW vector indexes, lazily initialized on first insert.
-    pub(in crate::data::executor) vector_indexes: HashMap<String, HnswIndex>,
+    /// Per-collection vector collections, lazily initialized on first insert.
+    pub(in crate::data::executor) vector_collections: HashMap<String, VectorCollection>,
+
+    /// Background HNSW builder: send requests.
+    pub(in crate::data::executor) build_tx: Option<crate::engine::vector::builder::BuildSender>,
+    /// Background HNSW builder: receive completed builds.
+    pub(in crate::data::executor) build_rx: Option<crate::engine::vector::builder::CompleteReceiver>,
 
     /// Per-collection HNSW parameters set via DDL. If a collection has no
     /// entry here, `HnswParams::default()` is used on first insert.
@@ -119,7 +124,9 @@ impl CoreLoop {
             watermark: Lsn::ZERO,
             sparse,
             crdt_engines: HashMap::new(),
-            vector_indexes: HashMap::new(),
+            vector_collections: HashMap::new(),
+            build_tx: None,
+            build_rx: None,
             vector_params: HashMap::new(),
             edge_store,
             csr,
@@ -242,6 +249,7 @@ impl CoreLoop {
     ///
     /// Returns the number of tasks processed.
     pub fn tick(&mut self) -> usize {
+        self.poll_build_completions();
         self.drain_requests();
         let mut processed = 0;
         while self.poll_one() {
@@ -336,6 +344,25 @@ impl CoreLoop {
         self.watermark = lsn;
     }
 
+    /// Drain completed HNSW builds from the background builder thread and
+    /// promote the corresponding building segments to sealed segments.
+    ///
+    /// Called at the top of `tick()` before draining new requests.
+    pub fn poll_build_completions(&mut self) {
+        let Some(rx) = &self.build_rx else { return };
+        while let Ok(complete) = rx.try_recv() {
+            if let Some(coll) = self.vector_collections.get_mut(&complete.key) {
+                coll.complete_build(complete.segment_id, complete.index);
+                tracing::info!(
+                    core = self.core_id,
+                    key = %complete.key,
+                    segment_id = complete.segment_id,
+                    "HNSW build completed, segment promoted to sealed"
+                );
+            }
+        }
+    }
+
     /// Write HNSW checkpoints for all vector indexes to disk.
     ///
     /// Called periodically from the TPC event loop (e.g., every 5 minutes
@@ -345,7 +372,7 @@ impl CoreLoop {
     /// After checkpointing, WAL replay only needs to process entries
     /// since the checkpoint — not the entire history.
     pub fn checkpoint_vector_indexes(&self) -> usize {
-        if self.vector_indexes.is_empty() {
+        if self.vector_collections.is_empty() {
             return 0;
         }
 
@@ -359,11 +386,11 @@ impl CoreLoop {
         }
 
         let mut checkpointed = 0;
-        for (key, index) in &self.vector_indexes {
-            if index.is_empty() {
+        for (key, collection) in &self.vector_collections {
+            if collection.is_empty() {
                 continue;
             }
-            let bytes = index.checkpoint_to_bytes();
+            let bytes = collection.checkpoint_to_bytes();
             if bytes.is_empty() {
                 continue;
             }
@@ -381,8 +408,8 @@ impl CoreLoop {
             tracing::info!(
                 core = self.core_id,
                 checkpointed,
-                total = self.vector_indexes.len(),
-                "vector indexes checkpointed"
+                total = self.vector_collections.len(),
+                "vector collections checkpointed"
             );
         }
         checkpointed
@@ -420,15 +447,16 @@ impl CoreLoop {
             }
 
             if let Ok(bytes) = std::fs::read(&path) {
-                if let Some(index) = crate::engine::vector::hnsw::HnswIndex::from_checkpoint(&bytes)
+                if let Some(collection) =
+                    crate::engine::vector::collection::VectorCollection::from_checkpoint(&bytes)
                 {
                     tracing::info!(
                         core = self.core_id,
                         %key,
-                        vectors = index.len(),
+                        vectors = collection.len(),
                         "loaded vector checkpoint"
                     );
-                    self.vector_indexes.insert(key, index);
+                    self.vector_collections.insert(key, collection);
                     loaded += 1;
                 }
             }

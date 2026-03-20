@@ -12,7 +12,8 @@ impl CoreLoop {
     /// Records are replayed in LSN order (WAL guarantees this). For batch
     /// inserts, the payload contains multiple vectors in a single record.
     pub fn replay_vector_wal(&mut self, records: &[nodedb_wal::WalRecord], num_cores: usize) {
-        use crate::engine::vector::hnsw::{HnswIndex, HnswParams};
+        use crate::engine::vector::collection::VectorCollection;
+        use crate::engine::vector::hnsw::HnswParams;
         use nodedb_wal::record::RecordType;
 
         let mut inserted = 0usize;
@@ -102,8 +103,8 @@ impl CoreLoop {
                             );
                             HnswParams::default()
                         });
-                    let index = self.vector_indexes.entry(index_key).or_insert_with(|| {
-                        HnswIndex::with_seed(dim, params, self.core_id as u64 + 1)
+                    let index = self.vector_collections.entry(index_key).or_insert_with(|| {
+                        VectorCollection::new(dim, params)
                     });
                     if index.dim() != dim {
                         tracing::warn!(
@@ -133,8 +134,8 @@ impl CoreLoop {
                             );
                             HnswParams::default()
                         });
-                    let index = self.vector_indexes.entry(index_key).or_insert_with(|| {
-                        HnswIndex::with_seed(dim, params, self.core_id as u64 + 1)
+                    let index = self.vector_collections.entry(index_key).or_insert_with(|| {
+                        VectorCollection::new(dim, params)
                     });
                     for vector in vectors {
                         index.insert(vector);
@@ -146,7 +147,7 @@ impl CoreLoop {
                     rmp_serde::from_slice::<(String, u32)>(&record.payload)
                 {
                     let index_key = CoreLoop::vector_index_key(tenant_id, &collection, "");
-                    if let Some(index) = self.vector_indexes.get_mut(&index_key) {
+                    if let Some(index) = self.vector_collections.get_mut(&index_key) {
                         index.delete(vector_id);
                         deleted += 1;
                     }
@@ -160,7 +161,7 @@ impl CoreLoop {
                 inserted,
                 deleted,
                 skipped,
-                indexes = self.vector_indexes.len(),
+                collections = self.vector_collections.len(),
                 "WAL vector replay complete"
             );
         }

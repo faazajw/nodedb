@@ -54,7 +54,7 @@ impl CoreLoop {
         );
 
         let index_key = CoreLoop::vector_index_key(tenant_id, collection, "");
-        let Some(index) = self.vector_indexes.get(&index_key) else {
+        let Some(index) = self.vector_collections.get(&index_key) else {
             return self.response_error(task, ErrorCode::NotFound);
         };
         if index.is_empty() {

@@ -5,22 +5,23 @@ use tracing::{debug, warn};
 
 use crate::bridge::envelope::{ErrorCode, Response};
 use crate::engine::vector::distance::DistanceMetric;
-use crate::engine::vector::hnsw::{HnswIndex, HnswParams};
+use crate::engine::vector::collection::VectorCollection;
+use crate::engine::vector::hnsw::HnswParams;
 
 use crate::data::executor::core_loop::CoreLoop;
 use crate::data::executor::task::ExecutionTask;
 
 impl CoreLoop {
-    /// Get or create a vector index, validating dimension compatibility.
+    /// Get or create a vector collection, validating dimension compatibility.
     fn get_or_create_vector_index(
         &mut self,
         tid: u32,
         collection: &str,
         dim: usize,
         field_name: &str,
-    ) -> Result<&mut HnswIndex, ErrorCode> {
+    ) -> Result<&mut VectorCollection, ErrorCode> {
         let index_key = CoreLoop::vector_index_key(tid, collection, field_name);
-        if let Some(existing) = self.vector_indexes.get(&index_key) {
+        if let Some(existing) = self.vector_collections.get(&index_key) {
             if existing.dim() != dim {
                 return Err(ErrorCode::RejectedConstraint {
                     constraint: format!(
@@ -36,9 +37,9 @@ impl CoreLoop {
             .get(&index_key)
             .cloned()
             .unwrap_or_default();
-        Ok(self.vector_indexes.entry(index_key).or_insert_with(|| {
-            debug!(core = core_id, dim, m = params.m, ef = params.ef_construction, ?params.metric, "creating HNSW index");
-            HnswIndex::with_seed(dim, params, core_id as u64 + 1)
+        Ok(self.vector_collections.entry(index_key).or_insert_with(|| {
+            debug!(core = core_id, dim, m = params.m, ef = params.ef_construction, ?params.metric, "creating vector collection");
+            VectorCollection::new(dim, params)
         }))
     }
 
@@ -63,9 +64,19 @@ impl CoreLoop {
                 },
             );
         }
+        let index_key = CoreLoop::vector_index_key(tid, collection, field_name);
         match self.get_or_create_vector_index(tid, collection, dim, field_name) {
-            Ok(index) => {
-                index.insert(vector.to_vec());
+            Ok(collection_ref) => {
+                collection_ref.insert(vector.to_vec());
+                if collection_ref.needs_seal() {
+                    if let Some(req) = collection_ref.seal(&index_key) {
+                        if let Some(tx) = &self.build_tx {
+                            if let Err(e) = tx.send(req) {
+                                warn!(core = self.core_id, error = %e, "failed to send HNSW build request");
+                            }
+                        }
+                    }
+                }
                 self.response_ok(task)
             }
             Err(err) => self.response_error(task, err),
@@ -83,8 +94,9 @@ impl CoreLoop {
         dim: usize,
     ) -> Response {
         debug!(core = self.core_id, %collection, dim, count = vectors.len(), "vector batch insert");
+        let index_key = CoreLoop::vector_index_key(tid, collection, "");
         match self.get_or_create_vector_index(tid, collection, dim, "") {
-            Ok(index) => {
+            Ok(collection_ref) => {
                 for vector in vectors {
                     if vector.len() != dim {
                         return self.response_error(
@@ -97,7 +109,16 @@ impl CoreLoop {
                             },
                         );
                     }
-                    index.insert(vector.clone());
+                    collection_ref.insert(vector.clone());
+                }
+                if collection_ref.needs_seal() {
+                    if let Some(req) = collection_ref.seal(&index_key) {
+                        if let Some(tx) = &self.build_tx {
+                            if let Err(e) = tx.send(req) {
+                                warn!(core = self.core_id, error = %e, "failed to send HNSW build request");
+                            }
+                        }
+                    }
                 }
                 match super::super::response_codec::encode_count("inserted", vectors.len()) {
                     Ok(bytes) => self.response_with_payload(task, bytes),
@@ -117,10 +138,10 @@ impl CoreLoop {
     ) -> Response {
         debug!(core = self.core_id, %collection, vector_id, "vector delete");
         let index_key = CoreLoop::vector_index_key(tid, collection, "");
-        let Some(index) = self.vector_indexes.get_mut(&index_key) else {
+        let Some(collection_ref) = self.vector_collections.get_mut(&index_key) else {
             return self.response_error(task, ErrorCode::NotFound);
         };
-        if index.delete(vector_id) {
+        if collection_ref.delete(vector_id) {
             self.response_ok(task)
         } else {
             self.response_error(task, ErrorCode::NotFound)
@@ -141,10 +162,10 @@ impl CoreLoop {
     ) -> Response {
         debug!(core = self.core_id, %collection, top_k, ef_search, "vector search");
         let index_key = CoreLoop::vector_index_key(tid, collection, field_name);
-        let Some(index) = self.vector_indexes.get(&index_key) else {
+        let Some(collection_ref) = self.vector_collections.get(&index_key) else {
             return self.response_error(task, ErrorCode::NotFound);
         };
-        if index.is_empty() {
+        if collection_ref.is_empty() {
             return self.response_with_payload(task, b"[]".to_vec());
         }
         let ef = if ef_search > 0 {
@@ -154,9 +175,9 @@ impl CoreLoop {
         };
         let results = match filter_bitmap {
             Some(bitmap_bytes) => {
-                index.search_with_bitmap_bytes(query_vector, top_k, ef, bitmap_bytes)
+                collection_ref.search_with_bitmap_bytes(query_vector, top_k, ef, bitmap_bytes)
             }
-            None => index.search(query_vector, top_k, ef),
+            None => collection_ref.search(query_vector, top_k, ef),
         };
         let hits: Vec<_> = results
             .iter()
@@ -195,9 +216,9 @@ impl CoreLoop {
 
         let mut all_results: Vec<Vec<crate::engine::vector::hnsw::SearchResult>> = Vec::new();
 
-        for (key, index) in &self.vector_indexes {
+        for (key, coll) in &self.vector_collections {
             if key == &plain_key || key.starts_with(&prefix) {
-                if index.is_empty() || index.dim() != query_vector.len() {
+                if coll.is_empty() || coll.dim() != query_vector.len() {
                     continue;
                 }
                 let ef = if ef_search > 0 {
@@ -206,8 +227,8 @@ impl CoreLoop {
                     top_k.saturating_mul(4).max(64)
                 };
                 let results = match filter_bitmap {
-                    Some(bm) => index.search_with_bitmap_bytes(query_vector, top_k, ef, bm),
-                    None => index.search(query_vector, top_k, ef),
+                    Some(bm) => coll.search_with_bitmap_bytes(query_vector, top_k, ef, bm),
+                    None => coll.search(query_vector, top_k, ef),
                 };
                 all_results.push(results);
             }
@@ -276,7 +297,7 @@ impl CoreLoop {
         debug!(core = self.core_id, %collection, m, ef_construction, %metric, "set vector params");
         let index_key = CoreLoop::vector_index_key(tid, collection, "");
 
-        if self.vector_indexes.contains_key(&index_key) {
+        if self.vector_collections.contains_key(&index_key) {
             return self.response_error(
                 task,
                 ErrorCode::RejectedConstraint {

@@ -226,7 +226,7 @@ impl CoreLoop {
             } => {
                 let index_key = Self::vector_index_key(tid, collection, field_name);
                 let index = self
-                    .vector_indexes
+                    .vector_collections
                     .entry(index_key.clone())
                     .or_insert_with(|| {
                         let params = self
@@ -234,7 +234,7 @@ impl CoreLoop {
                             .get(collection.as_str())
                             .cloned()
                             .unwrap_or_default();
-                        crate::engine::vector::hnsw::HnswIndex::new(*dim, params)
+                        crate::engine::vector::collection::VectorCollection::new(*dim, params)
                     });
 
                 if vector.len() != index.dim() {
@@ -261,7 +261,7 @@ impl CoreLoop {
                 vector_id,
             } => {
                 let index_key = Self::vector_index_key(tid, collection, "");
-                if let Some(index) = self.vector_indexes.get_mut(&index_key) {
+                if let Some(index) = self.vector_collections.get_mut(&index_key) {
                     if index.delete(*vector_id) {
                         undo_log.push(UndoEntry::DeleteVector {
                             index_key,
@@ -350,7 +350,7 @@ impl CoreLoop {
                     vector_id,
                 } => {
                     // Soft-delete the inserted vector.
-                    if let Some(index) = self.vector_indexes.get_mut(&index_key) {
+                    if let Some(index) = self.vector_collections.get_mut(&index_key) {
                         index.delete(vector_id);
                     }
                 }
@@ -359,7 +359,7 @@ impl CoreLoop {
                     vector_id,
                 } => {
                     // Un-delete: clear tombstone flag.
-                    if let Some(index) = self.vector_indexes.get_mut(&index_key) {
+                    if let Some(index) = self.vector_collections.get_mut(&index_key) {
                         index.undelete(vector_id);
                     }
                 }

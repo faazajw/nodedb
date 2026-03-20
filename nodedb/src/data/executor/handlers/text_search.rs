@@ -84,7 +84,7 @@ impl CoreLoop {
 
         // 1. Vector search.
         let index_key = CoreLoop::vector_index_key(tid, collection, "");
-        let vector_results = if let Some(index) = self.vector_indexes.get(&index_key) {
+        let vector_results = if let Some(index) = self.vector_collections.get(&index_key) {
             if index.is_empty() {
                 Vec::new()
             } else {

@@ -39,32 +39,22 @@ impl CoreLoop {
             .collect();
 
         let hnsw_indexes: Vec<HnswSnapshot> = self
-            .vector_indexes
+            .vector_collections
             .iter()
-            .map(|(name, idx)| {
+            .filter_map(|(name, coll)| {
+                let checkpoint_bytes = coll.checkpoint_to_bytes();
+                if checkpoint_bytes.is_empty() {
+                    return None;
+                }
                 let (tenant_id, collection) = name
                     .split_once(':')
                     .map(|(t, c)| (t.parse::<u32>().unwrap_or(0), c.to_string()))
                     .unwrap_or((0, name.clone()));
-                let metric = match idx.params().metric {
-                    crate::engine::vector::distance::DistanceMetric::L2 => 0u8,
-                    crate::engine::vector::distance::DistanceMetric::Cosine => 1,
-                    crate::engine::vector::distance::DistanceMetric::InnerProduct => 2,
-                };
-                HnswSnapshot {
+                Some(HnswSnapshot {
                     tenant_id,
                     collection,
-                    dim: idx.dim(),
-                    m: idx.params().m,
-                    m0: idx.params().m0,
-                    ef_construction: idx.params().ef_construction,
-                    metric,
-                    entry_point: idx.entry_point(),
-                    max_layer: idx.max_layer(),
-                    rng_state: idx.rng_state(),
-                    vectors: idx.export_vectors(),
-                    neighbors: idx.export_neighbors(),
-                }
+                    checkpoint_bytes,
+                })
             })
             .collect();
 
