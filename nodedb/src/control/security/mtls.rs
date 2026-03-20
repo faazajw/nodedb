@@ -1,7 +1,5 @@
 //! mTLS configuration for inter-node and client transport.
 //!
-//! TDD §14.1: Inter-node transport MUST use mTLS.
-//! TDD §14.2: Encryption in transit: TLS 1.3 minimum.
 //! Keys MUST be rotatable without full-cluster downtime.
 
 use std::path::PathBuf;

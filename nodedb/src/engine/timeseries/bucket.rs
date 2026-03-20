@@ -8,7 +8,7 @@
 //!   for cold storage (S3/GCS).
 //!
 //! Flush scheduling respects cache protection: timeseries flushes MUST NOT
-//! evict protected Vector/Metadata cache tiers (TDD §3.2 normative).
+//! evict protected Vector/Metadata cache tiers.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;

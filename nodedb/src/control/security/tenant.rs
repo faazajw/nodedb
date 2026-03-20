@@ -1,6 +1,6 @@
 //! Tenant isolation enforcement.
 //!
-//! TDD §14.3: Tenant data MUST be logically isolated in identifiers,
+//! Tenant data MUST be logically isolated in identifiers,
 //! WAL streams, quotas, and cache accounting. Query planning and vector
 //! prefilter bitmaps MUST be tenant-scoped by construction.
 

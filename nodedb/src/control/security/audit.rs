@@ -1,7 +1,4 @@
 //! Immutable audit log for security-relevant events.
-//!
-//! TDD §14.4: Security-relevant events (auth fail, privilege change,
-//! snapshot restore, key rotation) MUST produce immutable audit entries.
 
 use std::collections::VecDeque;
 use std::time::SystemTime;
