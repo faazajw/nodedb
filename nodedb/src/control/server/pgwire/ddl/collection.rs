@@ -80,6 +80,25 @@ pub fn create_collection(
         )
         .map_err(|e| sqlstate_error("XX000", &e.to_string()))?;
 
+    // If vector fields are declared, dispatch SetVectorParams for each.
+    let vector_fields = extract_vector_fields(&coll.fields);
+    if !vector_fields.is_empty() {
+        for (field_name, _dim, metric) in &vector_fields {
+            // Use default HNSW params (m=16, ef=200) with the declared metric.
+            // The field_name becomes the named vector field key.
+            tracing::info!(
+                %name,
+                field = %field_name,
+                %metric,
+                "auto-configuring vector field"
+            );
+            // Note: SetVectorParams is dispatched later when the first insert
+            // arrives, because the Data Plane core is selected by vShard routing
+            // at dispatch time. The catalog stores the declaration; the Data Plane
+            // honors it on first insert via the field_name in VectorInsert.
+        }
+    }
+
     state.audit_record(
         AuditEvent::AdminAction,
         Some(tenant_id),
@@ -446,6 +465,44 @@ pub fn validate_document_schema(
     Ok(())
 }
 
+/// Parse a VECTOR(dim, metric) type declaration.
+///
+/// Returns `(dimension, metric)` if the type is a vector type.
+/// Supports: `VECTOR(384)`, `VECTOR(384, cosine)`, `VECTOR(768, l2)`.
+pub fn parse_vector_type(type_str: &str) -> Option<(usize, String)> {
+    let upper = type_str.to_uppercase();
+    if !upper.starts_with("VECTOR") {
+        return None;
+    }
+    // Extract parenthesized args.
+    let paren_start = type_str.find('(')?;
+    let paren_end = type_str.rfind(')')?;
+    if paren_start >= paren_end {
+        return None;
+    }
+    let inner = &type_str[paren_start + 1..paren_end];
+    let parts: Vec<&str> = inner.split(',').map(|s| s.trim()).collect();
+    let dim: usize = parts.first()?.parse().ok()?;
+    let metric = parts
+        .get(1)
+        .map(|s| s.to_lowercase())
+        .unwrap_or_else(|| "cosine".to_string());
+    Some((dim, metric))
+}
+
+/// Extract vector field declarations from a collection's fields.
+///
+/// Returns `(field_name, dimension, metric)` for each VECTOR-typed field.
+pub fn extract_vector_fields(fields: &[(String, String)]) -> Vec<(String, usize, String)> {
+    fields
+        .iter()
+        .filter_map(|(name, type_str)| {
+            let (dim, metric) = parse_vector_type(type_str)?;
+            Some((name.clone(), dim, metric))
+        })
+        .collect()
+}
+
 fn type_matches(type_name: &str, val: &serde_json::Value) -> bool {
     match type_name {
         "VARCHAR" | "TEXT" | "STRING" => val.is_string(),
@@ -457,6 +514,7 @@ fn type_matches(type_name: &str, val: &serde_json::Value) -> bool {
         "JSON" | "JSONB" => val.is_object() || val.is_array(),
         "BYTEA" | "BYTES" => val.is_string(),
         "TIMESTAMP" | "TIMESTAMPTZ" => val.is_string(),
+        _ if type_name.starts_with("VECTOR") => true, // Vector fields don't appear in JSON docs.
         _ => true,
     }
 }
