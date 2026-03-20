@@ -74,6 +74,11 @@ pub fn dispatch(
         return Some(super::backup::backup_tenant(state, identity, &parts));
     }
     if upper.starts_with("RESTORE TENANT ") {
+        if upper.ends_with(" DRY RUN") || upper.ends_with(" DRYRUN") {
+            return Some(super::backup::restore_tenant_dry_run(
+                state, identity, &parts,
+            ));
+        }
         return Some(super::backup::restore_tenant(state, identity, &parts));
     }
 

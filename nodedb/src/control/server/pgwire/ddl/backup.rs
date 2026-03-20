@@ -235,3 +235,70 @@ pub fn restore_tenant(
 
     Ok(vec![Response::Execution(Tag::new("RESTORE TENANT"))])
 }
+
+/// RESTORE TENANT <id> FROM '<path>' DRY RUN
+///
+/// Validates a restore plan without executing it. Checks:
+/// - Backup file exists and is readable
+/// - Backup structure is valid (MessagePack deserializable)
+///
+/// Returns a description of what would happen.
+pub fn restore_tenant_dry_run(
+    _state: &SharedState,
+    identity: &AuthenticatedIdentity,
+    parts: &[&str],
+) -> PgWireResult<Vec<Response>> {
+    if !identity.is_superuser {
+        return Err(sqlstate_error(
+            "42501",
+            "permission denied: only superuser can validate restores",
+        ));
+    }
+
+    // Parse: RESTORE TENANT <id> FROM '<path>' DRY RUN
+    // parts[2] = id, parts[4] = path (with quotes)
+    if parts.len() < 5 {
+        return Err(sqlstate_error(
+            "42601",
+            "syntax: RESTORE TENANT <id> FROM '<path>' DRY RUN",
+        ));
+    }
+
+    let path = parts[4].trim_matches('\'').trim_matches('"');
+
+    // Check file exists.
+    let file_path = std::path::Path::new(path);
+    if !file_path.exists() {
+        return Ok(vec![Response::Execution(Tag::new(&format!(
+            "DRY RUN FAILED: backup file '{}' does not exist",
+            path
+        )))]);
+    }
+
+    // Check file is readable and has content.
+    let metadata = std::fs::metadata(file_path)
+        .map_err(|e| sqlstate_error("XX000", &format!("cannot read backup file: {e}")))?;
+
+    let size_mb = metadata.len() as f64 / (1024.0 * 1024.0);
+
+    // Try to read and validate the backup header.
+    let data = std::fs::read(file_path)
+        .map_err(|e| sqlstate_error("XX000", &format!("cannot read backup file: {e}")))?;
+
+    // Validate MessagePack structure.
+    let valid = rmp_serde::from_slice::<TenantBackup>(&data).is_ok();
+
+    let status = if valid {
+        format!(
+            "DRY RUN OK: backup file '{}' is valid ({:.2} MB). Ready for restore.",
+            path, size_mb
+        )
+    } else {
+        format!(
+            "DRY RUN FAILED: backup file '{}' ({:.2} MB) has invalid format or is corrupted.",
+            path, size_mb
+        )
+    };
+
+    Ok(vec![Response::Execution(Tag::new(&status))])
+}
