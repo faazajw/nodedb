@@ -196,25 +196,6 @@ impl SessionStore {
         Ok(())
     }
 
-    /// Buffer a write task for the current transaction.
-    ///
-    /// Returns `true` if the task was buffered (we're in a transaction block).
-    /// Returns `false` if not in a transaction (caller should dispatch immediately).
-    pub fn buffer_write(
-        &self,
-        addr: &SocketAddr,
-        task: crate::control::planner::physical::PhysicalTask,
-    ) -> bool {
-        let mut sessions = self.sessions.write().unwrap_or_else(|p| p.into_inner());
-        if let Some(session) = sessions.get_mut(addr) {
-            if session.tx_state == TransactionState::InBlock {
-                session.tx_buffer.push(task);
-                return true;
-            }
-        }
-        false
-    }
-
     /// Mark the current transaction as failed (after a query error inside BEGIN).
     pub fn fail_transaction(&self, addr: &SocketAddr) {
         let mut sessions = self.sessions.write().unwrap_or_else(|p| p.into_inner());

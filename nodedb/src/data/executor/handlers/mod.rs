@@ -1,3 +1,4 @@
+pub mod aggregate;
 pub mod control;
 pub mod document;
 pub mod graph;

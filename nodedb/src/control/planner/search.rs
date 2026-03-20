@@ -102,6 +102,61 @@ pub(super) fn extract_table_name(plan: &LogicalPlan) -> Option<String> {
     }
 }
 
+/// Hybrid search params: (collection, query_vector, query_text, top_k).
+type HybridParams = (String, Vec<f32>, String, usize);
+
+/// Detect `ORDER BY rrf_score(vector_distance(...), bm25_score(...)) LIMIT k`.
+///
+/// Returns `(collection, query_vector, query_text, top_k)` for hybrid search.
+pub(super) fn try_extract_hybrid_search(
+    sort_exprs: &[datafusion::logical_expr::SortExpr],
+    input: &LogicalPlan,
+    fetch: Option<usize>,
+) -> crate::Result<Option<HybridParams>> {
+    let sort_expr = match sort_exprs.first() {
+        Some(s) => s,
+        None => return Ok(None),
+    };
+    let Expr::ScalarFunction(rrf_func) = &sort_expr.expr else {
+        return Ok(None);
+    };
+    if rrf_func.name() != "rrf_score" || rrf_func.args.len() < 2 {
+        return Ok(None);
+    }
+
+    // Extract vector_distance(...) from first arg.
+    let mut query_vector = Vec::new();
+    if let Expr::ScalarFunction(vd) = &rrf_func.args[0] {
+        if vd.name() == "vector_distance" && vd.args.len() >= 2 {
+            query_vector = extract_float_array(&vd.args[1])?;
+        }
+    }
+    if query_vector.is_empty() {
+        return Ok(None);
+    }
+
+    // Extract bm25_score(...) from second arg.
+    let mut query_text = String::new();
+    if let Expr::ScalarFunction(bm) = &rrf_func.args[1] {
+        if bm.name() == "bm25_score" && bm.args.len() >= 2 {
+            if let Expr::Literal(lit) = &bm.args[1] {
+                query_text = lit.to_string().trim_matches('\'').to_string();
+            }
+        }
+    }
+    if query_text.is_empty() {
+        return Ok(None);
+    }
+
+    let collection = match extract_table_name(input) {
+        Some(c) => c,
+        None => return Ok(None),
+    };
+    let top_k = fetch.unwrap_or(10);
+
+    Ok(Some((collection, query_vector, query_text, top_k)))
+}
+
 /// Detect `ORDER BY bm25_score(field, 'query') LIMIT k` and extract search parameters.
 ///
 /// Returns `(collection, query_text, top_k)` if the pattern matches.

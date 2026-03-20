@@ -1,15 +1,15 @@
-use datafusion::logical_expr::{FetchType, LogicalPlan, Operator};
+use datafusion::logical_expr::{FetchType, LogicalPlan};
 use datafusion::prelude::*;
 
 use crate::bridge::envelope::PhysicalPlan;
 use crate::control::planner::physical::PhysicalTask;
 use crate::types::{TenantId, VShardId};
 
-use super::extract::{
-    expr_to_scan_filters, expr_to_usize, extract_delete_targets, extract_insert_values,
-    extract_update_assignments, try_range_scan_from_predicate,
+use super::extract::{expr_to_scan_filters, expr_to_usize, try_range_scan_from_predicate};
+use super::search::{
+    extract_table_name, try_extract_hybrid_search, try_extract_text_search,
+    try_extract_vector_search,
 };
-use super::search::{extract_table_name, try_extract_text_search, try_extract_vector_search};
 
 /// Converts DataFusion logical plans into NodeDB physical tasks.
 ///
@@ -265,6 +265,27 @@ impl PlanConverter {
                     }]);
                 }
 
+                // Check for rrf_score(vector_distance(...), bm25_score(...)) → HybridSearch.
+                if let Some((collection, query_vector, query_text, top_k)) =
+                    try_extract_hybrid_search(&sort.expr, &sort.input, sort.fetch)?
+                {
+                    let vshard = VShardId::from_collection(&collection);
+                    return Ok(vec![PhysicalTask {
+                        tenant_id,
+                        vshard_id: vshard,
+                        plan: PhysicalPlan::HybridSearch {
+                            collection,
+                            query_vector: std::sync::Arc::from(query_vector.as_slice()),
+                            query_text,
+                            top_k,
+                            ef_search: 0,
+                            fuzzy: true,
+                            vector_weight: 0.5, // Default: equal weight.
+                            filter_bitmap: None,
+                        },
+                    }]);
+                }
+
                 // Index-ordered scan optimization:
                 // If sorting by a single ASC field on a plain TableScan with a LIMIT
                 // (no OFFSET), use RangeScan — results come back in index order,
@@ -429,146 +450,6 @@ impl PlanConverter {
                 detail: format!("unsupported logical plan type: {}", plan.display()),
             }),
         }
-    }
-
-    /// Convert DML operations (INSERT, UPDATE, DELETE) to physical plans.
-    fn convert_dml(
-        &self,
-        dml: &datafusion::logical_expr::DmlStatement,
-        tenant_id: TenantId,
-    ) -> crate::Result<Vec<PhysicalTask>> {
-        use datafusion::logical_expr::WriteOp;
-
-        let collection = dml.table_name.to_string();
-        let vshard = VShardId::from_collection(&collection);
-
-        match &dml.op {
-            WriteOp::Insert(_) | WriteOp::Ctas => {
-                // Extract values from the input plan.
-                // DataFusion represents INSERT VALUES as a projection of literals.
-                let values = extract_insert_values(&dml.input)?;
-
-                let mut tasks = Vec::with_capacity(values.len());
-                for (doc_id, value_bytes) in values {
-                    tasks.push(PhysicalTask {
-                        tenant_id,
-                        vshard_id: vshard,
-                        plan: PhysicalPlan::PointPut {
-                            collection: collection.clone(),
-                            document_id: doc_id,
-                            value: value_bytes,
-                        },
-                    });
-                }
-
-                if tasks.is_empty() {
-                    return Err(crate::Error::PlanError {
-                        detail: "INSERT requires at least one row".into(),
-                    });
-                }
-
-                Ok(tasks)
-            }
-            WriteOp::Delete => {
-                // DELETE FROM <collection> WHERE id = '<value>'
-                let doc_ids = extract_delete_targets(&dml.input, &collection)?;
-
-                if doc_ids.is_empty() {
-                    return Err(crate::Error::PlanError {
-                        detail: "DELETE requires a WHERE clause with id = '<value>'".into(),
-                    });
-                }
-
-                Ok(doc_ids
-                    .into_iter()
-                    .map(|doc_id| PhysicalTask {
-                        tenant_id,
-                        vshard_id: vshard,
-                        plan: PhysicalPlan::PointDelete {
-                            collection: collection.clone(),
-                            document_id: doc_id,
-                        },
-                    })
-                    .collect())
-            }
-
-            WriteOp::Update => {
-                // UPDATE <collection> SET field = value WHERE id = '<value>'
-                // Extract SET assignments and WHERE targets.
-                let doc_ids = extract_delete_targets(&dml.input, &collection)?;
-
-                if doc_ids.is_empty() {
-                    return Err(crate::Error::PlanError {
-                        detail: "UPDATE requires a WHERE clause with id = '<value>'".into(),
-                    });
-                }
-
-                // Extract SET field assignments from the DML input plan.
-                let updates = extract_update_assignments(&dml.input)?;
-
-                if updates.is_empty() {
-                    return Err(crate::Error::PlanError {
-                        detail: "UPDATE requires at least one SET assignment".into(),
-                    });
-                }
-
-                Ok(doc_ids
-                    .into_iter()
-                    .map(|doc_id| PhysicalTask {
-                        tenant_id,
-                        vshard_id: vshard,
-                        plan: PhysicalPlan::PointUpdate {
-                            collection: collection.clone(),
-                            document_id: doc_id,
-                            updates: updates.clone(),
-                        },
-                    })
-                    .collect())
-            }
-        }
-    }
-
-    // extract_insert_values and extract_delete_targets live in extract.rs
-
-    /// Try to convert equality filters into a point get.
-    ///
-    /// Matches patterns like `WHERE id = 'value'` or `WHERE document_id = 'value'`.
-    fn try_point_get(
-        &self,
-        collection: &str,
-        filters: &[Expr],
-        tenant_id: TenantId,
-        vshard: VShardId,
-    ) -> crate::Result<Option<PhysicalTask>> {
-        for filter in filters {
-            if let Expr::BinaryExpr(binary) = filter {
-                if binary.op == Operator::Eq {
-                    let (col_name, value) = match (&*binary.left, &*binary.right) {
-                        (Expr::Column(col), Expr::Literal(lit)) => {
-                            (col.name.as_str(), lit.to_string())
-                        }
-                        (Expr::Literal(lit), Expr::Column(col)) => {
-                            (col.name.as_str(), lit.to_string())
-                        }
-                        _ => continue,
-                    };
-
-                    if col_name == "id" || col_name == "document_id" {
-                        let doc_id = value.trim_matches('\'').trim_matches('"').to_string();
-
-                        return Ok(Some(PhysicalTask {
-                            tenant_id,
-                            vshard_id: vshard,
-                            plan: PhysicalPlan::PointGet {
-                                collection: collection.to_string(),
-                                document_id: doc_id,
-                            },
-                        }));
-                    }
-                }
-            }
-        }
-        Ok(None)
     }
 }
 
