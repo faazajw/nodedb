@@ -3,6 +3,7 @@ pub mod converter;
 mod dml;
 pub mod expr_convert;
 mod extract;
+pub mod hints;
 mod join;
 pub mod physical;
 mod search;

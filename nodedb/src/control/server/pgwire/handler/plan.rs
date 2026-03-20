@@ -46,7 +46,16 @@ pub(super) fn extract_collection(plan: &PhysicalPlan) -> Option<&str> {
         | PhysicalPlan::SetCollectionPolicy { collection, .. }
         | PhysicalPlan::SetVectorParams { collection, .. }
         | PhysicalPlan::TextSearch { collection, .. }
-        | PhysicalPlan::HybridSearch { collection, .. } => Some(collection.as_str()),
+        | PhysicalPlan::HybridSearch { collection, .. }
+        | PhysicalPlan::PartialAggregate { collection, .. }
+        | PhysicalPlan::BroadcastJoin {
+            large_collection: collection,
+            ..
+        }
+        | PhysicalPlan::ShuffleJoin {
+            left_collection: collection,
+            ..
+        } => Some(collection.as_str()),
         PhysicalPlan::EdgePut { .. }
         | PhysicalPlan::EdgeDelete { .. }
         | PhysicalPlan::GraphHop { .. }

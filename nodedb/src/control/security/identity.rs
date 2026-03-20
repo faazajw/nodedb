@@ -163,7 +163,10 @@ pub fn required_permission(plan: &crate::bridge::envelope::PhysicalPlan) -> Perm
         | PhysicalPlan::Aggregate { .. }
         | PhysicalPlan::HashJoin { .. }
         | PhysicalPlan::TextSearch { .. }
-        | PhysicalPlan::HybridSearch { .. } => Permission::Read,
+        | PhysicalPlan::HybridSearch { .. }
+        | PhysicalPlan::PartialAggregate { .. }
+        | PhysicalPlan::BroadcastJoin { .. }
+        | PhysicalPlan::ShuffleJoin { .. } => Permission::Read,
 
         // Write operations.
         PhysicalPlan::CrdtApply { .. }

@@ -302,6 +302,50 @@ impl CoreLoop {
             PhysicalPlan::TransactionBatch { plans } => {
                 self.execute_transaction_batch(task, tid, plans)
             }
+
+            PhysicalPlan::PartialAggregate {
+                collection,
+                group_by,
+                aggregates,
+                filters,
+            } => self.execute_aggregate(
+                task,
+                tid,
+                collection,
+                group_by,
+                aggregates,
+                filters,
+                &[],
+                usize::MAX,
+                &[],
+                &[],
+            ),
+
+            PhysicalPlan::BroadcastJoin {
+                large_collection,
+                broadcast_data,
+                on,
+                join_type,
+                limit,
+            } => self.execute_broadcast_join(
+                task,
+                tid,
+                large_collection,
+                broadcast_data,
+                on,
+                join_type,
+                *limit,
+            ),
+
+            PhysicalPlan::ShuffleJoin { .. } => {
+                // Shuffle join phase 2 (local join on repartitioned data) — not yet wired.
+                self.response_error(
+                    task,
+                    crate::bridge::envelope::ErrorCode::Internal {
+                        detail: "shuffle join not dispatched to this core".into(),
+                    },
+                )
+            }
         }
     }
 }

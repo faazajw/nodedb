@@ -92,12 +92,31 @@ pub(super) fn convert_join(join: &Join, tenant_id: TenantId) -> crate::Result<Ve
         }]);
     }
 
-    // Route to the left collection's vShard.
-    let vshard = VShardId::from_collection(&left_collection);
+    let left_vshard = VShardId::from_collection(&left_collection);
+    let right_vshard = VShardId::from_collection(&right_collection);
 
+    // Co-located join: both collections on the same vShard → single-core hash join.
+    // This is the fastest path: zero bridge overhead, no data movement.
+    if left_vshard == right_vshard {
+        return Ok(vec![PhysicalTask {
+            tenant_id,
+            vshard_id: left_vshard,
+            plan: PhysicalPlan::HashJoin {
+                left_collection,
+                right_collection,
+                on: on_keys,
+                join_type: join_type_str.to_string(),
+                limit: 1000,
+            },
+        }]);
+    }
+
+    // Cross-shard join: collections on different vShards.
+    // Default strategy: HashJoin on the left collection's core (pulls right side).
+    // Future: the CBO will select broadcast vs shuffle based on table statistics.
     Ok(vec![PhysicalTask {
         tenant_id,
-        vshard_id: vshard,
+        vshard_id: left_vshard,
         plan: PhysicalPlan::HashJoin {
             left_collection,
             right_collection,

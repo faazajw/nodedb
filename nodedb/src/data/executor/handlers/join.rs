@@ -31,6 +31,102 @@ fn merge_join_docs(
     serde_json::Value::Object(merged)
 }
 
+/// Extract a join key from a document given the key field names.
+///
+/// For single-field keys, returns the field value as a string.
+/// For composite keys, returns a JSON array string of all field values.
+fn extract_join_key(doc: &serde_json::Value, keys: &[&str], doc_id: &str) -> String {
+    if keys.len() == 1 {
+        doc.get(keys[0])
+            .map(|v| match v {
+                serde_json::Value::String(s) => s.clone(),
+                other => other.to_string(),
+            })
+            .unwrap_or_else(|| doc_id.to_string())
+    } else {
+        let parts: Vec<serde_json::Value> = keys
+            .iter()
+            .map(|k| doc.get(*k).cloned().unwrap_or(serde_json::Value::Null))
+            .collect();
+        serde_json::to_string(&parts).unwrap_or_else(|_| "[]".into())
+    }
+}
+
+/// Probe a hash index with probe-side documents and produce join results.
+///
+/// Shared logic for hash join and broadcast join: builds results by probing
+/// a pre-built hash index with each probe-side document. Handles inner,
+/// left, right, and full outer join types.
+fn probe_hash_index(
+    probe_docs: &[(String, Vec<u8>)],
+    index: &std::collections::HashMap<String, Vec<serde_json::Value>>,
+    probe_keys: &[&str],
+    join_type: &str,
+    limit: usize,
+    probe_collection: &str,
+    index_collection: &str,
+) -> Vec<serde_json::Value> {
+    let is_left = join_type == "left" || join_type == "full";
+    let is_right = join_type == "right" || join_type == "full";
+
+    let mut index_matched: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut results = Vec::new();
+
+    for (doc_id, value) in probe_docs {
+        if results.len() >= limit {
+            break;
+        }
+        let Some(probe_doc) = super::super::doc_format::decode_document(value) else {
+            continue;
+        };
+        let key = extract_join_key(&probe_doc, probe_keys, doc_id);
+
+        if let Some(matches) = index.get(&key) {
+            if is_right {
+                index_matched.insert(key.clone());
+            }
+            for matched_doc in matches {
+                if results.len() >= limit {
+                    break;
+                }
+                results.push(merge_join_docs(
+                    &probe_doc,
+                    Some(matched_doc),
+                    probe_collection,
+                    index_collection,
+                ));
+            }
+        } else if is_left {
+            results.push(merge_join_docs(
+                &probe_doc,
+                None,
+                probe_collection,
+                index_collection,
+            ));
+        }
+    }
+
+    // RIGHT/FULL: emit unmatched index-side rows.
+    if is_right {
+        for (key, docs_group) in index {
+            if results.len() >= limit {
+                break;
+            }
+            if index_matched.contains(key) {
+                continue;
+            }
+            for doc in docs_group {
+                if results.len() >= limit {
+                    break;
+                }
+                results.push(merge_right_only(doc, index_collection));
+            }
+        }
+    }
+
+    results
+}
+
 /// Merge only the right document (left is NULL for right-outer unmatched rows).
 fn merge_right_only(right_doc: &serde_json::Value, right_collection: &str) -> serde_json::Value {
     let mut merged = serde_json::Map::new();
@@ -91,92 +187,116 @@ impl CoreLoop {
             }
         };
 
-        let extract_key = |doc: &serde_json::Value, keys: &[&str], doc_id: &str| -> String {
-            if keys.len() == 1 {
-                doc.get(keys[0])
-                    .map(|v| match v {
-                        serde_json::Value::String(s) => s.clone(),
-                        other => other.to_string(),
-                    })
-                    .unwrap_or_else(|| doc_id.to_string())
-            } else {
-                let parts: Vec<serde_json::Value> = keys
-                    .iter()
-                    .map(|k| doc.get(*k).cloned().unwrap_or(serde_json::Value::Null))
-                    .collect();
-                serde_json::to_string(&parts).unwrap_or_else(|_| "[]".into())
-            }
-        };
-
         let right_keys: Vec<&str> = on.iter().map(|(_, r)| r.as_str()).collect();
         let left_keys: Vec<&str> = on.iter().map(|(l, _)| l.as_str()).collect();
 
+        // Build hash index on the right (build) side.
         let mut right_index: std::collections::HashMap<String, Vec<serde_json::Value>> =
             std::collections::HashMap::new();
-        let mut right_matched: std::collections::HashSet<String> = std::collections::HashSet::new();
-
         for (doc_id, value) in &right_docs {
             let Some(doc) = super::super::doc_format::decode_document(value) else {
                 continue;
             };
-            let key_val = extract_key(&doc, &right_keys, doc_id);
+            let key_val = extract_join_key(&doc, &right_keys, doc_id);
             right_index.entry(key_val).or_default().push(doc);
         }
 
-        let is_left = join_type == "left" || join_type == "full";
-        let is_right = join_type == "right" || join_type == "full";
+        // Probe the hash index with left (probe) side.
+        let results = probe_hash_index(
+            &left_docs,
+            &right_index,
+            &left_keys,
+            join_type,
+            limit,
+            left_collection,
+            right_collection,
+        );
 
-        let mut results = Vec::new();
-        for (doc_id, value) in &left_docs {
-            if results.len() >= limit {
-                break;
+        match super::super::response_codec::encode(&results) {
+            Ok(payload) => self.response_with_payload(task, payload),
+            Err(e) => self.response_error(task, ErrorCode::Internal { detail: e }),
+        }
+    }
+
+    /// Broadcast join: the small side is pre-serialized by the Control Plane
+    /// and included directly in the plan (`broadcast_data`). Each core builds
+    /// a local hash map from the broadcast data and probes with its local
+    /// large-side scan. Avoids a second storage scan for the small side.
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::data::executor) fn execute_broadcast_join(
+        &mut self,
+        task: &ExecutionTask,
+        tid: u32,
+        large_collection: &str,
+        broadcast_data: &[u8],
+        on: &[(String, String)],
+        join_type: &str,
+        limit: usize,
+    ) -> Response {
+        debug!(
+            core = self.core_id,
+            %large_collection,
+            broadcast_bytes = broadcast_data.len(),
+            keys = on.len(),
+            %join_type,
+            "broadcast join"
+        );
+
+        // Deserialize broadcast (small) side from MessagePack Vec<(String, Vec<u8>)>.
+        let small_docs_raw: Vec<(String, Vec<u8>)> = match rmp_serde::from_slice(broadcast_data) {
+            Ok(v) => v,
+            Err(e) => {
+                return self.response_error(
+                    task,
+                    ErrorCode::Internal {
+                        detail: format!("broadcast_data deserialization: {e}"),
+                    },
+                );
             }
-            let Some(left_doc) = super::super::doc_format::decode_document(value) else {
+        };
+
+        let scan_limit = (limit * 10).min(50000);
+        let large_docs = match self
+            .sparse
+            .scan_documents(tid, large_collection, scan_limit)
+        {
+            Ok(d) => d,
+            Err(e) => {
+                return self.response_error(
+                    task,
+                    ErrorCode::Internal {
+                        detail: e.to_string(),
+                    },
+                );
+            }
+        };
+
+        // The `on` pairs are `(large_field, small_field)`.
+        let large_keys: Vec<&str> = on.iter().map(|(l, _)| l.as_str()).collect();
+        let small_keys: Vec<&str> = on.iter().map(|(_, s)| s.as_str()).collect();
+
+        // Build hash index on the small (broadcast) side.
+        let mut small_index: std::collections::HashMap<String, Vec<serde_json::Value>> =
+            std::collections::HashMap::new();
+        for (doc_id, value) in &small_docs_raw {
+            let Some(doc) = super::super::doc_format::decode_document(value) else {
                 continue;
             };
-            let probe_key = extract_key(&left_doc, &left_keys, doc_id);
-
-            if let Some(right_matches) = right_index.get(&probe_key) {
-                if is_right {
-                    right_matched.insert(probe_key.clone());
-                }
-                for right_doc in right_matches {
-                    if results.len() >= limit {
-                        break;
-                    }
-                    results.push(merge_join_docs(
-                        &left_doc,
-                        Some(right_doc),
-                        left_collection,
-                        right_collection,
-                    ));
-                }
-            } else if is_left {
-                results.push(merge_join_docs(
-                    &left_doc,
-                    None,
-                    left_collection,
-                    right_collection,
-                ));
-            }
+            let key_val = extract_join_key(&doc, &small_keys, doc_id);
+            small_index.entry(key_val).or_default().push(doc);
         }
 
-        if is_right {
-            for (key, right_docs_group) in &right_index {
-                if results.len() >= limit {
-                    break;
-                }
-                if right_matched.contains(key) {
-                    continue;
-                }
-                for right_doc in right_docs_group {
-                    if results.len() >= limit {
-                        break;
-                    }
-                    results.push(merge_right_only(right_doc, right_collection));
-                }
-            }
-        }
+        // Probe the hash index with large (scanned) side.
+        let small_collection = "broadcast";
+        let results = probe_hash_index(
+            &large_docs,
+            &small_index,
+            &large_keys,
+            join_type,
+            limit,
+            large_collection,
+            small_collection,
+        );
 
         match super::super::response_codec::encode(&results) {
             Ok(payload) => self.response_with_payload(task, payload),
