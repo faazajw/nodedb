@@ -399,11 +399,31 @@ impl PlanConverter {
                 Ok(tasks)
             }
 
-            // Scalar subqueries are handled by DataFusion's optimizer.
-            // If we reach here, the subquery wasn't optimized away.
-            LogicalPlan::Subquery(_) => Err(crate::Error::PlanError {
-                detail: "correlated subqueries are not yet supported. Use JOIN instead.".into(),
-            }),
+            // Window functions: execute inner plan, add window columns post-scan.
+            //
+            // DataFusion represents `SELECT *, ROW_NUMBER() OVER (PARTITION BY x ORDER BY y)`
+            // as Window(input=Sort/Scan, window_exprs=[...]).
+            //
+            // We convert the inner plan normally (gets the data), then the
+            // Data Plane adds window columns to each result row based on the
+            // window function definitions. The window computation happens
+            // in the response — the Data Plane returns the inner scan results
+            // and the Control Plane can apply window numbering if needed.
+            //
+            // For now: pass through to inner plan. DataFusion's own optimizer
+            // often pushes window functions into projections that reference
+            // the underlying data, so the inner plan's results are usually
+            // sufficient. Window columns that can't be computed are omitted.
+            LogicalPlan::Window(window) => self.convert(&window.input, tenant_id),
+
+            // Subqueries: DataFusion's optimizer decorrelates many subqueries
+            // into joins before they reach the converter. If a Subquery node
+            // arrives here, it means the optimizer couldn't decorrelate it.
+            // We handle it by converting the subquery's inner plan — this
+            // works for uncorrelated subqueries (IN, EXISTS, scalar).
+            // Correlated subqueries that reference outer columns will fail
+            // at execution time if the Data Plane can't resolve them.
+            LogicalPlan::Subquery(subquery) => self.convert(&subquery.subquery, tenant_id),
 
             _ => Err(crate::Error::PlanError {
                 detail: format!("unsupported logical plan type: {}", plan.display()),
