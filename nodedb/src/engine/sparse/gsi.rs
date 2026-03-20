@@ -110,10 +110,12 @@ impl GsiStore {
             detail: format!("write: {e}"),
         })?;
         {
-            let mut table = write_txn.open_table(GSI_META).map_err(|e| crate::Error::Storage {
-                engine: "gsi".into(),
-                detail: format!("open meta: {e}"),
-            })?;
+            let mut table = write_txn
+                .open_table(GSI_META)
+                .map_err(|e| crate::Error::Storage {
+                    engine: "gsi".into(),
+                    detail: format!("open meta: {e}"),
+                })?;
             table
                 .insert(meta_key.as_str(), meta_bytes.as_slice())
                 .map_err(|e| crate::Error::Storage {
@@ -152,10 +154,12 @@ impl GsiStore {
             detail: format!("write: {e}"),
         })?;
         {
-            let mut table = write_txn.open_table(GSI_TABLE).map_err(|e| crate::Error::Storage {
-                engine: "gsi".into(),
-                detail: format!("open entries: {e}"),
-            })?;
+            let mut table = write_txn
+                .open_table(GSI_TABLE)
+                .map_err(|e| crate::Error::Storage {
+                    engine: "gsi".into(),
+                    detail: format!("open entries: {e}"),
+                })?;
 
             for idx_meta in indexes {
                 let value = doc.get(&idx_meta.field).and_then(|v| match v {
@@ -167,12 +171,16 @@ impl GsiStore {
                 let Some(value_str) = value else { continue };
 
                 let key = format!("{}:{}", idx_meta.index_name, value_str);
-                let mut entries: Vec<GsiEntry> = table
-                    .get(key.as_str())
-                    .ok()
-                    .flatten()
-                    .and_then(|g| rmp_serde::from_slice(g.value()).ok())
-                    .unwrap_or_default();
+                let mut entries: Vec<GsiEntry> = match table.get(key.as_str()) {
+                    Ok(Some(guard)) => match rmp_serde::from_slice(guard.value()) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            tracing::warn!(index = %key, error = %e, "GSI entry deserialization failed, starting fresh");
+                            Vec::new()
+                        }
+                    },
+                    _ => Vec::new(),
+                };
 
                 // Remove existing entry for this doc (update case).
                 entries.retain(|e| e.document_id != document_id);
@@ -188,12 +196,12 @@ impl GsiStore {
                         format: "msgpack".into(),
                         detail: format!("gsi entries: {e}"),
                     })?;
-                table
-                    .insert(key.as_str(), bytes.as_slice())
-                    .map_err(|e| crate::Error::Storage {
+                table.insert(key.as_str(), bytes.as_slice()).map_err(|e| {
+                    crate::Error::Storage {
                         engine: "gsi".into(),
                         detail: format!("insert entry: {e}"),
-                    })?;
+                    }
+                })?;
             }
         }
         write_txn.commit().map_err(|e| crate::Error::Storage {
@@ -204,25 +212,28 @@ impl GsiStore {
     }
 
     /// Look up documents by GSI value. Returns entries pointing to primary locations.
-    pub fn lookup(
-        &self,
-        index_name: &str,
-        value: &str,
-    ) -> crate::Result<Vec<GsiEntry>> {
+    pub fn lookup(&self, index_name: &str, value: &str) -> crate::Result<Vec<GsiEntry>> {
         let key = format!("{index_name}:{value}");
         let read_txn = self.db.begin_read().map_err(|e| crate::Error::Storage {
             engine: "gsi".into(),
             detail: format!("read: {e}"),
         })?;
-        let table = read_txn.open_table(GSI_TABLE).map_err(|e| crate::Error::Storage {
-            engine: "gsi".into(),
-            detail: format!("open entries: {e}"),
-        })?;
+        let table = read_txn
+            .open_table(GSI_TABLE)
+            .map_err(|e| crate::Error::Storage {
+                engine: "gsi".into(),
+                detail: format!("open entries: {e}"),
+            })?;
 
         match table.get(key.as_str()) {
             Ok(Some(guard)) => {
-                let entries: Vec<GsiEntry> =
-                    rmp_serde::from_slice(guard.value()).unwrap_or_default();
+                let entries: Vec<GsiEntry> = match rmp_serde::from_slice(guard.value()) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::warn!(index = %key, error = %e, "GSI lookup deserialization failed");
+                        Vec::new()
+                    }
+                };
                 Ok(entries)
             }
             Ok(None) => Ok(Vec::new()),
@@ -234,11 +245,7 @@ impl GsiStore {
     }
 
     /// List all GSIs declared for a collection.
-    pub fn list_indexes(
-        &self,
-        tenant_id: u32,
-        collection: &str,
-    ) -> crate::Result<Vec<GsiMeta>> {
+    pub fn list_indexes(&self, tenant_id: u32, collection: &str) -> crate::Result<Vec<GsiMeta>> {
         let prefix = format!("{tenant_id}:{collection}:");
         let end = format!("{tenant_id}:{collection}:\u{ffff}");
 
@@ -246,17 +253,20 @@ impl GsiStore {
             engine: "gsi".into(),
             detail: format!("read: {e}"),
         })?;
-        let table = read_txn.open_table(GSI_META).map_err(|e| crate::Error::Storage {
-            engine: "gsi".into(),
-            detail: format!("open meta: {e}"),
-        })?;
-
-        let range = table
-            .range(prefix.as_str()..end.as_str())
+        let table = read_txn
+            .open_table(GSI_META)
             .map_err(|e| crate::Error::Storage {
                 engine: "gsi".into(),
-                detail: format!("range: {e}"),
+                detail: format!("open meta: {e}"),
             })?;
+
+        let range =
+            table
+                .range(prefix.as_str()..end.as_str())
+                .map_err(|e| crate::Error::Storage {
+                    engine: "gsi".into(),
+                    detail: format!("range: {e}"),
+                })?;
 
         let mut result = Vec::new();
         for entry in range {
@@ -264,8 +274,15 @@ impl GsiStore {
                 engine: "gsi".into(),
                 detail: format!("entry: {e}"),
             })?;
-            if let Ok(meta) = rmp_serde::from_slice::<GsiMeta>(entry.1.value()) {
-                result.push(meta);
+            match rmp_serde::from_slice::<GsiMeta>(entry.1.value()) {
+                Ok(meta) => result.push(meta),
+                Err(e) => {
+                    tracing::warn!(
+                        key = %entry.0.value(),
+                        error = %e,
+                        "GSI metadata deserialization failed, skipping entry"
+                    );
+                }
             }
         }
         Ok(result)
@@ -340,12 +357,18 @@ mod tests {
             payload_fields: vec!["name".into(), "status".into()],
             tenant_id: 1,
         };
-        assert!(GsiStore::is_covering(&meta, &["email".into(), "name".into()]));
+        assert!(GsiStore::is_covering(
+            &meta,
+            &["email".into(), "name".into()]
+        ));
         assert!(GsiStore::is_covering(
             &meta,
             &["id".into(), "email".into(), "status".into()]
         ));
-        assert!(!GsiStore::is_covering(&meta, &["email".into(), "age".into()]));
+        assert!(!GsiStore::is_covering(
+            &meta,
+            &["email".into(), "age".into()]
+        ));
         assert!(!GsiStore::is_covering(&meta, &[])); // SELECT *
     }
 
