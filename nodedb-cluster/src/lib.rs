@@ -10,6 +10,7 @@ pub mod migration;
 pub mod migration_executor;
 pub mod multi_raft;
 pub mod raft_loop;
+pub mod raft_storage;
 pub mod rebalance;
 pub mod routing;
 pub mod rpc_codec;

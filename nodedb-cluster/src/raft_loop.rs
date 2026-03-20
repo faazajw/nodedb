@@ -393,10 +393,11 @@ mod tests {
     #[tokio::test]
     async fn single_node_raft_loop_commits() {
         // Single-node cluster: elections and commits happen locally.
+        let dir = tempfile::tempdir().unwrap();
         let transport = make_transport(1);
         let rt = RoutingTable::uniform(1, &[1], 1);
-        let mut mr = MultiRaft::new(1, rt);
-        mr.add_group(0, vec![]);
+        let mut mr = MultiRaft::new(1, rt, dir.path().to_path_buf());
+        mr.add_group(0, vec![]).unwrap();
 
         // Force election.
         for node in mr.groups_mut().values_mut() {
@@ -459,20 +460,23 @@ mod tests {
         let rt = RoutingTable::uniform(1, &[1, 2, 3], 3);
 
         // Node 1: force immediate election.
-        let mut mr1 = MultiRaft::new(1, rt.clone());
-        mr1.add_group(0, vec![2, 3]);
+        let dir1 = tempfile::tempdir().unwrap();
+        let mut mr1 = MultiRaft::new(1, rt.clone(), dir1.path().to_path_buf());
+        mr1.add_group(0, vec![2, 3]).unwrap();
         for node in mr1.groups_mut().values_mut() {
             node.election_deadline_override(Instant::now() - Duration::from_millis(1));
         }
 
         // Nodes 2 and 3: normal timeouts (won't start election).
-        let mut mr2 = MultiRaft::new(2, rt.clone())
+        let dir2 = tempfile::tempdir().unwrap();
+        let mut mr2 = MultiRaft::new(2, rt.clone(), dir2.path().to_path_buf())
             .with_election_timeout(Duration::from_secs(60), Duration::from_secs(120));
-        mr2.add_group(0, vec![1, 3]);
+        mr2.add_group(0, vec![1, 3]).unwrap();
 
-        let mut mr3 = MultiRaft::new(3, rt.clone())
+        let dir3 = tempfile::tempdir().unwrap();
+        let mut mr3 = MultiRaft::new(3, rt.clone(), dir3.path().to_path_buf())
             .with_election_timeout(Duration::from_secs(60), Duration::from_secs(120));
-        mr3.add_group(0, vec![1, 2]);
+        mr3.add_group(0, vec![1, 2]).unwrap();
 
         let a1 = CountingApplier::new();
         let a2 = CountingApplier::new();
@@ -557,10 +561,11 @@ mod tests {
 
     #[tokio::test]
     async fn rpc_handler_routes_append_entries() {
+        let dir = tempfile::tempdir().unwrap();
         let transport = make_transport(1);
         let rt = RoutingTable::uniform(1, &[1], 1);
-        let mut mr = MultiRaft::new(1, rt);
-        mr.add_group(0, vec![]);
+        let mut mr = MultiRaft::new(1, rt, dir.path().to_path_buf());
+        mr.add_group(0, vec![]).unwrap();
 
         // Make it a leader first.
         for node in mr.groups_mut().values_mut() {
@@ -597,10 +602,11 @@ mod tests {
 
     #[tokio::test]
     async fn rpc_handler_routes_request_vote() {
+        let dir = tempfile::tempdir().unwrap();
         let transport = make_transport(1);
         let rt = RoutingTable::uniform(1, &[1, 2, 3], 3);
-        let mut mr = MultiRaft::new(1, rt);
-        mr.add_group(0, vec![2, 3]);
+        let mut mr = MultiRaft::new(1, rt, dir.path().to_path_buf());
+        mr.add_group(0, vec![2, 3]).unwrap();
 
         let topo = Arc::new(RwLock::new(ClusterTopology::new()));
         let raft_loop = RaftLoop::new(mr, transport, topo, CountingApplier::new());

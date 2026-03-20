@@ -35,6 +35,8 @@ pub struct ClusterConfig {
     pub num_groups: u64,
     /// Replication factor (number of replicas per group).
     pub replication_factor: usize,
+    /// Data directory for persistent Raft log storage.
+    pub data_dir: std::path::PathBuf,
 }
 
 /// Result of cluster startup — everything needed to run the Raft loop.
@@ -116,9 +118,9 @@ fn bootstrap(config: &ClusterConfig, catalog: &ClusterCatalog) -> Result<Cluster
     );
 
     // Create MultiRaft with all groups (single-node, no peers).
-    let mut multi_raft = MultiRaft::new(config.node_id, routing.clone());
+    let mut multi_raft = MultiRaft::new(config.node_id, routing.clone(), config.data_dir.clone());
     for group_id in routing.group_ids() {
-        multi_raft.add_group(group_id, vec![]);
+        multi_raft.add_group(group_id, vec![])?;
     }
 
     // Generate cluster ID and persist everything.
@@ -228,7 +230,7 @@ fn apply_join_response(
     let routing = RoutingTable::from_parts(resp.vshard_to_group.clone(), group_members);
 
     // Create MultiRaft — join the groups that include this node.
-    let mut multi_raft = MultiRaft::new(config.node_id, routing.clone());
+    let mut multi_raft = MultiRaft::new(config.node_id, routing.clone(), config.data_dir.clone());
     for g in &resp.groups {
         if g.members.contains(&config.node_id) {
             let peers: Vec<u64> = g
@@ -237,7 +239,7 @@ fn apply_join_response(
                 .copied()
                 .filter(|&id| id != config.node_id)
                 .collect();
-            multi_raft.add_group(g.group_id, peers);
+            multi_raft.add_group(g.group_id, peers)?;
         }
     }
 
@@ -289,7 +291,7 @@ fn restart(
         })?;
 
     // Reconstruct MultiRaft from routing table.
-    let mut multi_raft = MultiRaft::new(config.node_id, routing.clone());
+    let mut multi_raft = MultiRaft::new(config.node_id, routing.clone(), config.data_dir.clone());
     for (group_id, info) in routing.group_members() {
         if info.members.contains(&config.node_id) {
             let peers: Vec<u64> = info
@@ -298,7 +300,7 @@ fn restart(
                 .copied()
                 .filter(|&id| id != config.node_id)
                 .collect();
-            multi_raft.add_group(*group_id, peers);
+            multi_raft.add_group(*group_id, peers)?;
         }
     }
 
@@ -416,6 +418,7 @@ mod tests {
             seed_nodes: vec!["127.0.0.1:9400".parse().unwrap()],
             num_groups: 4,
             replication_factor: 1,
+            data_dir: _dir.path().to_path_buf(),
         };
 
         let state = bootstrap(&config, &catalog).unwrap();
@@ -442,6 +445,7 @@ mod tests {
             seed_nodes: vec![],
             num_groups: 4,
             replication_factor: 1,
+            data_dir: _dir.path().to_path_buf(),
         };
 
         // Bootstrap first.
@@ -547,6 +551,7 @@ mod tests {
             seed_nodes: vec![addr1],
             num_groups: 2,
             replication_factor: 1,
+            data_dir: _dir1.path().to_path_buf(),
         };
         let state1 = bootstrap(&config1, &catalog1).unwrap();
 
@@ -594,6 +599,7 @@ mod tests {
             seed_nodes: vec![addr1],
             num_groups: 2,
             replication_factor: 1,
+            data_dir: _dir2.path().to_path_buf(),
         };
 
         let state2 = join(&config2, &catalog2, &t2).await.unwrap();

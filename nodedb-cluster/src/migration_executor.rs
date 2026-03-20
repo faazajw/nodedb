@@ -487,9 +487,10 @@ mod tests {
     #[tokio::test]
     async fn migration_executor_phase1() {
         // Test that phase 1 adds the target node to the Raft group.
+        let dir = tempfile::tempdir().unwrap();
         let rt = RoutingTable::uniform(1, &[1], 1);
-        let mut mr = crate::multi_raft::MultiRaft::new(1, rt.clone());
-        mr.add_group(0, vec![]);
+        let mut mr = crate::multi_raft::MultiRaft::new(1, rt.clone(), dir.path().to_path_buf());
+        mr.add_group(0, vec![]).unwrap();
 
         // Make node 1 the leader (single-node → auto-elected).
         use std::time::Instant;

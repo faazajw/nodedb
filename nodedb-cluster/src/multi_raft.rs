@@ -1,16 +1,17 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::time::Duration;
 
-use tracing::debug;
+use tracing::{debug, info};
 
 use nodedb_raft::node::RaftConfig;
-use nodedb_raft::storage::MemStorage;
 use nodedb_raft::{
     AppendEntriesRequest, AppendEntriesResponse, RaftNode, Ready, RequestVoteRequest,
     RequestVoteResponse,
 };
 
 use crate::error::{ClusterError, Result};
+use crate::raft_storage::RedbLogStorage;
 use crate::routing::RoutingTable;
 
 /// Snapshot of a single Raft group's state for observability.
@@ -38,7 +39,7 @@ pub struct MultiRaft {
     /// This node's ID.
     node_id: u64,
     /// Raft groups hosted on this node (group_id → RaftNode).
-    groups: HashMap<u64, RaftNode<MemStorage>>,
+    groups: HashMap<u64, RaftNode<RedbLogStorage>>,
     /// Routing table (vShard → group mapping).
     routing: RoutingTable,
     /// Default election timeout range.
@@ -46,6 +47,8 @@ pub struct MultiRaft {
     election_timeout_max: Duration,
     /// Heartbeat interval.
     heartbeat_interval: Duration,
+    /// Data directory for persistent Raft log storage.
+    data_dir: PathBuf,
 }
 
 /// Aggregated output from all Raft groups after a tick.
@@ -70,7 +73,7 @@ impl MultiRaftReady {
 }
 
 impl MultiRaft {
-    pub fn new(node_id: u64, routing: RoutingTable) -> Self {
+    pub fn new(node_id: u64, routing: RoutingTable, data_dir: PathBuf) -> Self {
         Self {
             node_id,
             groups: HashMap::new(),
@@ -78,6 +81,7 @@ impl MultiRaft {
             election_timeout_min: Duration::from_millis(150),
             election_timeout_max: Duration::from_millis(300),
             heartbeat_interval: Duration::from_millis(50),
+            data_dir,
         }
     }
 
@@ -95,7 +99,7 @@ impl MultiRaft {
     }
 
     /// Initialize a Raft group on this node.
-    pub fn add_group(&mut self, group_id: u64, peers: Vec<u64>) {
+    pub fn add_group(&mut self, group_id: u64, peers: Vec<u64>) -> Result<()> {
         let config = RaftConfig {
             node_id: self.node_id,
             group_id,
@@ -105,10 +109,15 @@ impl MultiRaft {
             heartbeat_interval: self.heartbeat_interval,
         };
 
-        let node = RaftNode::new(config, MemStorage::new());
+        let storage_path = self.data_dir.join(format!("raft/group-{group_id}.redb"));
+        let storage = RedbLogStorage::open(&storage_path).map_err(|e| ClusterError::Transport {
+            detail: format!("failed to open raft storage for group {group_id}: {e}"),
+        })?;
+        let node = RaftNode::new(config, storage);
         self.groups.insert(group_id, node);
 
-        debug!(node = self.node_id, group = group_id, "added raft group");
+        info!(node = self.node_id, group = group_id, path = %storage_path.display(), "added raft group with persistent storage");
+        Ok(())
     }
 
     /// Tick all Raft groups. Returns aggregated ready output.
@@ -248,7 +257,7 @@ impl MultiRaft {
     }
 
     /// Mutable access to the underlying Raft groups (for testing / bootstrap).
-    pub fn groups_mut(&mut self) -> &mut HashMap<u64, RaftNode<MemStorage>> {
+    pub fn groups_mut(&mut self) -> &mut HashMap<u64, RaftNode<RedbLogStorage>> {
         &mut self.groups
     }
 
@@ -385,12 +394,13 @@ mod tests {
 
     #[test]
     fn single_node_multi_raft() {
+        let dir = tempfile::tempdir().unwrap();
         let rt = RoutingTable::uniform(4, &[1], 1);
-        let mut mr = MultiRaft::new(1, rt);
+        let mut mr = MultiRaft::new(1, rt, dir.path().to_path_buf());
 
         // Add 4 groups, each with no peers (single-node).
         for gid in 0..4 {
-            mr.add_group(gid, vec![]);
+            mr.add_group(gid, vec![]).unwrap();
         }
         assert_eq!(mr.group_count(), 4);
 
@@ -407,11 +417,12 @@ mod tests {
 
     #[test]
     fn propose_routes_to_correct_group() {
+        let dir = tempfile::tempdir().unwrap();
         let rt = RoutingTable::uniform(4, &[1], 1);
-        let mut mr = MultiRaft::new(1, rt);
+        let mut mr = MultiRaft::new(1, rt, dir.path().to_path_buf());
 
         for gid in 0..4 {
-            mr.add_group(gid, vec![]);
+            mr.add_group(gid, vec![]).unwrap();
         }
         for node in mr.groups.values_mut() {
             node.election_deadline_override(Instant::now() - Duration::from_millis(1));
@@ -438,15 +449,18 @@ mod tests {
         let rt = RoutingTable::uniform(2, &nodes, 3);
 
         // Create MultiRaft for each node.
-        let mut mr1 = MultiRaft::new(1, rt.clone());
-        let mut mr2 = MultiRaft::new(2, rt.clone());
-        let mut mr3 = MultiRaft::new(3, rt.clone());
+        let dir1 = tempfile::tempdir().unwrap();
+        let dir2 = tempfile::tempdir().unwrap();
+        let dir3 = tempfile::tempdir().unwrap();
+        let mut mr1 = MultiRaft::new(1, rt.clone(), dir1.path().to_path_buf());
+        let mut mr2 = MultiRaft::new(2, rt.clone(), dir2.path().to_path_buf());
+        let mut mr3 = MultiRaft::new(3, rt.clone(), dir3.path().to_path_buf());
 
         // Add groups to each node.
         for gid in 0..2u64 {
-            mr1.add_group(gid, vec![2, 3]);
-            mr2.add_group(gid, vec![1, 3]);
-            mr3.add_group(gid, vec![1, 2]);
+            mr1.add_group(gid, vec![2, 3]).unwrap();
+            mr2.add_group(gid, vec![1, 3]).unwrap();
+            mr3.add_group(gid, vec![1, 2]).unwrap();
         }
 
         // Force node 1 to start elections.
