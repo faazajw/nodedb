@@ -3,6 +3,11 @@
 //! `ScanFilter` represents a single filter predicate deserialized from the
 //! `filters` bytes in a `PhysicalPlan::DocumentScan`. `compare_json_values`
 //! provides total ordering for JSON values used in sort and range comparisons.
+//!
+//! This module lives in the bridge layer so both the Control Plane (which
+//! constructs `ScanFilter` values during query planning) and the Data Plane
+//! (which evaluates them during physical execution) can share the type without
+//! violating plane separation.
 
 /// A single filter predicate for DocumentScan post-scan evaluation.
 ///
@@ -12,22 +17,22 @@
 /// OR representation: `{"op": "or", "clauses": [[filter1, filter2], [filter3]]}`
 /// means `(filter1 AND filter2) OR filter3`. Each clause is an AND-group;
 /// the document matches if ANY clause group fully matches.
-#[derive(serde::Deserialize, Default)]
-pub(super) struct ScanFilter {
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+pub struct ScanFilter {
     #[serde(default)]
-    field: String,
-    op: String,
+    pub field: String,
+    pub op: String,
     #[serde(default)]
-    value: serde_json::Value,
+    pub value: serde_json::Value,
     /// Disjunctive clause groups for OR predicates.
     /// Each inner Vec is an AND-group. The document matches if ANY group matches.
     #[serde(default)]
-    clauses: Vec<Vec<ScanFilter>>,
+    pub clauses: Vec<Vec<ScanFilter>>,
 }
 
 impl ScanFilter {
     /// Evaluate this filter against a JSON document.
-    pub(super) fn matches(&self, doc: &serde_json::Value) -> bool {
+    pub fn matches(&self, doc: &serde_json::Value) -> bool {
         // OR predicate: document matches if ANY clause group fully matches.
         if self.op == "or" {
             return self
@@ -155,7 +160,7 @@ fn sql_like_match(input: &str, pattern: &str, case_insensitive: bool) -> bool {
 }
 
 /// Compare two optional JSON values for sorting.
-pub(super) fn compare_json_values(
+pub fn compare_json_values(
     a: Option<&serde_json::Value>,
     b: Option<&serde_json::Value>,
 ) -> std::cmp::Ordering {
@@ -191,11 +196,7 @@ pub(super) fn compare_json_values(
 /// Compute an aggregate function over a group of JSON documents.
 ///
 /// Supported operations: count, sum, avg, min, max.
-pub(super) fn compute_aggregate(
-    op: &str,
-    field: &str,
-    docs: &[serde_json::Value],
-) -> serde_json::Value {
+pub fn compute_aggregate(op: &str, field: &str, docs: &[serde_json::Value]) -> serde_json::Value {
     match op {
         "count" => serde_json::json!(docs.len()),
 

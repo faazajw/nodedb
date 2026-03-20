@@ -9,21 +9,17 @@ use datafusion::prelude::*;
 use tracing::warn;
 
 use crate::bridge::envelope::PhysicalPlan;
+use crate::bridge::scan_filter::ScanFilter;
 use crate::control::planner::physical::PhysicalTask;
 use crate::types::{TenantId, VShardId};
 
 /// Convert a DataFusion expression to scan filter predicates.
 ///
-/// Supports: eq, ne, gt, gte, lt, lte on any field.
-/// AND: flattened to a list of predicates (all must match).
-/// OR: emitted as `{"op": "or", "clauses": [[...], [...]]}` — each clause
-///     is a list of AND predicates. The document matches if ANY clause matches.
-///
-/// This representation lets the Data Plane evaluate OR without changing the
-/// simple `ScanFilter` struct: the executor handles the `"or"` filter type
-/// by evaluating each clause group as an AND-set and short-circuiting on
-/// the first match.
-pub(super) fn expr_to_scan_filters(expr: &Expr) -> Vec<serde_json::Value> {
+/// Returns `ScanFilter` structs directly (not JSON values). These are
+/// serialized to MessagePack via `rmp_serde::to_vec_named` for transport
+/// across the SPSC bridge, then deserialized on the Data Plane with
+/// `rmp_serde::from_slice`.
+pub(super) fn expr_to_scan_filters(expr: &Expr) -> Vec<ScanFilter> {
     match expr {
         Expr::BinaryExpr(binary) if binary.op == Operator::And => {
             let mut filters = expr_to_scan_filters(&binary.left);
@@ -31,23 +27,19 @@ pub(super) fn expr_to_scan_filters(expr: &Expr) -> Vec<serde_json::Value> {
             filters
         }
         Expr::BinaryExpr(binary) if binary.op == Operator::Or => {
-            // Collect each side of the OR as an independent AND-group.
             let left_filters = expr_to_scan_filters(&binary.left);
             let right_filters = expr_to_scan_filters(&binary.right);
 
-            // If either side produced no filters (unsupported expression),
-            // we can't safely evaluate the OR — both sides must be evaluable
-            // or we risk returning rows that should be excluded. Fall back to
-            // full scan (no filter) rather than partial evaluation.
             if left_filters.is_empty() || right_filters.is_empty() {
                 warn!("OR predicate has unsupported branch; falling back to unfiltered scan");
                 return Vec::new();
             }
 
-            vec![serde_json::json!({
-                "op": "or",
-                "clauses": [left_filters, right_filters],
-            })]
+            vec![ScanFilter {
+                op: "or".into(),
+                clauses: vec![left_filters, right_filters],
+                ..Default::default()
+            }]
         }
         Expr::BinaryExpr(binary) => {
             let op_str = match binary.op {
@@ -72,15 +64,14 @@ pub(super) fn expr_to_scan_filters(expr: &Expr) -> Vec<serde_json::Value> {
                 _ => return Vec::new(),
             };
 
-            vec![serde_json::json!({
-                "field": field,
-                "op": op_str,
-                "value": value,
-            })]
+            vec![ScanFilter {
+                field,
+                op: op_str.into(),
+                value,
+                clauses: Vec::new(),
+            }]
         }
         Expr::Like(like) => {
-            // LIKE / ILIKE: extract field name and pattern.
-            // DataFusion represents LIKE as: Like { negated, expr, pattern, escape_char, case_insensitive }
             if let Expr::Column(col) = &*like.expr {
                 let pattern = expr_to_json_value(&like.pattern);
                 let op = if like.case_insensitive {
@@ -90,33 +81,36 @@ pub(super) fn expr_to_scan_filters(expr: &Expr) -> Vec<serde_json::Value> {
                 } else {
                     "like"
                 };
-                vec![serde_json::json!({
-                    "field": col.name,
-                    "op": op,
-                    "value": pattern,
-                })]
+                vec![ScanFilter {
+                    field: col.name.clone(),
+                    op: op.into(),
+                    value: pattern,
+                    clauses: Vec::new(),
+                }]
             } else {
                 Vec::new()
             }
         }
         Expr::IsNull(inner) => {
             if let Expr::Column(col) = inner.as_ref() {
-                vec![serde_json::json!({
-                    "field": col.name,
-                    "op": "is_null",
-                    "value": null,
-                })]
+                vec![ScanFilter {
+                    field: col.name.clone(),
+                    op: "is_null".into(),
+                    value: serde_json::Value::Null,
+                    clauses: Vec::new(),
+                }]
             } else {
                 Vec::new()
             }
         }
         Expr::IsNotNull(inner) => {
             if let Expr::Column(col) = inner.as_ref() {
-                vec![serde_json::json!({
-                    "field": col.name,
-                    "op": "is_not_null",
-                    "value": null,
-                })]
+                vec![ScanFilter {
+                    field: col.name.clone(),
+                    op: "is_not_null".into(),
+                    value: serde_json::Value::Null,
+                    clauses: Vec::new(),
+                }]
             } else {
                 Vec::new()
             }

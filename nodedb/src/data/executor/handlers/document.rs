@@ -7,8 +7,8 @@ use std::io::{BufReader, BufWriter, Read as _, Write as _};
 use tracing::{debug, warn};
 
 use crate::bridge::envelope::{ErrorCode, Response};
+use crate::bridge::scan_filter::{ScanFilter, compare_json_values, compute_aggregate};
 use crate::data::executor::core_loop::CoreLoop;
-use crate::data::executor::scan_filter::{ScanFilter, compare_json_values, compute_aggregate};
 use crate::data::executor::task::ExecutionTask;
 
 /// Maximum rows to sort in memory per run. If the filtered result set
@@ -77,7 +77,7 @@ impl CoreLoop {
                 let filter_predicates: Vec<ScanFilter> = if filters.is_empty() {
                     Vec::new()
                 } else {
-                    match serde_json::from_slice(filters) {
+                    match rmp_serde::from_slice(filters) {
                         Ok(f) => f,
                         Err(e) => {
                             warn!(core = self.core_id, error = %e, "failed to parse scan filters");
@@ -307,7 +307,7 @@ impl CoreLoop {
                 let filter_predicates: Vec<ScanFilter> = if filters.is_empty() {
                     Vec::new()
                 } else {
-                    serde_json::from_slice(filters).unwrap_or_default()
+                    rmp_serde::from_slice(filters).unwrap_or_default()
                 };
 
                 let mut groups: std::collections::HashMap<String, Vec<serde_json::Value>> =
@@ -365,7 +365,7 @@ impl CoreLoop {
 
                 if !having.is_empty() {
                     let having_predicates: Vec<ScanFilter> =
-                        serde_json::from_slice(having).unwrap_or_default();
+                        rmp_serde::from_slice(having).unwrap_or_default();
                     if !having_predicates.is_empty() {
                         results.retain(|row| having_predicates.iter().all(|f| f.matches(row)));
                     }

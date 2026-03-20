@@ -95,11 +95,12 @@ impl PlanConverter {
 
                     // Not a point get or indexed scan — emit DocumentScan with filters.
                     let filters = expr_to_scan_filters(&filter.predicate);
-                    let filter_bytes =
-                        serde_json::to_vec(&filters).map_err(|e| crate::Error::Serialization {
-                            format: "json".into(),
+                    let filter_bytes = rmp_serde::to_vec_named(&filters).map_err(|e| {
+                        crate::Error::Serialization {
+                            format: "msgpack".into(),
                             detail: format!("filter serialization: {e}"),
-                        })?;
+                        }
+                    })?;
                     let limit = scan.fetch.unwrap_or(1000);
 
                     return Ok(vec![PhysicalTask {
@@ -120,9 +121,9 @@ impl PlanConverter {
                 if matches!(filter.input.as_ref(), LogicalPlan::Aggregate(_)) {
                     let mut tasks = self.convert(&filter.input, tenant_id)?;
                     let having_filters = expr_to_scan_filters(&filter.predicate);
-                    let having_bytes = serde_json::to_vec(&having_filters).map_err(|e| {
+                    let having_bytes = rmp_serde::to_vec_named(&having_filters).map_err(|e| {
                         crate::Error::Serialization {
-                            format: "json".into(),
+                            format: "msgpack".into(),
                             detail: format!("having serialization: {e}"),
                         }
                     })?;
@@ -138,8 +139,8 @@ impl PlanConverter {
                 let mut tasks = self.convert(&filter.input, tenant_id)?;
                 let filters = expr_to_scan_filters(&filter.predicate);
                 let filter_bytes =
-                    serde_json::to_vec(&filters).map_err(|e| crate::Error::Serialization {
-                        format: "json".into(),
+                    rmp_serde::to_vec_named(&filters).map_err(|e| crate::Error::Serialization {
+                        format: "msgpack".into(),
                         detail: format!("filter serialization: {e}"),
                     })?;
                 for task in &mut tasks {
@@ -170,9 +171,11 @@ impl PlanConverter {
                     for f in &scan.filters {
                         all_filters.extend(expr_to_scan_filters(f));
                     }
-                    serde_json::to_vec(&all_filters).map_err(|e| crate::Error::Serialization {
-                        format: "json".into(),
-                        detail: format!("filter serialization: {e}"),
+                    rmp_serde::to_vec_named(&all_filters).map_err(|e| {
+                        crate::Error::Serialization {
+                            format: "msgpack".into(),
+                            detail: format!("filter serialization: {e}"),
+                        }
                     })?
                 } else {
                     Vec::new()
@@ -345,7 +348,7 @@ impl PlanConverter {
                 // Extract filters from input if it's a Filter plan.
                 let filter_bytes = if let LogicalPlan::Filter(filter) = agg.input.as_ref() {
                     let filters = expr_to_scan_filters(&filter.predicate);
-                    serde_json::to_vec(&filters).unwrap_or_default()
+                    rmp_serde::to_vec_named(&filters).unwrap_or_default()
                 } else {
                     Vec::new()
                 };
