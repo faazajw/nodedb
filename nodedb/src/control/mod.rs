@@ -1,5 +1,7 @@
 pub mod arrow_convert;
+pub mod change_stream;
 pub mod forward;
+pub mod metrics;
 pub mod planner;
 pub mod request_tracker;
 pub mod router;
