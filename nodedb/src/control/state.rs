@@ -84,6 +84,10 @@ pub struct SharedState {
 
     /// Total connections accepted since startup (monotonic counter).
     pub connections_accepted: AtomicU64,
+
+    /// System-wide metrics (contention, subscriptions, WAL fsync, etc.).
+    /// Served via the HTTP metrics endpoint in Prometheus format.
+    pub system_metrics: Option<Arc<crate::control::metrics::SystemMetrics>>,
 }
 
 impl SharedState {
@@ -111,6 +115,7 @@ impl SharedState {
             idle_timeout_secs: 0,
             connections_rejected: AtomicU64::new(0),
             connections_accepted: AtomicU64::new(0),
+            system_metrics: Some(Arc::new(crate::control::metrics::SystemMetrics::new())),
         })
     }
 
@@ -167,6 +172,7 @@ impl SharedState {
             idle_timeout_secs: auth_config.idle_timeout_secs,
             connections_rejected: AtomicU64::new(0),
             connections_accepted: AtomicU64::new(0),
+            system_metrics: Some(Arc::new(crate::control::metrics::SystemMetrics::new())),
         }))
     }
 

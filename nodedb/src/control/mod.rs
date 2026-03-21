@@ -9,6 +9,7 @@ pub mod scatter_gather;
 pub mod security;
 pub mod server;
 pub mod state;
+pub mod trace_context;
 pub mod wal_replication;
 
 pub use forward::LocalForwarder;

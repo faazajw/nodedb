@@ -78,6 +78,11 @@ pub async fn metrics(
     output.push_str("# TYPE nodedb_users_active gauge\n");
     output.push_str(&format!("nodedb_users_active {user_count}\n\n"));
 
+    // SystemMetrics (if available): contention, subscriptions, WAL fsync, etc.
+    if let Some(ref sys_metrics) = state.shared.system_metrics {
+        output.push_str(&sys_metrics.to_prometheus());
+    }
+
     Ok((
         StatusCode::OK,
         [("content-type", "text/plain; version=0.0.4; charset=utf-8")],
