@@ -49,9 +49,9 @@ pub(super) struct BuildingSegment {
 }
 
 /// A sealed segment with a completed HNSW index.
-pub(super) struct SealedSegment {
+pub struct SealedSegment {
     /// Built HNSW index (immutable after construction).
-    pub(super) index: HnswIndex,
+    pub index: HnswIndex,
     /// Base ID offset.
     pub(super) base_id: u32,
     /// Optional SQ8 quantized vectors for accelerated traversal.
@@ -420,6 +420,11 @@ impl VectorCollection {
         }
 
         Some((codec, data))
+    }
+
+    /// Access sealed segments (read-only) for tombstone ratio inspection.
+    pub fn sealed_segments(&self) -> &[SealedSegment] {
+        &self.sealed
     }
 
     /// Compact sealed segments: merge all into one, rebuild HNSW.

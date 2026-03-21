@@ -100,6 +100,15 @@ pub struct CoreLoop {
     /// Key: `"{collection}\0{group_by_fields}\0{agg_ops}"`.
     /// Value: cached result rows as JSON.
     pub(in crate::data::executor) aggregate_cache: HashMap<String, Vec<u8>>,
+
+    /// Last time periodic maintenance (compaction, edge sweep) was run.
+    pub(in crate::data::executor) last_maintenance: Option<std::time::Instant>,
+
+    /// Compaction interval (how often `maybe_run_maintenance` triggers).
+    pub(in crate::data::executor) compaction_interval: std::time::Duration,
+
+    /// Tombstone ratio threshold for auto-compaction (0.0–1.0).
+    pub(in crate::data::executor) compaction_tombstone_threshold: f64,
 }
 
 impl CoreLoop {
@@ -147,7 +156,20 @@ impl CoreLoop {
             idempotency_cache: HashMap::new(),
             stats_store,
             aggregate_cache: HashMap::new(),
+            last_maintenance: None,
+            compaction_interval: std::time::Duration::from_secs(600),
+            compaction_tombstone_threshold: 0.2,
         })
+    }
+
+    /// Set compaction parameters (called after open, before event loop).
+    pub fn set_compaction_config(
+        &mut self,
+        interval: std::time::Duration,
+        tombstone_threshold: f64,
+    ) {
+        self.compaction_interval = interval;
+        self.compaction_tombstone_threshold = tombstone_threshold;
     }
 
     pub fn core_id(&self) -> usize {
@@ -394,7 +416,7 @@ impl CoreLoop {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::bridge::envelope::{PhysicalPlan, Priority, Request};
     use crate::types::*;
@@ -407,6 +429,15 @@ mod tests {
         let (resp_tx, resp_rx) = RingBuffer::channel::<BridgeResponse>(64);
         let core = CoreLoop::open(0, req_rx, resp_tx, dir.path()).unwrap();
         std::mem::forget(dir);
+        (core, req_tx, resp_rx)
+    }
+
+    pub fn make_core_with_dir(
+        dir: &std::path::Path,
+    ) -> (CoreLoop, Producer<BridgeRequest>, Consumer<BridgeResponse>) {
+        let (req_tx, req_rx) = RingBuffer::channel::<BridgeRequest>(64);
+        let (resp_tx, resp_rx) = RingBuffer::channel::<BridgeResponse>(64);
+        let core = CoreLoop::open(0, req_rx, resp_tx, dir).unwrap();
         (core, req_tx, resp_rx)
     }
 

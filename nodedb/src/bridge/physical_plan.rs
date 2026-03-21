@@ -387,6 +387,13 @@ pub enum PhysicalPlan {
     /// dispatch).
     TransactionBatch { plans: Vec<PhysicalPlan> },
 
+    /// On-demand compaction: compact all vector indexes (remove tombstones),
+    /// compact CSR write buffers, and sweep dangling edges.
+    ///
+    /// The Data Plane forces compaction regardless of tombstone ratio.
+    /// Returns compaction statistics as MessagePack payload.
+    Compact,
+
     /// Checkpoint request: flush all engine state to disk and report the
     /// core's checkpoint LSN.
     ///

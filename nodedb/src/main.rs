@@ -113,6 +113,10 @@ async fn main() -> anyhow::Result<()> {
 
     // Start Data Plane cores on dedicated OS threads (thread-per-core).
     // Each core gets: jemalloc arena pinning + eventfd-driven wake + WAL replay.
+    let compaction_cfg = nodedb::data::runtime::CoreCompactionConfig {
+        interval: config.checkpoint.compaction_interval(),
+        tombstone_threshold: config.checkpoint.compaction_tombstone_threshold,
+    };
     let mut core_handles = Vec::with_capacity(num_cores);
     let mut notifiers = Vec::with_capacity(num_cores);
     for (core_id, data_side) in data_sides.into_iter().enumerate() {
@@ -123,6 +127,7 @@ async fn main() -> anyhow::Result<()> {
             &config.data_dir,
             Arc::clone(&wal_records),
             num_cores,
+            compaction_cfg.clone(),
         )?;
         core_handles.push(handle);
         notifiers.push((core_id, notifier));

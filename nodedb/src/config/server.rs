@@ -95,6 +95,20 @@ pub struct CheckpointSettings {
     /// Default: 64 MiB.
     #[serde(default = "default_wal_segment_target_mb")]
     pub wal_segment_target_mb: u64,
+
+    /// How often each Data Plane core runs automatic compaction (seconds).
+    /// Compaction removes tombstoned vectors from HNSW indexes, compacts
+    /// CSR write buffers, and sweeps dangling edges.
+    /// Default: 600 (10 minutes).
+    #[serde(default = "default_compaction_interval")]
+    pub compaction_interval_secs: u64,
+
+    /// Tombstone ratio threshold for automatic vector compaction (0.0–1.0).
+    /// Collections with tombstone ratio below this are skipped during
+    /// periodic compaction. On-demand compaction (`COMPACT`) ignores this.
+    /// Default: 0.2 (20%).
+    #[serde(default = "default_compaction_tombstone_threshold")]
+    pub compaction_tombstone_threshold: f64,
 }
 
 impl Default for CheckpointSettings {
@@ -103,6 +117,8 @@ impl Default for CheckpointSettings {
             interval_secs: default_checkpoint_interval(),
             core_timeout_secs: default_core_timeout(),
             wal_segment_target_mb: default_wal_segment_target_mb(),
+            compaction_interval_secs: default_compaction_interval(),
+            compaction_tombstone_threshold: default_compaction_tombstone_threshold(),
         }
     }
 }
@@ -120,6 +136,11 @@ impl CheckpointSettings {
     pub fn wal_segment_target_bytes(&self) -> u64 {
         self.wal_segment_target_mb * 1024 * 1024
     }
+
+    /// Compaction interval as `Duration`.
+    pub fn compaction_interval(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.compaction_interval_secs)
+    }
 }
 
 fn default_checkpoint_interval() -> u64 {
@@ -132,6 +153,14 @@ fn default_core_timeout() -> u64 {
 
 fn default_wal_segment_target_mb() -> u64 {
     64
+}
+
+fn default_compaction_interval() -> u64 {
+    600
+}
+
+fn default_compaction_tombstone_threshold() -> f64 {
+    0.2
 }
 
 fn default_max_connections() -> usize {

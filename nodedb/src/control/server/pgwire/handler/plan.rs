@@ -65,6 +65,7 @@ pub(super) fn extract_collection(plan: &PhysicalPlan) -> Option<&str> {
         | PhysicalPlan::WalAppend { .. }
         | PhysicalPlan::Cancel { .. }
         | PhysicalPlan::TransactionBatch { .. }
+        | PhysicalPlan::Compact
         | PhysicalPlan::Checkpoint => None,
     }
 }

@@ -112,6 +112,24 @@ impl CoreHealthWatchdog {
 ///
 /// If `wal_records` is non-empty, the core replays vector WAL records
 /// during startup (before entering the event loop) to rebuild HNSW indexes.
+/// Compaction configuration passed to each Data Plane core.
+#[derive(Debug, Clone)]
+pub struct CoreCompactionConfig {
+    /// How often to run automatic compaction.
+    pub interval: std::time::Duration,
+    /// Tombstone ratio threshold for auto-compaction.
+    pub tombstone_threshold: f64,
+}
+
+impl Default for CoreCompactionConfig {
+    fn default() -> Self {
+        Self {
+            interval: std::time::Duration::from_secs(600),
+            tombstone_threshold: 0.2,
+        }
+    }
+}
+
 pub fn spawn_core(
     core_id: usize,
     request_rx: Consumer<BridgeRequest>,
@@ -119,6 +137,7 @@ pub fn spawn_core(
     data_dir: &Path,
     wal_records: Arc<[nodedb_wal::WalRecord]>,
     num_cores: usize,
+    compaction_config: CoreCompactionConfig,
 ) -> std::io::Result<(JoinHandle<()>, EventFdNotifier)> {
     let data_dir = data_dir.to_path_buf();
 
@@ -138,6 +157,12 @@ pub fn spawn_core(
             // 2. Open engines.
             let mut core = CoreLoop::open(core_id, request_rx, response_tx, &data_dir)
                 .expect("failed to open CoreLoop engines");
+
+            // 2b. Apply compaction config.
+            core.set_compaction_config(
+                compaction_config.interval,
+                compaction_config.tombstone_threshold,
+            );
 
             // 3. Load vector checkpoints (fast recovery).
             core.load_vector_checkpoints();
@@ -225,6 +250,9 @@ pub fn spawn_core(
                     core.checkpoint_vector_indexes();
                     last_checkpoint = Instant::now();
                 }
+
+                // Periodic compaction + maintenance (tombstone cleanup, CSR compact, edge sweep).
+                core.maybe_run_maintenance();
             }
         })?;
 
