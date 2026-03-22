@@ -19,6 +19,12 @@ use nodedb_crdt::CrdtState;
 
 use crate::error::LiteError;
 
+/// A single field in a CRDT operation: `(field_name, value)`.
+pub type CrdtField<'a> = (&'a str, LoroValue);
+
+/// A batch CRDT operation: `(collection, doc_id, fields)`.
+pub type CrdtBatchOp<'a> = (&'a str, &'a str, &'a [CrdtField<'a>]);
+
 /// Key prefix for delta blobs in the `Crdt` namespace.
 const DELTA_KEY_PREFIX: &[u8] = b"delta:";
 /// Key for the Loro state snapshot in the `LoroState` namespace.
@@ -154,6 +160,44 @@ impl CrdtEngine {
             mutation_id,
             collection: collection.to_string(),
             document_id: doc_id.to_string(),
+            delta_bytes,
+        });
+
+        Ok(mutation_id)
+    }
+
+    /// Batch upsert: apply N mutations with a single delta export.
+    ///
+    /// This is O(1) Loro exports instead of O(N). Use for bulk inserts
+    /// (cold-start hydration, batch vector insert, graph edge loading).
+    pub fn batch_upsert(&mut self, ops: &[CrdtBatchOp<'_>]) -> Result<u64, LiteError> {
+        if ops.is_empty() {
+            return Ok(0);
+        }
+
+        let version_before = self.state.doc().oplog_vv();
+
+        for &(collection, doc_id, fields) in ops {
+            self.state
+                .upsert(collection, doc_id, fields)
+                .map_err(|e| LiteError::Storage {
+                    detail: format!("CRDT batch upsert failed: {e}"),
+                })?;
+        }
+
+        let delta_bytes = self
+            .state
+            .doc()
+            .export(loro::ExportMode::updates(&version_before))
+            .map_err(|e| LiteError::Storage {
+                detail: format!("batch delta export failed: {e}"),
+            })?;
+
+        let mutation_id = self.next_mutation_id.fetch_add(1, Ordering::Relaxed);
+        self.pending_deltas.push(PendingDelta {
+            mutation_id,
+            collection: "batch".to_string(),
+            document_id: format!("{}_ops", ops.len()),
             delta_bytes,
         });
 
@@ -300,11 +344,16 @@ impl CrdtEngine {
 
     /// Restore pending deltas from bytes (cold start).
     pub fn restore_pending_deltas(&mut self, bytes: &[u8]) {
-        if let Ok(deltas) = rmp_serde::from_slice::<Vec<PendingDelta>>(bytes) {
-            // Advance mutation ID counter past any restored deltas.
-            let max_id = deltas.iter().map(|d| d.mutation_id).max().unwrap_or(0);
-            self.next_mutation_id.store(max_id + 1, Ordering::Relaxed);
-            self.pending_deltas = deltas;
+        match rmp_serde::from_slice::<Vec<PendingDelta>>(bytes) {
+            Ok(deltas) => {
+                // Advance mutation ID counter past any restored deltas.
+                let max_id = deltas.iter().map(|d| d.mutation_id).max().unwrap_or(0);
+                self.next_mutation_id.store(max_id + 1, Ordering::Relaxed);
+                self.pending_deltas = deltas;
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to restore pending deltas, continuing with empty state");
+            }
         }
     }
 

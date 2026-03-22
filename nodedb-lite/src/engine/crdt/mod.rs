@@ -1,3 +1,3 @@
 pub mod engine;
 
-pub use engine::CrdtEngine;
+pub use engine::{CrdtBatchOp, CrdtEngine, CrdtField};

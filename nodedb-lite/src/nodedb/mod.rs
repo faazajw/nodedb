@@ -244,6 +244,144 @@ impl<S: StorageEngine> NodeDbLite<S> {
         }
     }
 
+    /// Batch insert vectors — O(1) CRDT delta export instead of O(N).
+    ///
+    /// Use this for bulk loading (cold-start hydration, benchmark setup, imports).
+    /// Each vector is inserted into HNSW and tracked in the ID map, but only one
+    /// Loro delta is generated for the entire batch.
+    pub fn batch_vector_insert(
+        &self,
+        collection: &str,
+        vectors: &[(&str, &[f32])],
+    ) -> NodeDbResult<()> {
+        if vectors.is_empty() {
+            return Ok(());
+        }
+
+        let dim = vectors[0].1.len();
+
+        // ── Insert all vectors into HNSW ──
+        {
+            let mut indices = self
+                .hnsw_indices
+                .lock()
+                .map_err(|_| NodeDbError::Internal {
+                    detail: "HNSW lock poisoned".into(),
+                })?;
+            let index = Self::ensure_hnsw(&mut indices, collection, dim);
+            let mut id_map = self
+                .vector_id_map
+                .lock()
+                .map_err(|_| NodeDbError::Internal {
+                    detail: "vector ID map lock poisoned".into(),
+                })?;
+
+            for &(id, embedding) in vectors {
+                let internal_id = index.len() as u32;
+                index
+                    .insert(embedding.to_vec())
+                    .map_err(|e| NodeDbError::BadRequest { detail: e })?;
+                id_map.insert(
+                    format!("{collection}:{internal_id}"),
+                    (id.to_string(), internal_id),
+                );
+            }
+        }
+
+        // ── Single CRDT batch ──
+        {
+            let mut crdt = self.crdt.lock().map_err(|_| NodeDbError::Internal {
+                detail: "CRDT lock poisoned".into(),
+            })?;
+
+            use crate::engine::crdt::engine::{CrdtBatchOp, CrdtField};
+
+            // Pre-allocate field arrays so references live long enough.
+            let fields: Vec<Vec<CrdtField<'_>>> = vectors
+                .iter()
+                .map(|&(_, emb)| vec![("embedding_dim", loro::LoroValue::I64(emb.len() as i64))])
+                .collect();
+
+            let ops: Vec<CrdtBatchOp<'_>> = vectors
+                .iter()
+                .zip(fields.iter())
+                .map(|(&(id, _), f)| (collection, id, f.as_slice()))
+                .collect();
+
+            crdt.batch_upsert(&ops).map_err(|e| NodeDbError::Storage {
+                detail: e.to_string(),
+            })?;
+        }
+
+        self.update_memory_stats();
+        Ok(())
+    }
+
+    /// Batch insert graph edges — O(1) CRDT delta export instead of O(N).
+    pub fn batch_graph_insert_edges(
+        &self,
+        edges: &[(&str, &str, &str)], // (src, dst, label)
+    ) -> NodeDbResult<()> {
+        if edges.is_empty() {
+            return Ok(());
+        }
+
+        // ── Insert all edges into CSR ──
+        {
+            let mut csr = self.csr.lock().map_err(|_| NodeDbError::Internal {
+                detail: "CSR lock poisoned".into(),
+            })?;
+            for &(src, dst, label) in edges {
+                csr.add_edge(src, label, dst);
+            }
+        }
+
+        // ── Single CRDT batch ──
+        {
+            let mut crdt = self.crdt.lock().map_err(|_| NodeDbError::Internal {
+                detail: "CRDT lock poisoned".into(),
+            })?;
+
+            use crate::engine::crdt::engine::{CrdtBatchOp, CrdtField};
+
+            let ops: Vec<(String, Vec<CrdtField<'_>>)> = edges
+                .iter()
+                .map(|&(src, dst, label)| {
+                    let edge_id = format!("{src}--{label}-->{dst}");
+                    let fields: Vec<CrdtField<'_>> = vec![
+                        ("src", loro::LoroValue::String(src.into())),
+                        ("dst", loro::LoroValue::String(dst.into())),
+                        ("label", loro::LoroValue::String(label.into())),
+                    ];
+                    (edge_id, fields)
+                })
+                .collect();
+
+            let refs: Vec<CrdtBatchOp<'_>> = ops
+                .iter()
+                .map(|(id, fields)| ("__edges", id.as_str(), fields.as_slice()))
+                .collect();
+
+            crdt.batch_upsert(&refs).map_err(|e| NodeDbError::Storage {
+                detail: e.to_string(),
+            })?;
+        }
+
+        self.update_memory_stats();
+        Ok(())
+    }
+
+    /// Compact the CSR graph index (merge buffer into dense arrays).
+    ///
+    /// Call after bulk edge insertion for optimal traversal performance.
+    pub fn compact_graph(&self) -> NodeDbResult<()> {
+        let mut csr = self.csr.lock().map_err(|_| NodeDbError::Internal {
+            detail: "CSR lock poisoned".into(),
+        })?;
+        csr.compact();
+        Ok(())
+    }
+
     /// Access the memory governor.
     pub fn governor(&self) -> &MemoryGovernor {
         &self.governor
