@@ -57,7 +57,12 @@ pub async fn run(
     tls_settings: Option<&crate::config::server::TlsSettings>,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> crate::Result<()> {
-    let state = AppState { shared, auth_mode };
+    let query_ctx = Arc::new(crate::control::planner::context::QueryContext::new());
+    let state = AppState {
+        shared,
+        auth_mode,
+        query_ctx,
+    };
     let router = build_router(state);
 
     if let Some(tls) = tls_settings {

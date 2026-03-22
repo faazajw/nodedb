@@ -1,11 +1,18 @@
-//! Query endpoint — execute SQL/operations via HTTP POST.
+//! Query endpoint — execute SQL/DDL via HTTP POST.
 //!
-//! POST /query { "sql": "SHOW USERS" }
+//! POST /query { "sql": "SELECT * FROM users LIMIT 10" }
 //! Authorization: Bearer ndb_...
+//!
+//! Supports both DDL commands (SHOW USERS, CREATE COLLECTION, etc.) and
+//! full SQL queries (SELECT, INSERT, UPDATE, DELETE) via DataFusion.
 
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::IntoResponse;
+
+use crate::bridge::envelope::{PhysicalPlan, Status};
+use crate::control::security::identity::{required_permission, role_grants_permission};
+use crate::types::VShardId;
 
 use super::super::auth::{ApiError, AppState, resolve_identity};
 
@@ -30,7 +37,6 @@ pub async fn query(
     {
         return match result {
             Ok(responses) => {
-                // Convert pgwire Response to JSON.
                 let json_rows = responses_to_json(responses);
                 Ok(axum::Json(serde_json::json!({
                     "status": "ok",
@@ -41,13 +47,131 @@ pub async fn query(
         };
     }
 
-    // Not a DDL — return error for now (DataFusion SQL dispatch via HTTP is future work).
-    Err(ApiError::BadRequest(format!(
-        "only DDL commands supported via HTTP API currently. Use pgwire (port 5432) for SQL queries. Got: {sql}"
-    )))
+    // Plan SQL via DataFusion.
+    let tenant_id = identity.tenant_id;
+    let tasks = state
+        .query_ctx
+        .plan_sql(sql, tenant_id)
+        .await
+        .map_err(|e| ApiError::BadRequest(format!("SQL planning failed: {e}")))?;
+
+    if tasks.is_empty() {
+        return Ok(axum::Json(serde_json::json!({
+            "status": "ok",
+            "rows": [],
+        })));
+    }
+
+    // Execute each task via the SPSC bridge.
+    let mut result_rows = Vec::new();
+
+    for task in tasks {
+        // Permission check.
+        let required = required_permission(&task.plan);
+        if !identity.is_superuser
+            && !identity
+                .roles
+                .iter()
+                .any(|r| role_grants_permission(r, required))
+        {
+            return Err(ApiError::Forbidden(format!(
+                "insufficient permissions for this operation (requires {required:?})"
+            )));
+        }
+
+        // Tenant isolation check.
+        if task.tenant_id != tenant_id {
+            return Err(ApiError::Forbidden("tenant isolation violation".into()));
+        }
+
+        // WAL append for write operations.
+        wal_append_if_write(&state, &task)?;
+
+        // Dispatch to Data Plane.
+        let response = dispatch_to_data_plane(&state, task.tenant_id, task.vshard_id, task.plan)
+            .await
+            .map_err(|e| ApiError::Internal(format!("dispatch failed: {e}")))?;
+
+        // Check response status.
+        if response.status != Status::Ok {
+            let detail = response
+                .error_code
+                .as_ref()
+                .map(|c| format!("{c:?}"))
+                .unwrap_or_else(|| "unknown error".into());
+            return Err(ApiError::Internal(detail));
+        }
+
+        // Decode payload to JSON.
+        let payload = response.payload.as_ref();
+        if !payload.is_empty() {
+            match decode_payload_to_json(payload) {
+                Ok(value) => result_rows.push(value),
+                Err(_) => {
+                    // Binary payload — base64 encode.
+                    use base64::Engine;
+                    let encoded = base64::engine::general_purpose::STANDARD.encode(payload);
+                    result_rows.push(serde_json::json!({ "data": encoded }));
+                }
+            }
+        }
+    }
+
+    Ok(axum::Json(serde_json::json!({
+        "status": "ok",
+        "rows": result_rows,
+    })))
 }
 
-/// Convert pgwire Response vec to JSON rows.
+/// Append write operations to WAL before dispatch (single-node durability).
+fn wal_append_if_write(
+    state: &AppState,
+    task: &crate::control::planner::physical::PhysicalTask,
+) -> Result<(), ApiError> {
+    crate::control::server::dispatch_utils::wal_append_if_write(
+        &state.shared.wal,
+        task.tenant_id,
+        task.vshard_id,
+        &task.plan,
+    )
+    .map_err(|e| ApiError::Internal(format!("WAL append: {e}")))
+}
+
+/// Dispatch a physical plan to the Data Plane and await the response.
+async fn dispatch_to_data_plane(
+    state: &AppState,
+    tenant_id: crate::types::TenantId,
+    vshard_id: VShardId,
+    plan: PhysicalPlan,
+) -> crate::Result<crate::bridge::envelope::Response> {
+    crate::control::server::dispatch_utils::dispatch_to_data_plane(
+        &state.shared,
+        tenant_id,
+        vshard_id,
+        plan,
+        0, // trace_id — caller should propagate from request headers
+    )
+    .await
+}
+
+/// Decode a Data Plane response payload to JSON.
+///
+/// Tries MessagePack first (primary format), then JSON passthrough.
+fn decode_payload_to_json(payload: &[u8]) -> Result<serde_json::Value, ()> {
+    // Try MessagePack.
+    if let Ok(val) = rmp_serde::from_slice::<serde_json::Value>(payload) {
+        return Ok(val);
+    }
+
+    // Try JSON passthrough.
+    if let Ok(val) = serde_json::from_slice::<serde_json::Value>(payload) {
+        return Ok(val);
+    }
+
+    Err(())
+}
+
+/// Convert pgwire Response vec to JSON rows (for DDL results).
 fn responses_to_json(responses: Vec<pgwire::api::results::Response>) -> Vec<serde_json::Value> {
     use pgwire::api::results::Response;
 
@@ -61,8 +185,6 @@ fn responses_to_json(responses: Vec<pgwire::api::results::Response>) -> Vec<serd
                 }));
             }
             Response::Query(_) => {
-                // QueryResponse contains a stream — we can't easily drain it here
-                // without async. Return a placeholder.
                 rows.push(serde_json::json!({
                     "type": "query",
                     "note": "query results available via pgwire protocol",

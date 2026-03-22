@@ -18,6 +18,8 @@ use crate::control::state::SharedState;
 pub struct AppState {
     pub shared: Arc<SharedState>,
     pub auth_mode: AuthMode,
+    /// DataFusion query context for SQL planning (Send + Sync).
+    pub query_ctx: Arc<crate::control::planner::context::QueryContext>,
 }
 
 /// Resolve an authenticated identity from HTTP headers.
