@@ -17,7 +17,7 @@
 /// OR representation: `{"op": "or", "clauses": [[filter1, filter2], [filter3]]}`
 /// means `(filter1 AND filter2) OR filter3`. Each clause is an AND-group;
 /// the document matches if ANY clause group fully matches.
-#[derive(serde::Serialize, serde::Deserialize, Default)]
+#[derive(Clone, serde::Serialize, serde::Deserialize, Default)]
 pub struct ScanFilter {
     #[serde(default)]
     pub field: String,

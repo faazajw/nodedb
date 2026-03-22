@@ -1,5 +1,6 @@
 pub mod checkpoint;
 pub mod cold;
+pub mod cold_filter;
 pub mod cold_query;
 pub mod compaction;
 pub mod segment;
