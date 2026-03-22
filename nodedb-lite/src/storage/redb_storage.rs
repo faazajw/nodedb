@@ -51,6 +51,13 @@ impl RedbStorage {
         Ok(Self { db: Mutex::new(db) })
     }
 
+    /// Wrap a pre-built `Database` (e.g., one created with a custom `StorageBackend`).
+    ///
+    /// Used by the WASM crate to pass in an OPFS-backed database.
+    pub fn from_database(db: Database) -> Self {
+        Self { db: Mutex::new(db) }
+    }
+
     /// Build the composite key: `[namespace_u8, ...key_bytes]`.
     fn make_key(ns: Namespace, key: &[u8]) -> Vec<u8> {
         let mut k = Vec::with_capacity(1 + key.len());

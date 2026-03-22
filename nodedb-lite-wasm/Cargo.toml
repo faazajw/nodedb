@@ -19,6 +19,17 @@ serde-wasm-bindgen = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = [
+    "FileSystemSyncAccessHandle",
+    "FileSystemReadWriteOptions",
+    "FileSystemDirectoryHandle",
+    "FileSystemFileHandle",
+    "FileSystemGetFileOptions",
+    "WorkerGlobalScope",
+    "WorkerNavigator",
+    "StorageManager",
+] }
+redb = { workspace = true }
 
 [dev-dependencies]
 wasm-bindgen-test = "0.3"

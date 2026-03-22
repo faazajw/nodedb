@@ -1,17 +1,21 @@
 //! JavaScript/TypeScript bindings for NodeDB-Lite via wasm-bindgen.
 //!
-//! Uses `redb` with `InMemoryBackend` for storage (same engine as native).
-//! Future: OPFS persistence via custom `redb::StorageBackend` over OPFS.
+//! Uses `redb` for storage — same engine as native.
+//! - `open()` — in-memory (no persistence across page reloads)
+//! - `openPersistent()` — OPFS-backed (data survives reloads, Web Worker only)
 //!
 //! ```js
-//! import { NodeDbLiteWasm } from "nodedb-lite-wasm";
-//!
+//! // In-memory:
 //! const db = await NodeDbLiteWasm.open(1n);
-//! await db.vectorInsert("embeddings", "v1", new Float32Array([1.0, 0.0]));
-//! const results = await db.vectorSearch("embeddings", new Float32Array([1.0, 0.0]), 5);
+//!
+//! // Persistent (must run in a Web Worker):
+//! const db = await NodeDbLiteWasm.openPersistent("mydb.redb", 1n);
 //! ```
 
+pub mod opfs_backend;
+
 use wasm_bindgen::prelude::*;
+use wasm_bindgen_futures::JsFuture;
 
 use nodedb_client::NodeDb;
 use nodedb_lite::{NodeDbLite, RedbStorage};
@@ -27,12 +31,65 @@ pub struct NodeDbLiteWasm {
 
 #[wasm_bindgen]
 impl NodeDbLiteWasm {
-    /// Create a new in-memory NodeDB-Lite database.
-    ///
-    /// `peer_id` is the unique identifier for this device/browser tab (for CRDT).
+    /// Create a new in-memory NodeDB-Lite database (no persistence).
     #[wasm_bindgen]
     pub async fn open(peer_id: u64) -> Result<NodeDbLiteWasm, JsError> {
         let storage = RedbStorage::open_in_memory().map_err(|e| JsError::new(&e.to_string()))?;
+        let db = NodeDbLite::open(storage, peer_id)
+            .await
+            .map_err(|e| JsError::new(&e.to_string()))?;
+        Ok(Self { db })
+    }
+
+    /// Create a persistent NodeDB-Lite database backed by OPFS.
+    ///
+    /// **Must run in a Web Worker** — OPFS SyncAccessHandle is not
+    /// available on the main thread.
+    ///
+    /// Data survives page reloads and browser restarts.
+    #[wasm_bindgen(js_name = "openPersistent")]
+    pub async fn open_persistent(
+        filename: &str,
+        peer_id: u64,
+    ) -> Result<NodeDbLiteWasm, JsError> {
+        // Get OPFS root directory.
+        let global: web_sys::WorkerGlobalScope = js_sys::global()
+            .dyn_into()
+            .map_err(|_| JsError::new("openPersistent must be called from a Web Worker"))?;
+        let storage = global.navigator().storage();
+        let root: web_sys::FileSystemDirectoryHandle =
+            JsFuture::from(storage.get_directory())
+                .await
+                .map_err(|e| JsError::new(&format!("OPFS getDirectory failed: {e:?}")))?
+                .dyn_into()
+                .map_err(|_| JsError::new("expected FileSystemDirectoryHandle"))?;
+
+        // Get or create the database file.
+        let opts = web_sys::FileSystemGetFileOptions::new();
+        opts.set_create(true);
+        let file_handle: web_sys::FileSystemFileHandle =
+            JsFuture::from(root.get_file_handle_with_options(filename, &opts))
+                .await
+                .map_err(|e| JsError::new(&format!("OPFS getFileHandle failed: {e:?}")))?
+                .dyn_into()
+                .map_err(|_| JsError::new("expected FileSystemFileHandle"))?;
+
+        // Create sync access handle.
+        let sync_handle: web_sys::FileSystemSyncAccessHandle =
+            JsFuture::from(file_handle.create_sync_access_handle())
+                .await
+                .map_err(|e| JsError::new(&format!("OPFS createSyncAccessHandle failed: {e:?}")))?
+                .dyn_into()
+                .map_err(|_| JsError::new("expected FileSystemSyncAccessHandle"))?;
+
+        // Create redb with OPFS backend.
+        let backend = opfs_backend::OpfsBackend::new(sync_handle);
+        let db_inner = redb::Database::builder()
+            .create_with_backend(backend)
+            .map_err(|e| JsError::new(&format!("redb create with OPFS failed: {e}")))?;
+
+        // Wrap in RedbStorage.
+        let storage = RedbStorage::from_database(db_inner);
         let db = NodeDbLite::open(storage, peer_id)
             .await
             .map_err(|e| JsError::new(&e.to_string()))?;
