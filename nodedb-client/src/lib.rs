@@ -2,6 +2,8 @@ pub mod traits;
 
 #[cfg(feature = "remote")]
 pub mod remote;
+#[cfg(feature = "remote")]
+mod remote_parse;
 
 pub use traits::NodeDb;
 

@@ -110,88 +110,9 @@ impl NodeDbRemote {
     }
 }
 
-/// Convert a `tokio_postgres` column value to `nodedb_types::Value`.
-fn pg_value_to_value(
-    row: &tokio_postgres::Row,
-    idx: usize,
-    ty: &tokio_postgres::types::Type,
-) -> Value {
-    use tokio_postgres::types::Type;
-
-    // Try typed extraction based on the column type.
-    match *ty {
-        Type::BOOL => row
-            .try_get::<_, bool>(idx)
-            .map(Value::Bool)
-            .unwrap_or(Value::Null),
-        Type::INT2 => row
-            .try_get::<_, i16>(idx)
-            .map(|v| Value::Integer(v as i64))
-            .unwrap_or(Value::Null),
-        Type::INT4 => row
-            .try_get::<_, i32>(idx)
-            .map(|v| Value::Integer(v as i64))
-            .unwrap_or(Value::Null),
-        Type::INT8 => row
-            .try_get::<_, i64>(idx)
-            .map(Value::Integer)
-            .unwrap_or(Value::Null),
-        Type::FLOAT4 => row
-            .try_get::<_, f32>(idx)
-            .map(|v| Value::Float(v as f64))
-            .unwrap_or(Value::Null),
-        Type::FLOAT8 => row
-            .try_get::<_, f64>(idx)
-            .map(Value::Float)
-            .unwrap_or(Value::Null),
-        Type::TEXT | Type::VARCHAR | Type::NAME => row
-            .try_get::<_, String>(idx)
-            .map(Value::String)
-            .unwrap_or(Value::Null),
-        Type::BYTEA => row
-            .try_get::<_, Vec<u8>>(idx)
-            .map(Value::Bytes)
-            .unwrap_or(Value::Null),
-        Type::JSON | Type::JSONB => row
-            .try_get::<_, serde_json::Value>(idx)
-            .map(|v| json_to_value(&v))
-            .unwrap_or(Value::Null),
-        _ => {
-            // Fallback: try as string.
-            row.try_get::<_, String>(idx)
-                .map(Value::String)
-                .unwrap_or(Value::Null)
-        }
-    }
-}
-
-/// Convert `serde_json::Value` to `nodedb_types::Value`.
-fn json_to_value(v: &serde_json::Value) -> Value {
-    match v {
-        serde_json::Value::Null => Value::Null,
-        serde_json::Value::Bool(b) => Value::Bool(*b),
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                Value::Integer(i)
-            } else {
-                Value::Float(n.as_f64().unwrap_or(0.0))
-            }
-        }
-        serde_json::Value::String(s) => Value::String(s.clone()),
-        serde_json::Value::Array(a) => Value::Array(a.iter().map(json_to_value).collect()),
-        serde_json::Value::Object(m) => Value::Object(
-            m.iter()
-                .map(|(k, v)| (k.clone(), json_to_value(v)))
-                .collect(),
-        ),
-    }
-}
-
-/// Format an f32 slice as a SQL ARRAY literal: `ARRAY[0.1,0.2,0.3]`.
-fn format_vector_array(v: &[f32]) -> String {
-    let inner: Vec<String> = v.iter().map(|f| format!("{f}")).collect();
-    format!("ARRAY[{}]", inner.join(","))
-}
+use super::remote_parse::{
+    format_vector_array, json_to_value, pg_value_to_value, quote_identifier,
+};
 
 #[async_trait]
 impl NodeDb for NodeDbRemote {
@@ -200,8 +121,14 @@ impl NodeDb for NodeDbRemote {
         collection: &str,
         query: &[f32],
         k: usize,
-        _filter: Option<&MetadataFilter>,
+        filter: Option<&MetadataFilter>,
     ) -> NodeDbResult<Vec<SearchResult>> {
+        if filter.is_some() {
+            return Err(NodeDbError::Storage {
+                detail: "metadata filters not yet supported on remote client".into(),
+            });
+        }
+        let collection = quote_identifier(collection);
         // Use NodeDB DSL: SEARCH <collection> USING VECTOR(ARRAY[...], <k>)
         let sql = format!(
             "SEARCH {collection} USING VECTOR({}, {k})",
@@ -252,6 +179,7 @@ impl NodeDb for NodeDbRemote {
         embedding: &[f32],
         metadata: Option<Document>,
     ) -> NodeDbResult<()> {
+        let collection = quote_identifier(collection);
         let meta_json = metadata
             .map(|d| serde_json::to_string(&d).unwrap_or_else(|_| "{}".into()))
             .unwrap_or_else(|| "{}".into());
@@ -265,6 +193,7 @@ impl NodeDb for NodeDbRemote {
     }
 
     async fn vector_delete(&self, collection: &str, id: &str) -> NodeDbResult<()> {
+        let collection = quote_identifier(collection);
         let sql = format!("DELETE FROM {collection} WHERE id = $1");
         self.execute_raw(&sql, &[&id]).await?;
         Ok(())
@@ -363,6 +292,7 @@ impl NodeDb for NodeDbRemote {
     }
 
     async fn document_get(&self, collection: &str, id: &str) -> NodeDbResult<Option<Document>> {
+        let collection = quote_identifier(collection);
         let sql = format!("SELECT id, data FROM {collection} WHERE id = $1");
         let (_, rows) = self.query_raw(&sql, &[&id]).await?;
 
@@ -396,6 +326,7 @@ impl NodeDb for NodeDbRemote {
     }
 
     async fn document_put(&self, collection: &str, doc: Document) -> NodeDbResult<()> {
+        let collection = quote_identifier(collection);
         let data_json = serde_json::to_string(&doc.fields).unwrap_or_else(|_| "{}".into());
         let sql = format!(
             "INSERT INTO {collection} (id, data) VALUES ($1, $2::jsonb) \
@@ -406,14 +337,18 @@ impl NodeDb for NodeDbRemote {
     }
 
     async fn document_delete(&self, collection: &str, id: &str) -> NodeDbResult<()> {
+        let collection = quote_identifier(collection);
         let sql = format!("DELETE FROM {collection} WHERE id = $1");
         self.execute_raw(&sql, &[&id]).await?;
         Ok(())
     }
 
-    async fn execute_sql(&self, query: &str, _params: &[Value]) -> NodeDbResult<QueryResult> {
-        // For now, pass the query directly. Parameter binding for arbitrary
-        // Value types would require building a dynamic ToSql adapter.
+    async fn execute_sql(&self, query: &str, params: &[Value]) -> NodeDbResult<QueryResult> {
+        if !params.is_empty() {
+            return Err(NodeDbError::Storage {
+                detail: "parameter binding not yet supported on remote client; use literal values in SQL".into(),
+            });
+        }
         let (columns, rows) = self.query_raw(query, &[]).await?;
 
         Ok(QueryResult {
