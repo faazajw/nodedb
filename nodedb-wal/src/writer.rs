@@ -211,11 +211,11 @@ impl WalWriter {
             self.encryption_ring.as_ref().map(|r| r.current()),
         )?;
 
-        // Write to double-write buffer first (torn write protection).
-        // If the process crashes after DWB write but before WAL write,
-        // recovery can reconstruct the record from the DWB.
+        // Write to double-write buffer (deferred — no fsync yet).
+        // The DWB is fsynced in batch during `sync()`, before the WAL fsync.
+        // This amortizes DWB fsync cost across the entire group commit batch.
         if let Some(dwb) = &mut self.double_write {
-            let _ = dwb.write_record(&record); // Best-effort — DWB failure is non-fatal.
+            let _ = dwb.write_record_deferred(&record); // Best-effort — DWB failure is non-fatal.
         }
 
         let header_bytes = record.header.to_bytes();
@@ -244,10 +244,15 @@ impl WalWriter {
     /// Flush the write buffer to disk (group commit).
     ///
     /// This issues a single write + fsync for all records accumulated
-    /// since the last flush.
+    /// since the last flush. The DWB is also fsynced (one fsync for all
+    /// deferred DWB writes in this batch).
     pub fn sync(&mut self) -> Result<()> {
         if self.buffer.is_empty() {
             return Ok(());
+        }
+        // Flush DWB first — records must be durable in DWB before WAL.
+        if let Some(dwb) = &mut self.double_write {
+            let _ = dwb.flush(); // Best-effort — DWB failure is non-fatal.
         }
         self.flush_buffer()?;
         self.file.sync_all()?;

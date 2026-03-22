@@ -45,6 +45,8 @@ pub struct DoubleWriteBuffer {
     write_pos: u32,
     /// Number of valid records in the buffer.
     count: u32,
+    /// Whether there are deferred writes that haven't been fsynced.
+    dirty: bool,
 }
 
 impl std::fmt::Debug for DoubleWriteBuffer {
@@ -76,6 +78,7 @@ impl DoubleWriteBuffer {
             path: path.to_path_buf(),
             write_pos: 0,
             count: 0,
+            dirty: false,
         };
 
         // Try to read existing header.
@@ -101,21 +104,34 @@ impl DoubleWriteBuffer {
 
     /// Write a WAL record to the double-write buffer before WAL append.
     ///
-    /// The record is written at the current circular position. The header
-    /// is updated with the new count and position. The file is fsynced.
+    /// The record is written at the current circular position and the file
+    /// is fsynced immediately. Use `write_record_deferred` + `flush` for
+    /// batch mode (multiple records per fsync).
     pub fn write_record(&mut self, record: &WalRecord) -> Result<()> {
+        self.write_record_deferred(record)?;
+        self.flush()
+    }
+
+    /// Write a WAL record to the DWB without fsyncing.
+    ///
+    /// The data is written to the OS page cache but not guaranteed durable
+    /// until `flush()` is called. Use this in batch mode: write all records
+    /// in a group commit batch, then call `flush()` once — reducing fsync
+    /// calls from N-per-batch to 1-per-batch.
+    pub fn write_record_deferred(&mut self, record: &WalRecord) -> Result<()> {
         let record_bytes = record.header.to_bytes();
         let total_size = HEADER_SIZE + record.payload.len();
 
-        // Write record at current slot position.
-        // Each slot stores: [total_size: 4B][header: 30B][payload: N bytes]
-        let slot_offset = DWB_HEADER_SIZE as u64
-            + (self.write_pos as u64 % DWB_CAPACITY as u64) * (4 + HEADER_SIZE as u64 + 64 * 1024);
         // Max 64 KiB per slot — larger records skip the double-write buffer
         // (they're multi-page and need different protection).
         if total_size > 64 * 1024 {
             return Ok(()); // Skip oversized records.
         }
+
+        // Write record at current slot position.
+        // Each slot stores: [total_size: 4B][header: 30B][payload: N bytes]
+        let slot_offset = DWB_HEADER_SIZE as u64
+            + (self.write_pos as u64 % DWB_CAPACITY as u64) * (4 + HEADER_SIZE as u64 + 64 * 1024);
 
         self.file
             .seek(SeekFrom::Start(slot_offset))
@@ -129,8 +145,22 @@ impl DoubleWriteBuffer {
         // Update position.
         self.write_pos = self.write_pos.wrapping_add(1);
         self.count = self.count.saturating_add(1).min(DWB_CAPACITY as u32);
+        self.dirty = true;
 
-        // Write header.
+        Ok(())
+    }
+
+    /// Flush the DWB header and fsync the file.
+    ///
+    /// Must be called after one or more `write_record_deferred` calls to make
+    /// the records durable. The single fsync covers all deferred writes since
+    /// the last flush — amortizing the cost across the group commit batch.
+    pub fn flush(&mut self) -> Result<()> {
+        if !self.dirty {
+            return Ok(());
+        }
+
+        // Write header with updated count and position.
         self.file.seek(SeekFrom::Start(0)).map_err(WalError::Io)?;
         self.file
             .write_all(&DWB_MAGIC.to_le_bytes())
@@ -142,8 +172,8 @@ impl DoubleWriteBuffer {
             .write_all(&self.write_pos.to_le_bytes())
             .map_err(WalError::Io)?;
 
-        // Fsync the double-write buffer before the WAL write.
         self.file.sync_all().map_err(WalError::Io)?;
+        self.dirty = false;
 
         Ok(())
     }
@@ -261,5 +291,63 @@ mod tests {
         let recovered = dwb.recover_record(7).unwrap();
         assert!(recovered.is_some());
         assert_eq!(recovered.unwrap().payload, b"durable");
+    }
+
+    #[test]
+    fn batch_deferred_writes_and_flush() {
+        let dir = tempfile::tempdir().unwrap();
+        let dwb_path = dir.path().join("batch.dwb");
+
+        let mut dwb = DoubleWriteBuffer::open(&dwb_path).unwrap();
+
+        // Write multiple records without fsyncing.
+        for lsn in 1..=5u64 {
+            let record = WalRecord::new(
+                RecordType::Put as u16,
+                lsn,
+                1,
+                0,
+                format!("batch-{lsn}").into_bytes(),
+                None,
+            )
+            .unwrap();
+            dwb.write_record_deferred(&record).unwrap();
+        }
+
+        assert!(dwb.dirty);
+
+        // Single flush covers all 5 records.
+        dwb.flush().unwrap();
+        assert!(!dwb.dirty);
+
+        // All records should be recoverable.
+        for lsn in 1..=5u64 {
+            let recovered = dwb.recover_record(lsn).unwrap();
+            assert!(recovered.is_some(), "LSN {lsn} should be recoverable");
+            assert_eq!(
+                recovered.unwrap().payload,
+                format!("batch-{lsn}").into_bytes()
+            );
+        }
+    }
+
+    #[test]
+    fn flush_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let dwb_path = dir.path().join("idem.dwb");
+
+        let mut dwb = DoubleWriteBuffer::open(&dwb_path).unwrap();
+
+        // Flush without any writes — should be a no-op.
+        dwb.flush().unwrap();
+        assert!(!dwb.dirty);
+
+        // Write + flush + flush — second flush is no-op.
+        let record = WalRecord::new(RecordType::Put as u16, 1, 1, 0, b"data".to_vec(), None)
+            .unwrap();
+        dwb.write_record_deferred(&record).unwrap();
+        dwb.flush().unwrap();
+        dwb.flush().unwrap(); // Idempotent.
+        assert!(!dwb.dirty);
     }
 }
