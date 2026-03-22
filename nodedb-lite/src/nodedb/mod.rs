@@ -463,15 +463,21 @@ impl<S: StorageEngine> crate::sync::SyncDelegate for NodeDbLite<S> {
     }
 
     fn acknowledge(&self, mutation_id: u64) {
-        let _ = self.acknowledge_deltas(mutation_id);
+        if let Err(e) = self.acknowledge_deltas(mutation_id) {
+            tracing::warn!(mutation_id, error = %e, "SyncDelegate: acknowledge failed");
+        }
     }
 
     fn reject(&self, mutation_id: u64) {
-        let _ = self.reject_delta(mutation_id);
+        if let Err(e) = self.reject_delta(mutation_id) {
+            tracing::warn!(mutation_id, error = %e, "SyncDelegate: reject failed");
+        }
     }
 
     fn import_remote(&self, data: &[u8]) {
-        let _ = self.import_remote_deltas(data);
+        if let Err(e) = self.import_remote_deltas(data) {
+            tracing::warn!(error = %e, "SyncDelegate: import_remote failed");
+        }
     }
 }
 
