@@ -47,8 +47,8 @@ impl ScanFilter {
         };
 
         match self.op.as_str() {
-            "eq" => field_val == &self.value,
-            "ne" | "neq" => field_val != &self.value,
+            "eq" => coerced_eq(field_val, &self.value),
+            "ne" | "neq" => !coerced_eq(field_val, &self.value),
             "gt" => {
                 compare_json_values(Some(field_val), Some(&self.value))
                     == std::cmp::Ordering::Greater
@@ -174,6 +174,10 @@ fn sql_like_match(input: &str, pattern: &str, case_insensitive: bool) -> bool {
 }
 
 /// Compare two optional JSON values for sorting.
+///
+/// Performs type coercion: if one side is a number and the other is a string
+/// that parses as a number, both are compared numerically. This handles the
+/// common case of `"5" > 4` and `age > "25"` in mixed-type predicates.
 pub fn compare_json_values(
     a: Option<&serde_json::Value>,
     b: Option<&serde_json::Value>,
@@ -185,14 +189,18 @@ pub fn compare_json_values(
         (None, Some(_)) => Ordering::Less,
         (Some(_), None) => Ordering::Greater,
         (Some(a), Some(b)) => {
-            // Try numeric comparison first.
+            // Try direct numeric comparison (both are numbers).
             if let (Some(af), Some(bf)) = (a.as_f64(), b.as_f64()) {
                 return af.partial_cmp(&bf).unwrap_or(Ordering::Equal);
             }
-            // Try integer comparison.
-            if let (Some(ai), Some(bi)) = (a.as_i64(), b.as_i64()) {
-                return ai.cmp(&bi);
+
+            // Type coercion: one number + one string-that-parses-as-number.
+            let af = coerce_to_f64(a);
+            let bf = coerce_to_f64(b);
+            if let (Some(af), Some(bf)) = (af, bf) {
+                return af.partial_cmp(&bf).unwrap_or(Ordering::Equal);
             }
+
             // Fall back to string comparison.
             let a_str = a
                 .as_str()
@@ -205,6 +213,37 @@ pub fn compare_json_values(
             a_str.cmp(&b_str)
         }
     }
+}
+
+/// Try to coerce a JSON value to f64.
+///
+/// - Numbers: use `as_f64()` directly.
+/// - Strings: try parsing as f64 (handles "5", "3.14", "-10").
+/// - Other types: return None.
+fn coerce_to_f64(v: &serde_json::Value) -> Option<f64> {
+    if let Some(f) = v.as_f64() {
+        return Some(f);
+    }
+    if let Some(s) = v.as_str() {
+        return s.parse::<f64>().ok();
+    }
+    None
+}
+
+/// Check equality with type coercion.
+///
+/// Handles `"5" == 5` by coercing both sides to f64 when one is a number
+/// and the other is a numeric string.
+pub fn coerced_eq(a: &serde_json::Value, b: &serde_json::Value) -> bool {
+    // Fast path: identical types.
+    if a == b {
+        return true;
+    }
+    // Coerce: if both coerce to the same f64, they're equal.
+    if let (Some(af), Some(bf)) = (coerce_to_f64(a), coerce_to_f64(b)) {
+        return (af - bf).abs() < f64::EPSILON;
+    }
+    false
 }
 
 /// Compute an aggregate function over a group of JSON documents.
@@ -258,5 +297,168 @@ pub fn compute_aggregate(op: &str, field: &str, docs: &[serde_json::Value]) -> s
         }
 
         _ => serde_json::Value::Null,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::cmp::Ordering;
+
+    // ── Type coercion tests ─────────────────────────────────────────
+
+    #[test]
+    fn coerce_number_number() {
+        assert_eq!(
+            compare_json_values(Some(&json!(5)), Some(&json!(4))),
+            Ordering::Greater
+        );
+        assert_eq!(
+            compare_json_values(Some(&json!(3.0)), Some(&json!(3.0))),
+            Ordering::Equal
+        );
+    }
+
+    #[test]
+    fn coerce_string_number() {
+        // "5" > 4 should work via coercion.
+        assert_eq!(
+            compare_json_values(Some(&json!("5")), Some(&json!(4))),
+            Ordering::Greater
+        );
+        // 4 < "5" should also work.
+        assert_eq!(
+            compare_json_values(Some(&json!(4)), Some(&json!("5"))),
+            Ordering::Less
+        );
+    }
+
+    #[test]
+    fn coerce_string_string_numeric() {
+        // Both are numeric strings.
+        assert_eq!(
+            compare_json_values(Some(&json!("10")), Some(&json!("9"))),
+            Ordering::Greater
+        );
+    }
+
+    #[test]
+    fn coerce_string_string_non_numeric() {
+        // Non-numeric strings: lexicographic.
+        assert_eq!(
+            compare_json_values(Some(&json!("apple")), Some(&json!("banana"))),
+            Ordering::Less
+        );
+    }
+
+    #[test]
+    fn coerced_eq_mixed_types() {
+        assert!(coerced_eq(&json!(5), &json!("5")));
+        assert!(coerced_eq(&json!("5"), &json!(5)));
+        assert!(coerced_eq(&json!(3.14), &json!("3.14")));
+        assert!(!coerced_eq(&json!(5), &json!("6")));
+        assert!(!coerced_eq(&json!("hello"), &json!(5)));
+    }
+
+    #[test]
+    fn coerced_eq_same_types() {
+        assert!(coerced_eq(&json!(5), &json!(5)));
+        assert!(coerced_eq(&json!("hello"), &json!("hello")));
+        assert!(!coerced_eq(&json!(5), &json!(6)));
+    }
+
+    // ── ScanFilter with coercion ────────────────────────────────────
+
+    #[test]
+    fn filter_eq_coercion() {
+        let doc = json!({"age": 25});
+        let filter = ScanFilter {
+            field: "age".into(),
+            op: "eq".into(),
+            value: json!("25"),
+            clauses: vec![],
+        };
+        assert!(filter.matches(&doc));
+    }
+
+    #[test]
+    fn filter_gt_coercion() {
+        let doc = json!({"score": "90"});
+        let filter = ScanFilter {
+            field: "score".into(),
+            op: "gt".into(),
+            value: json!(80),
+            clauses: vec![],
+        };
+        assert!(filter.matches(&doc));
+    }
+
+    #[test]
+    fn filter_lt_coercion() {
+        let doc = json!({"price": 10});
+        let filter = ScanFilter {
+            field: "price".into(),
+            op: "lt".into(),
+            value: json!("20"),
+            clauses: vec![],
+        };
+        assert!(filter.matches(&doc));
+    }
+
+    #[test]
+    fn filter_ne_coercion() {
+        let doc = json!({"status": 1});
+        let filter = ScanFilter {
+            field: "status".into(),
+            op: "ne".into(),
+            value: json!("1"),
+            clauses: vec![],
+        };
+        // 1 == "1" after coercion, so ne should be false.
+        assert!(!filter.matches(&doc));
+    }
+
+    // ── SQL LIKE tests ──────────────────────────────────────────────
+
+    #[test]
+    fn like_basic() {
+        assert!(sql_like_match("hello world", "%world", false));
+        assert!(sql_like_match("hello world", "hello%", false));
+        assert!(sql_like_match("hello world", "%lo wo%", false));
+        assert!(!sql_like_match("hello world", "xyz%", false));
+    }
+
+    #[test]
+    fn like_single_char() {
+        assert!(sql_like_match("cat", "c_t", false));
+        assert!(!sql_like_match("cat", "c__t", false));
+    }
+
+    #[test]
+    fn ilike_case_insensitive() {
+        assert!(sql_like_match("Hello", "hello", true));
+        assert!(sql_like_match("WORLD", "%world%", true));
+    }
+
+    // ── Aggregate tests ─────────────────────────────────────────────
+
+    #[test]
+    fn aggregate_count() {
+        let docs = vec![json!({"x": 1}), json!({"x": 2}), json!({"x": 3})];
+        assert_eq!(compute_aggregate("count", "x", &docs), json!(3));
+    }
+
+    #[test]
+    fn aggregate_sum() {
+        let docs = vec![json!({"v": 10}), json!({"v": 20}), json!({"v": 30})];
+        assert_eq!(compute_aggregate("sum", "v", &docs), json!(60.0));
+    }
+
+    #[test]
+    fn aggregate_min_max() {
+        let docs = vec![json!({"v": 5}), json!({"v": 1}), json!({"v": 9})];
+        assert_eq!(compute_aggregate("min", "v", &docs), json!(1));
+        assert_eq!(compute_aggregate("max", "v", &docs), json!(9));
     }
 }
