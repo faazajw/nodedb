@@ -356,7 +356,7 @@ mod tests {
     fn coerced_eq_mixed_types() {
         assert!(coerced_eq(&json!(5), &json!("5")));
         assert!(coerced_eq(&json!("5"), &json!(5)));
-        assert!(coerced_eq(&json!(3.14), &json!("3.14")));
+        assert!(coerced_eq(&json!(2.125), &json!("2.125")));
         assert!(!coerced_eq(&json!(5), &json!("6")));
         assert!(!coerced_eq(&json!("hello"), &json!(5)));
     }

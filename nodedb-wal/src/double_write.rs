@@ -343,8 +343,8 @@ mod tests {
         assert!(!dwb.dirty);
 
         // Write + flush + flush — second flush is no-op.
-        let record = WalRecord::new(RecordType::Put as u16, 1, 1, 0, b"data".to_vec(), None)
-            .unwrap();
+        let record =
+            WalRecord::new(RecordType::Put as u16, 1, 1, 0, b"data".to_vec(), None).unwrap();
         dwb.write_record_deferred(&record).unwrap();
         dwb.flush().unwrap();
         dwb.flush().unwrap(); // Idempotent.
