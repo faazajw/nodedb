@@ -282,6 +282,60 @@ impl SparseEngine {
         Ok(())
     }
 
+    /// Delete all secondary index entries for a specific field in a collection.
+    ///
+    /// Used when dropping a secondary index (ALTER COLLECTION DROP INDEX).
+    /// Scans the INDEXES table for all entries with the field prefix
+    /// `{tenant_id}:{collection}:{field}:` and removes them in a single transaction.
+    ///
+    /// Returns the number of index entries deleted.
+    pub fn delete_index_entries_for_field(
+        &self,
+        tenant_id: u32,
+        collection: &str,
+        field: &str,
+    ) -> crate::Result<usize> {
+        let prefix = format!("{tenant_id}:{collection}:{field}:");
+        let end = format!("{tenant_id}:{collection}:{field}:\u{ffff}");
+
+        let write_txn = self
+            .db
+            .begin_write()
+            .map_err(|e| redb_err("write txn", e))?;
+
+        let removed;
+        {
+            let mut table = write_txn
+                .open_table(INDEXES)
+                .map_err(|e| redb_err("open indexes", e))?;
+
+            let keys_to_remove: Vec<String> = table
+                .range(prefix.as_str()..end.as_str())
+                .map_err(|e| redb_err("index range", e))?
+                .filter_map(|r| r.ok().map(|(k, _)| k.value().to_string()))
+                .collect();
+
+            removed = keys_to_remove.len();
+            for key in &keys_to_remove {
+                table
+                    .remove(key.as_str())
+                    .map_err(|e| redb_err("remove index entry", e))?;
+            }
+        }
+        write_txn
+            .commit()
+            .map_err(|e| redb_err("commit index delete", e))?;
+
+        if removed > 0 {
+            debug!(
+                collection,
+                field, removed, "index entries deleted for field"
+            );
+        }
+
+        Ok(removed)
+    }
+
     /// Range scan: retrieve documents in a collection with keys in [lower, upper).
     ///
     /// The `field` parameter scopes the scan prefix. Returns up to `limit` results.
@@ -547,5 +601,43 @@ mod tests {
             engine.get(1, "orders", "u1").unwrap(),
             Some(b"order-1".to_vec())
         );
+    }
+
+    #[test]
+    fn delete_index_entries_for_field() {
+        let (engine, _dir) = open_temp();
+
+        // Create index entries across two fields.
+        engine
+            .index_put(1, "users", "email", "alice@example.com", "u1")
+            .unwrap();
+        engine
+            .index_put(1, "users", "email", "bob@example.com", "u2")
+            .unwrap();
+        engine.index_put(1, "users", "age", "30", "u1").unwrap();
+        engine.index_put(1, "users", "age", "25", "u2").unwrap();
+
+        // Drop the "email" index.
+        let removed = engine
+            .delete_index_entries_for_field(1, "users", "email")
+            .unwrap();
+        assert_eq!(removed, 2);
+
+        // "age" index entries should still exist.
+        let age_entries = engine.scan_index_groups(1, "users", "age").unwrap();
+        assert_eq!(age_entries.len(), 2);
+
+        // "email" index entries should be gone.
+        let email_entries = engine.scan_index_groups(1, "users", "email").unwrap();
+        assert!(email_entries.is_empty());
+    }
+
+    #[test]
+    fn delete_index_entries_for_nonexistent_field() {
+        let (engine, _dir) = open_temp();
+        let removed = engine
+            .delete_index_entries_for_field(1, "users", "phantom")
+            .unwrap();
+        assert_eq!(removed, 0);
     }
 }

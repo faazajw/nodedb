@@ -175,9 +175,18 @@ impl<'a> DocumentEngine<'a> {
 
     /// Delete a document and its secondary index entries.
     pub fn delete(&self, collection: &str, doc_id: &str) -> crate::Result<bool> {
-        // TODO: When we add index_delete to SparseEngine, clean up index entries.
-        // For now, stale index entries are harmless — lookups verify the doc still exists.
+        // Clean up secondary index entries for this document before deleting it.
+        self.sparse
+            .delete_indexes_for_document(self.tenant_id, collection, doc_id)?;
         self.sparse.delete(self.tenant_id, collection, doc_id)
+    }
+
+    /// Drop all secondary index entries for a field across the entire collection.
+    ///
+    /// Used by ALTER COLLECTION DROP INDEX. Returns the number of entries removed.
+    pub fn drop_field_index(&self, collection: &str, field: &str) -> crate::Result<usize> {
+        self.sparse
+            .delete_index_entries_for_field(self.tenant_id, collection, field)
     }
 
     /// Lookup documents by a secondary index value.
