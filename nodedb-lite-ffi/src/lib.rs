@@ -9,12 +9,14 @@
 //! - Returned strings/buffers are Rust-allocated — caller must free via `nodedb_free_*`.
 //! - Error codes: 0 = success, -1 = null pointer, -2 = invalid UTF-8, -3 = operation failed.
 
+pub mod jni_bridge;
+
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::sync::Arc;
 
 use nodedb_client::NodeDb;
-use nodedb_lite::{NodeDbLite, SqliteStorage};
+use nodedb_lite::{NodeDbLite, RedbStorage};
 
 /// Error codes returned by FFI functions.
 pub const NODEDB_OK: i32 = 0;
@@ -27,7 +29,7 @@ pub const NODEDB_ERR_NOT_FOUND: i32 = -4;
 ///
 /// Created by `nodedb_open`, freed by `nodedb_close`.
 pub struct NodeDbHandle {
-    db: Arc<NodeDbLite<SqliteStorage>>,
+    db: Arc<NodeDbLite<RedbStorage>>,
     rt: tokio::runtime::Runtime,
 }
 
@@ -54,9 +56,16 @@ pub unsafe extern "C" fn nodedb_open(path: *const c_char, peer_id: u64) -> *mut 
         Err(_) => return std::ptr::null_mut(),
     };
 
-    let storage = match SqliteStorage::open(path) {
-        Ok(s) => s,
-        Err(_) => return std::ptr::null_mut(),
+    let storage = if path == ":memory:" {
+        match RedbStorage::open_in_memory() {
+            Ok(s) => s,
+            Err(_) => return std::ptr::null_mut(),
+        }
+    } else {
+        match RedbStorage::open(path) {
+            Ok(s) => s,
+            Err(_) => return std::ptr::null_mut(),
+        }
     };
 
     let db = match rt.block_on(NodeDbLite::open(storage, peer_id)) {
