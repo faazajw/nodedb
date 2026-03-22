@@ -180,9 +180,12 @@ impl NodeDb for NodeDbRemote {
         metadata: Option<Document>,
     ) -> NodeDbResult<()> {
         let collection = quote_identifier(collection);
-        let meta_json = metadata
-            .map(|d| serde_json::to_string(&d).unwrap_or_else(|_| "{}".into()))
-            .unwrap_or_else(|| "{}".into());
+        let meta_json = match metadata {
+            Some(d) => serde_json::to_string(&d).map_err(|e| NodeDbError::Storage {
+                detail: format!("metadata serialization: {e}"),
+            })?,
+            None => "{}".into(),
+        };
 
         let sql = format!(
             "INSERT INTO {collection} (id, embedding, metadata) VALUES ($1, {}, $2::jsonb)",
@@ -266,9 +269,12 @@ impl NodeDb for NodeDbRemote {
         edge_type: &str,
         properties: Option<Document>,
     ) -> NodeDbResult<EdgeId> {
-        let props_json = properties
-            .map(|d| serde_json::to_string(&d).unwrap_or_else(|_| "{}".into()))
-            .unwrap_or_else(|| "{}".into());
+        let props_json = match properties {
+            Some(d) => serde_json::to_string(&d).map_err(|e| NodeDbError::Storage {
+                detail: format!("properties serialization: {e}"),
+            })?,
+            None => "{}".into(),
+        };
 
         let from_str = from.as_str();
         let to_str = to.as_str();
@@ -327,7 +333,9 @@ impl NodeDb for NodeDbRemote {
 
     async fn document_put(&self, collection: &str, doc: Document) -> NodeDbResult<()> {
         let collection = quote_identifier(collection);
-        let data_json = serde_json::to_string(&doc.fields).unwrap_or_else(|_| "{}".into());
+        let data_json = serde_json::to_string(&doc.fields).map_err(|e| NodeDbError::Storage {
+            detail: format!("document serialization: {e}"),
+        })?;
         let sql = format!(
             "INSERT INTO {collection} (id, data) VALUES ($1, $2::jsonb) \
              ON CONFLICT (id) DO UPDATE SET data = $2::jsonb"
