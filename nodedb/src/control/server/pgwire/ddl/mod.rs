@@ -8,11 +8,12 @@ pub mod dsl;
 pub mod grant;
 pub mod inspect;
 pub mod ownership;
+pub mod rls;
 pub mod role;
 pub mod router;
 pub mod schema_validation;
 pub mod service_account;
-mod sync_dispatch;
+pub mod sync_dispatch;
 pub mod tenant;
 pub mod user;
 

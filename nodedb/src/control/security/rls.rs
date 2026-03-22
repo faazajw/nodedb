@@ -236,6 +236,24 @@ impl RlsPolicyStore {
             .map(|v| v.len())
             .sum()
     }
+
+    /// Get all policies for a tenant+collection.
+    pub fn all_policies(&self, tenant_id: u32, collection: &str) -> Vec<RlsPolicy> {
+        let key = format!("{tenant_id}:{collection}");
+        let policies = self.policies.read().unwrap_or_else(|p| p.into_inner());
+        policies.get(&key).cloned().unwrap_or_default()
+    }
+
+    /// Get all policies for a tenant across all collections.
+    pub fn all_policies_for_tenant(&self, tenant_id: u32) -> Vec<RlsPolicy> {
+        let prefix = format!("{tenant_id}:");
+        let policies = self.policies.read().unwrap_or_else(|p| p.into_inner());
+        policies
+            .iter()
+            .filter(|(key, _)| key.starts_with(&prefix))
+            .flat_map(|(_, list)| list.clone())
+            .collect()
+    }
 }
 
 /// Namespace-scoped authorization: check permissions at tenant + namespace level.

@@ -114,6 +114,17 @@ pub async fn dispatch(
         ));
     }
 
+    // RLS policies.
+    if upper.starts_with("CREATE RLS POLICY ") {
+        return Some(super::rls::create_rls_policy(state, identity, &parts));
+    }
+    if upper.starts_with("DROP RLS POLICY ") {
+        return Some(super::rls::drop_rls_policy(state, identity, &parts));
+    }
+    if upper.starts_with("SHOW RLS POLICIES") || upper.starts_with("SHOW RLS POLICY") {
+        return Some(super::rls::show_rls_policies(state, identity, &parts));
+    }
+
     // API keys.
     if upper.starts_with("CREATE API KEY ") {
         return Some(super::apikey::create_api_key(state, identity, &parts));
