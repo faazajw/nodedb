@@ -9,6 +9,7 @@ members = [
   "nodedb-cluster",
   "nodedb-types",
   "nodedb-client",
+  "nodedb-lite",
 ]
 resolver = "2"
 
@@ -22,6 +23,7 @@ license = "BUSL-1.1"
 # Foundation crates (internal)
 nodedb-types = { path = "nodedb-types" }
 nodedb-client = { path = "nodedb-client" }
+nodedb-lite = { path = "nodedb-lite" }
 nodedb-bridge = { path = "nodedb-bridge" }
 nodedb-wal = { path = "nodedb-wal" }
 nodedb-mem = { path = "nodedb-mem" }
@@ -91,6 +93,7 @@ tokio-tungstenite = "0.29"
 # Storage
 redb = "2"
 roaring = "0.10"
+rusqlite = { version = "0.32", features = ["bundled", "blob"] }
 
 # Temp files (external sort spill)
 tempfile = "3"
