@@ -105,7 +105,33 @@ Session:
   \connections       Show active connections
 
   \?                 Show this help
-  \q                 Quit"#
+  \q                 Quit
+
+SQL Examples:
+  -- Collections & Documents
+  CREATE COLLECTION users;
+  INSERT INTO users (id, name, age) VALUES ('u1', 'Alice', 30);
+  SELECT * FROM users WHERE age > 25;
+  UPDATE users SET age = 31 WHERE id = 'u1';
+  DELETE FROM users WHERE id = 'u1';
+
+  -- Vector Search
+  SEARCH embeddings USING VECTOR(ARRAY[0.1, 0.2, 0.3], 5);
+  CREATE VECTOR INDEX idx ON embeddings METRIC cosine M 16 DIM 3;
+
+  -- Graph
+  GRAPH INSERT EDGE FROM 'alice' TO 'bob' TYPE 'KNOWS';
+  GRAPH TRAVERSE FROM 'alice' DEPTH 3 DIRECTION both;
+  GRAPH NEIGHBORS OF 'alice' LABEL 'KNOWS';
+  GRAPH PATH FROM 'alice' TO 'charlie' MAX_DEPTH 5;
+  GRAPH DELETE EDGE FROM 'alice' TO 'bob' TYPE 'KNOWS';
+
+  -- CRDT
+  SELECT CRDT_STATE('collection', 'doc_id');
+  CRDT MERGE INTO collection FROM 'src_id' TO 'dst_id';
+
+  -- GraphRAG Fusion (vector + graph + RRF)
+  SEARCH docs USING FUSION(VECTOR_TOP_K 20, DEPTH 2, TOP 10);"#
 }
 
 #[cfg(test)]

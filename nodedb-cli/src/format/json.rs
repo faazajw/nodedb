@@ -32,7 +32,17 @@ fn value_to_json(v: &nodedb_types::Value) -> serde_json::Value {
         nodedb_types::Value::Bool(b) => serde_json::Value::Bool(*b),
         nodedb_types::Value::Integer(i) => serde_json::json!(*i),
         nodedb_types::Value::Float(f) => serde_json::json!(*f),
-        nodedb_types::Value::String(s) => serde_json::Value::String(s.clone()),
+        nodedb_types::Value::String(s) => {
+            // If the string is valid JSON (nested object/array), embed it
+            // as structured JSON instead of double-escaping.
+            if (s.starts_with('{') || s.starts_with('['))
+                && let Ok(parsed) = serde_json::from_str::<serde_json::Value>(s)
+            {
+                parsed
+            } else {
+                serde_json::Value::String(s.clone())
+            }
+        }
         nodedb_types::Value::Bytes(b) => serde_json::Value::String(format!(
             "\\x{}",
             b.iter().map(|x| format!("{x:02x}")).collect::<String>()
