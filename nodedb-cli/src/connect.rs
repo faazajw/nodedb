@@ -26,10 +26,18 @@ pub fn build_client(args: &mut CliArgs) -> CliResult<NativeClient> {
         }
     };
 
+    let tls = nodedb_client::native::connection::TlsConfig {
+        enabled: args.tls,
+        ca_cert_path: args.tls_ca_cert.clone(),
+        server_name: None,
+        danger_accept_invalid_certs: false,
+    };
+
     let config = PoolConfig {
         addr: args.addr(),
         max_size: 2,
         auth,
+        tls,
         ..Default::default()
     };
 

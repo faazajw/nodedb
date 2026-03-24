@@ -28,6 +28,8 @@ pub struct PoolConfig {
     pub idle_timeout: Duration,
     /// Authentication method.
     pub auth: AuthMethod,
+    /// TLS configuration. Default: disabled.
+    pub tls: super::connection::TlsConfig,
 }
 
 impl Default for PoolConfig {
@@ -40,6 +42,7 @@ impl Default for PoolConfig {
             auth: AuthMethod::Trust {
                 username: "admin".into(),
             },
+            tls: Default::default(),
         }
     }
 }
@@ -107,11 +110,17 @@ impl Pool {
             // Connection dead — create a new one below.
         }
 
-        // Create a new connection.
-        let mut conn = tokio::time::timeout(
-            self.config.connect_timeout,
-            NativeConnection::connect(&self.config.addr),
-        )
+        // Create a new connection (plain TCP or TLS).
+        let addr = self.config.addr.clone();
+        let tls_cfg = self.config.tls.clone();
+        let timeout = self.config.connect_timeout;
+        let mut conn = tokio::time::timeout(timeout, async move {
+            if tls_cfg.enabled {
+                NativeConnection::connect_tls(&addr, &tls_cfg).await
+            } else {
+                NativeConnection::connect(&addr).await
+            }
+        })
         .await
         .map_err(|_| NodeDbError::SyncConnectionFailed {
             detail: "connect timeout".into(),

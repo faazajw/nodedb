@@ -1,7 +1,7 @@
 //! Single TCP connection to a NodeDB server over the native binary protocol.
 //!
 //! Handles MessagePack framing, request/response correlation via sequence
-//! numbers, and authentication.
+//! numbers, authentication, and optional TLS encryption.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -11,18 +11,83 @@ use nodedb_types::protocol::{
     RequestFields, ResponseStatus, TextFields,
 };
 use nodedb_types::result::QueryResult;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
+
+/// Connection stream — either plain TCP or TLS-wrapped.
+enum ConnStream {
+    Plain(TcpStream),
+    Tls(Box<tokio_rustls::client::TlsStream<TcpStream>>),
+}
+
+impl AsyncRead for ConnStream {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            ConnStream::Plain(s) => std::pin::Pin::new(s).poll_read(cx, buf),
+            ConnStream::Tls(s) => std::pin::Pin::new(s).poll_read(cx, buf),
+        }
+    }
+}
+
+impl AsyncWrite for ConnStream {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        match self.get_mut() {
+            ConnStream::Plain(s) => std::pin::Pin::new(s).poll_write(cx, buf),
+            ConnStream::Tls(s) => std::pin::Pin::new(s).poll_write(cx, buf),
+        }
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            ConnStream::Plain(s) => std::pin::Pin::new(s).poll_flush(cx),
+            ConnStream::Tls(s) => std::pin::Pin::new(s).poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            ConnStream::Plain(s) => std::pin::Pin::new(s).poll_shutdown(cx),
+            ConnStream::Tls(s) => std::pin::Pin::new(s).poll_shutdown(cx),
+        }
+    }
+}
+
+/// TLS configuration for client connections.
+#[derive(Debug, Clone, Default)]
+pub struct TlsConfig {
+    /// Enable TLS.
+    pub enabled: bool,
+    /// Path to CA certificate file (PEM). If None, uses system roots.
+    pub ca_cert_path: Option<std::path::PathBuf>,
+    /// Server name for SNI. If None, derived from connect address.
+    pub server_name: Option<String>,
+    /// Accept invalid certificates (DANGEROUS — for testing only).
+    pub danger_accept_invalid_certs: bool,
+}
 
 /// A single connection to a NodeDB server using the native binary protocol.
 pub struct NativeConnection {
-    stream: TcpStream,
+    stream: ConnStream,
     seq: AtomicU64,
     authenticated: bool,
 }
 
 impl NativeConnection {
-    /// Connect to a NodeDB server at the given address.
+    /// Connect to a NodeDB server at the given address (plain TCP).
     pub async fn connect(addr: &str) -> NodeDbResult<Self> {
         let stream =
             TcpStream::connect(addr)
@@ -31,7 +96,45 @@ impl NativeConnection {
                     detail: format!("connect to {addr}: {e}"),
                 })?;
         Ok(Self {
-            stream,
+            stream: ConnStream::Plain(stream),
+            seq: AtomicU64::new(1),
+            authenticated: false,
+        })
+    }
+
+    /// Connect to a NodeDB server with TLS.
+    pub async fn connect_tls(addr: &str, tls: &TlsConfig) -> NodeDbResult<Self> {
+        let tcp =
+            TcpStream::connect(addr)
+                .await
+                .map_err(|e| NodeDbError::SyncConnectionFailed {
+                    detail: format!("connect to {addr}: {e}"),
+                })?;
+
+        let config = build_tls_client_config(tls)?;
+        let connector = tokio_rustls::TlsConnector::from(std::sync::Arc::new(config));
+
+        // Derive server name from address (host part before ':').
+        let server_name = tls
+            .server_name
+            .as_deref()
+            .unwrap_or_else(|| addr.split(':').next().unwrap_or("localhost"));
+
+        let sni = tokio_rustls::rustls::pki_types::ServerName::try_from(server_name.to_string())
+            .map_err(|e| NodeDbError::SyncConnectionFailed {
+                detail: format!("invalid server name '{server_name}': {e}"),
+            })?;
+
+        let tls_stream =
+            connector
+                .connect(sni, tcp)
+                .await
+                .map_err(|e| NodeDbError::SyncConnectionFailed {
+                    detail: format!("TLS handshake failed: {e}"),
+                })?;
+
+        Ok(Self {
+            stream: ConnStream::Tls(Box::new(tls_stream)),
             seq: AtomicU64::new(1),
             authenticated: false,
         })
@@ -219,6 +322,107 @@ impl NativeConnection {
             format: "msgpack".into(),
             detail: format!("response decode: {e}"),
         })
+    }
+}
+
+/// Build a rustls ClientConfig for TLS connections.
+fn build_tls_client_config(tls: &TlsConfig) -> NodeDbResult<tokio_rustls::rustls::ClientConfig> {
+    use tokio_rustls::rustls;
+
+    let builder = rustls::ClientConfig::builder();
+
+    if tls.danger_accept_invalid_certs {
+        // DANGEROUS: accept any certificate. For testing/dev only.
+        let config = builder
+            .dangerous()
+            .with_custom_certificate_verifier(std::sync::Arc::new(NoCertVerifier))
+            .with_no_client_auth();
+        return Ok(config);
+    }
+
+    if let Some(ref ca_path) = tls.ca_cert_path {
+        // Custom CA certificate.
+        let mut root_store = rustls::RootCertStore::empty();
+        let cert_file =
+            std::fs::File::open(ca_path).map_err(|e| NodeDbError::SyncConnectionFailed {
+                detail: format!("open CA cert {}: {e}", ca_path.display()),
+            })?;
+        let mut reader = std::io::BufReader::new(cert_file);
+        for cert in rustls_pemfile::certs(&mut reader) {
+            match cert {
+                Ok(c) => {
+                    root_store
+                        .add(c)
+                        .map_err(|e| NodeDbError::SyncConnectionFailed {
+                            detail: format!("add CA cert: {e}"),
+                        })?;
+                }
+                Err(e) => {
+                    return Err(NodeDbError::SyncConnectionFailed {
+                        detail: format!("parse CA cert: {e}"),
+                    });
+                }
+            }
+        }
+        let config = builder
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+        Ok(config)
+    } else {
+        // Use platform/webpki root certificates.
+        let root_store = rustls::RootCertStore::empty();
+        let config = builder
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+        Ok(config)
+    }
+}
+
+/// Certificate verifier that accepts everything (DANGEROUS).
+#[derive(Debug)]
+struct NoCertVerifier;
+
+impl tokio_rustls::rustls::client::danger::ServerCertVerifier for NoCertVerifier {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &tokio_rustls::rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[tokio_rustls::rustls::pki_types::CertificateDer<'_>],
+        _server_name: &tokio_rustls::rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: tokio_rustls::rustls::pki_types::UnixTime,
+    ) -> Result<tokio_rustls::rustls::client::danger::ServerCertVerified, tokio_rustls::rustls::Error>
+    {
+        Ok(tokio_rustls::rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &tokio_rustls::rustls::pki_types::CertificateDer<'_>,
+        _dss: &tokio_rustls::rustls::DigitallySignedStruct,
+    ) -> Result<
+        tokio_rustls::rustls::client::danger::HandshakeSignatureValid,
+        tokio_rustls::rustls::Error,
+    > {
+        Ok(tokio_rustls::rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &tokio_rustls::rustls::pki_types::CertificateDer<'_>,
+        _dss: &tokio_rustls::rustls::DigitallySignedStruct,
+    ) -> Result<
+        tokio_rustls::rustls::client::danger::HandshakeSignatureValid,
+        tokio_rustls::rustls::Error,
+    > {
+        Ok(tokio_rustls::rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<tokio_rustls::rustls::SignatureScheme> {
+        tokio_rustls::rustls::crypto::aws_lc_rs::default_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
     }
 }
 

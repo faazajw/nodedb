@@ -37,6 +37,14 @@ pub struct CliArgs {
     #[arg(short, long)]
     pub output: Option<PathBuf>,
 
+    /// Enable TLS encryption.
+    #[arg(long)]
+    pub tls: bool,
+
+    /// Path to CA certificate file (PEM) for TLS verification.
+    #[arg(long)]
+    pub tls_ca_cert: Option<PathBuf>,
+
     /// Output format.
     #[arg(long, default_value = "table", value_enum)]
     pub format: OutputFormat,

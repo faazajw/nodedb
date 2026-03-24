@@ -9,7 +9,7 @@ license.workspace = true
 [features]
 default = []
 remote = ["tokio-postgres", "tokio", "serde_json"]
-native = ["tokio", "rmp-serde", "serde_json"]
+native = ["tokio", "rmp-serde", "serde_json", "tokio-rustls", "rustls-pemfile"]
 
 [dependencies]
 nodedb-types = { workspace = true }
@@ -25,6 +25,8 @@ serde_json = { workspace = true, optional = true }
 
 # Native protocol client dependencies (feature-gated)
 rmp-serde = { workspace = true, optional = true }
+tokio-rustls = { workspace = true, optional = true }
+rustls-pemfile = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }
