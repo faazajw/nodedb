@@ -5,8 +5,10 @@ pub mod columnar_segment;
 pub mod compress;
 pub mod gorilla;
 pub mod ilp;
+pub mod ilp_ingest;
 pub mod manager;
 pub mod memtable;
+pub mod merge;
 pub mod o3_buffer;
 pub mod partition_registry;
 pub mod query;
@@ -15,6 +17,8 @@ pub mod schema_evolution;
 pub mod segment_index;
 pub mod time_bucket;
 pub mod ts_detect;
+#[cfg(test)]
+mod verification;
 
 pub use columnar_memtable::{ColumnarMemtable, ColumnarMemtableConfig};
 pub use columnar_segment::ColumnarSegmentWriter;

@@ -397,6 +397,20 @@ impl PartitionRegistry {
         self.partitions.get(&start_ts)
     }
 
+    /// Mutable access to a partition entry (for merge/compaction state updates).
+    pub fn get_mut(&mut self, start_ts: i64) -> Option<&mut PartitionEntry> {
+        self.partitions.get_mut(&start_ts)
+    }
+
+    /// Roll back a partition from Merging to Sealed (merge failure recovery).
+    pub fn rollback_merging(&mut self, start_ts: i64) {
+        if let Some(entry) = self.partitions.get_mut(&start_ts)
+            && entry.meta.state == PartitionState::Merging
+        {
+            entry.meta.state = PartitionState::Sealed;
+        }
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = (&i64, &PartitionEntry)> {
         self.partitions.iter()
     }
