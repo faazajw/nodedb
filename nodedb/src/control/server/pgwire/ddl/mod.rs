@@ -15,6 +15,7 @@ pub mod role;
 pub mod router;
 pub mod schema_validation;
 pub mod service_account;
+mod sql_parse;
 pub mod sync_dispatch;
 pub mod tenant;
 pub mod user;
