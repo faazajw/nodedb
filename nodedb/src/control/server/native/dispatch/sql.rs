@@ -195,6 +195,14 @@ fn is_broadcast_scan(plan: &PhysicalPlan) -> bool {
         PhysicalPlan::DocumentScan { .. }
             | PhysicalPlan::Aggregate { .. }
             | PhysicalPlan::PartialAggregate { .. }
+            | PhysicalPlan::GraphHop { .. }
+            | PhysicalPlan::GraphNeighbors { .. }
+            | PhysicalPlan::GraphPath { .. }
+            | PhysicalPlan::GraphSubgraph { .. }
+            | PhysicalPlan::VectorSearch { .. }
+            | PhysicalPlan::TextSearch { .. }
+            | PhysicalPlan::HybridSearch { .. }
+            | PhysicalPlan::GraphRagFusion { .. }
     )
 }
 

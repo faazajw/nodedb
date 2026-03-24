@@ -49,6 +49,7 @@ fn cross_model_query_vector_graph_relational() {
                     vector: vec![i as f32, (i as f32).sin(), (i as f32).cos()],
                     dim: 3,
                     field_name: String::new(),
+                    doc_id: None,
                 },
             ),
         })
@@ -207,6 +208,7 @@ fn rrf_fusion_mathematically_correct() {
                     vector: vec![i as f32, 0.0, 0.0],
                     dim: 3,
                     field_name: String::new(),
+                    doc_id: None,
                 },
             ),
         })

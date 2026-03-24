@@ -223,6 +223,7 @@ impl CoreLoop {
                 vector,
                 dim,
                 field_name,
+                doc_id,
             } => {
                 let index_key = Self::vector_index_key(tid, collection, field_name);
                 let index = self
@@ -248,7 +249,11 @@ impl CoreLoop {
                 }
 
                 let vector_id = index.len() as u32;
-                index.insert(vector.clone());
+                if let Some(did) = doc_id.clone() {
+                    index.insert_with_doc_id(vector.clone(), did);
+                } else {
+                    index.insert(vector.clone());
+                }
                 undo_log.push(UndoEntry::InsertVector {
                     index_key,
                     vector_id,

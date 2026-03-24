@@ -255,7 +255,7 @@ pub async fn dispatch(
     // columns not in the Arrow schema, but NodeDB collections are document stores).
     if upper.starts_with("INSERT INTO ")
         && upper.contains("VALUES")
-        && let Some(result) = super::collection::insert_document(state, identity, sql).await
+        && let Some(result) = super::collection_insert::insert_document(state, identity, sql).await
     {
         return Some(result);
     }

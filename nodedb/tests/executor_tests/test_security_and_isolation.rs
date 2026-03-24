@@ -292,6 +292,7 @@ fn mixed_engine_isolation_no_cross_eviction() {
                 vector: vec![i as f32, 0.0, 0.0],
                 dim: 3,
                 field_name: String::new(),
+                doc_id: None,
             },
         );
     }

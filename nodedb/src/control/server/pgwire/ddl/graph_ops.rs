@@ -106,17 +106,10 @@ pub async fn traverse(
     };
 
     let tenant_id = identity.tenant_id;
-    let vshard_id = VShardId::from_key(start.as_bytes());
 
-    let plan = PhysicalPlan::GraphHop {
-        start_nodes: vec![start],
-        edge_label: label,
-        direction: dir,
-        depth,
-        options: Default::default(),
-    };
-
-    match dispatch_utils::dispatch_to_data_plane(state, tenant_id, vshard_id, plan, 0).await {
+    // Cross-core BFS: Control Plane orchestrates hop-by-hop traversal
+    // across all cores, collecting neighbors at each depth level.
+    match dispatch_utils::cross_core_bfs(state, tenant_id, vec![start], label, dir, depth).await {
         Ok(resp) => payload_to_query_response(&resp.payload),
         Err(e) => Err(sqlstate_error("XX000", &e.to_string())),
     }
@@ -142,7 +135,6 @@ pub async fn neighbors(
     };
 
     let tenant_id = identity.tenant_id;
-    let vshard_id = VShardId::from_key(node.as_bytes());
 
     let plan = PhysicalPlan::GraphNeighbors {
         node_id: node,
@@ -150,7 +142,8 @@ pub async fn neighbors(
         direction: dir,
     };
 
-    match dispatch_utils::dispatch_to_data_plane(state, tenant_id, vshard_id, plan, 0).await {
+    // Broadcast to all cores — edges may be distributed across cores.
+    match dispatch_utils::broadcast_to_all_cores(state, tenant_id, plan, 0).await {
         Ok(resp) => payload_to_query_response(&resp.payload),
         Err(e) => Err(sqlstate_error("XX000", &e.to_string())),
     }
@@ -172,18 +165,37 @@ pub async fn shortest_path(
     let label = extract_quoted_after(&upper, sql, "LABEL");
 
     let tenant_id = identity.tenant_id;
-    let vshard_id = VShardId::from_key(src.as_bytes());
 
-    let plan = PhysicalPlan::GraphPath {
-        src,
-        dst,
-        max_depth,
-        edge_label: label,
-        options: Default::default(),
-    };
-
-    match dispatch_utils::dispatch_to_data_plane(state, tenant_id, vshard_id, plan, 0).await {
-        Ok(resp) => payload_to_query_response(&resp.payload),
+    // Cross-core BFS from src. If dst is discovered, we found a path.
+    // Use cross_core_bfs which traverses across all cores.
+    let dir = crate::engine::graph::edge_store::Direction::Out;
+    match dispatch_utils::cross_core_bfs(state, tenant_id, vec![src.clone()], label, dir, max_depth)
+        .await
+    {
+        Ok(resp) => {
+            // Check if dst was discovered in the BFS result.
+            let json_text =
+                crate::data::executor::response_codec::decode_payload_to_json(&resp.payload);
+            if let Ok(nodes) = serde_json::from_str::<Vec<String>>(&json_text)
+                && nodes.contains(&dst)
+            {
+                // Path exists — return the discovered nodes as the path.
+                let payload = serde_json::to_vec(&nodes).unwrap_or_default();
+                let path_resp = crate::bridge::envelope::Response {
+                    request_id: crate::types::RequestId::new(0),
+                    status: crate::bridge::envelope::Status::Ok,
+                    attempt: 1,
+                    partial: false,
+                    payload: crate::bridge::envelope::Payload::from_vec(payload),
+                    watermark_lsn: crate::types::Lsn::ZERO,
+                    error_code: None,
+                };
+                return payload_to_query_response(&path_resp.payload);
+            }
+            // dst not found — empty result.
+            let empty = crate::bridge::envelope::Payload::from_vec(b"[]".to_vec());
+            payload_to_query_response(&empty)
+        }
         Err(e) => Err(sqlstate_error("XX000", &e.to_string())),
     }
 }

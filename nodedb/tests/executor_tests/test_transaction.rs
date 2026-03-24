@@ -95,6 +95,7 @@ fn transaction_batch_rollback_on_failure() {
             vector: vec![1.0, 2.0, 3.0],
             dim: 3,
             field_name: String::new(),
+            doc_id: None,
         },
     );
 
@@ -116,6 +117,7 @@ fn transaction_batch_rollback_on_failure() {
                     vector: vec![1.0, 2.0],
                     dim: 3,
                     field_name: String::new(),
+                    doc_id: None,
                 },
             ],
         },

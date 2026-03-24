@@ -24,6 +24,14 @@ impl NodeDbPgHandler {
             crate::bridge::envelope::PhysicalPlan::DocumentScan { .. }
                 | crate::bridge::envelope::PhysicalPlan::Aggregate { .. }
                 | crate::bridge::envelope::PhysicalPlan::PartialAggregate { .. }
+                | crate::bridge::envelope::PhysicalPlan::GraphHop { .. }
+                | crate::bridge::envelope::PhysicalPlan::GraphNeighbors { .. }
+                | crate::bridge::envelope::PhysicalPlan::GraphPath { .. }
+                | crate::bridge::envelope::PhysicalPlan::GraphSubgraph { .. }
+                | crate::bridge::envelope::PhysicalPlan::VectorSearch { .. }
+                | crate::bridge::envelope::PhysicalPlan::TextSearch { .. }
+                | crate::bridge::envelope::PhysicalPlan::HybridSearch { .. }
+                | crate::bridge::envelope::PhysicalPlan::GraphRagFusion { .. }
         ) {
             return crate::control::server::dispatch_utils::broadcast_to_all_cores(
                 &self.state,

@@ -37,7 +37,16 @@ impl CoreLoop {
                 vector,
                 dim,
                 field_name,
-            } => self.execute_vector_insert(task, tid, collection, vector, *dim, field_name),
+                doc_id,
+            } => self.execute_vector_insert(super::handlers::vector::VectorInsertParams {
+                task,
+                tid,
+                collection,
+                vector,
+                dim: *dim,
+                field_name,
+                doc_id: doc_id.clone(),
+            }),
 
             PhysicalPlan::VectorBatchInsert {
                 collection,
