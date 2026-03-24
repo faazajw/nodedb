@@ -49,13 +49,17 @@ impl CoreLoop {
                     rmp_serde::from_slice::<(String, usize, usize, String)>(&record.payload)
                 {
                     let index_key = CoreLoop::vector_index_key(tenant_id, &collection, "");
+                    use crate::engine::vector::distance::DistanceMetric;
                     let metric_enum = match metric.as_str() {
-                        "l2" | "euclidean" => crate::engine::vector::distance::DistanceMetric::L2,
-                        "cosine" => crate::engine::vector::distance::DistanceMetric::Cosine,
-                        "inner_product" | "ip" | "dot" => {
-                            crate::engine::vector::distance::DistanceMetric::InnerProduct
-                        }
-                        _ => crate::engine::vector::distance::DistanceMetric::Cosine,
+                        "l2" | "euclidean" => DistanceMetric::L2,
+                        "cosine" => DistanceMetric::Cosine,
+                        "inner_product" | "ip" | "dot" => DistanceMetric::InnerProduct,
+                        "manhattan" | "l1" => DistanceMetric::Manhattan,
+                        "chebyshev" | "linf" => DistanceMetric::Chebyshev,
+                        "hamming" => DistanceMetric::Hamming,
+                        "jaccard" => DistanceMetric::Jaccard,
+                        "pearson" => DistanceMetric::Pearson,
+                        _ => DistanceMetric::Cosine,
                     };
                     let params = HnswParams {
                         m,

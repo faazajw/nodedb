@@ -5,12 +5,24 @@
 /// Distance metric selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DistanceMetric {
-    /// Euclidean (L2) distance.
-    L2,
+    /// Euclidean (L2) squared distance.
+    L2 = 0,
     /// Cosine distance (1 - cosine_similarity).
-    Cosine,
-    /// Inner product (negated for min-heap compatibility).
-    InnerProduct,
+    Cosine = 1,
+    /// Negative inner product (for max-inner-product search via min-heap).
+    InnerProduct = 2,
+    /// Manhattan (L1) distance: sum of absolute differences.
+    Manhattan = 3,
+    /// Chebyshev (L-infinity) distance: max absolute difference.
+    Chebyshev = 4,
+    /// Hamming distance for binary-like vectors: count of positions where
+    /// values differ (using threshold > 0.5 for f32 vectors).
+    Hamming = 5,
+    /// Jaccard distance for binary-like vectors: 1 - |intersection|/|union|
+    /// (values > 0.5 treated as 1, else 0).
+    Jaccard = 6,
+    /// Pearson distance: 1 - Pearson correlation coefficient.
+    Pearson = 7,
 }
 
 /// Compute L2 squared distance between two vectors.
@@ -62,6 +74,111 @@ pub fn neg_inner_product(a: &[f32], b: &[f32]) -> f32 {
     -dot
 }
 
+/// Compute Manhattan (L1) distance: sum of absolute differences.
+#[inline]
+pub fn manhattan(a: &[f32], b: &[f32]) -> f32 {
+    debug_assert_eq!(a.len(), b.len());
+    let mut sum = 0.0f32;
+    for i in 0..a.len() {
+        sum += (a[i] - b[i]).abs();
+    }
+    sum
+}
+
+/// Compute Chebyshev (L-infinity) distance: max absolute difference.
+#[inline]
+pub fn chebyshev(a: &[f32], b: &[f32]) -> f32 {
+    debug_assert_eq!(a.len(), b.len());
+    let mut max = 0.0f32;
+    for i in 0..a.len() {
+        let d = (a[i] - b[i]).abs();
+        if d > max {
+            max = d;
+        }
+    }
+    max
+}
+
+/// Compute Hamming distance for f32 vectors.
+///
+/// Treats values > 0.5 as 1, <= 0.5 as 0, then counts differing positions.
+#[inline]
+pub fn hamming_f32(a: &[f32], b: &[f32]) -> f32 {
+    debug_assert_eq!(a.len(), b.len());
+    let mut count = 0u32;
+    for i in 0..a.len() {
+        let ba = a[i] > 0.5;
+        let bb = b[i] > 0.5;
+        if ba != bb {
+            count += 1;
+        }
+    }
+    count as f32
+}
+
+/// Compute Jaccard distance for f32 vectors.
+///
+/// Treats values > 0.5 as set membership. Returns 1 - |intersection|/|union|.
+/// If both vectors are zero-sets, returns 0.0.
+#[inline]
+pub fn jaccard(a: &[f32], b: &[f32]) -> f32 {
+    debug_assert_eq!(a.len(), b.len());
+    let mut intersection = 0u32;
+    let mut union = 0u32;
+    for i in 0..a.len() {
+        let ba = a[i] > 0.5;
+        let bb = b[i] > 0.5;
+        if ba || bb {
+            union += 1;
+        }
+        if ba && bb {
+            intersection += 1;
+        }
+    }
+    if union == 0 {
+        0.0
+    } else {
+        1.0 - (intersection as f32 / union as f32)
+    }
+}
+
+/// Compute Pearson distance: 1 - Pearson correlation coefficient.
+///
+/// Returns 0.0 for perfectly correlated, 1.0 for uncorrelated, 2.0 for
+/// perfectly anti-correlated.
+#[inline]
+pub fn pearson(a: &[f32], b: &[f32]) -> f32 {
+    debug_assert_eq!(a.len(), b.len());
+    let n = a.len() as f32;
+    if n < 2.0 {
+        return 1.0;
+    }
+    let mut sum_a = 0.0f32;
+    let mut sum_b = 0.0f32;
+    for i in 0..a.len() {
+        sum_a += a[i];
+        sum_b += b[i];
+    }
+    let mean_a = sum_a / n;
+    let mean_b = sum_b / n;
+
+    let mut cov = 0.0f32;
+    let mut var_a = 0.0f32;
+    let mut var_b = 0.0f32;
+    for i in 0..a.len() {
+        let da = a[i] - mean_a;
+        let db = b[i] - mean_b;
+        cov += da * db;
+        var_a += da * da;
+        var_b += db * db;
+    }
+    let denom = (var_a * var_b).sqrt();
+    if denom < f32::EPSILON {
+        return 1.0;
+    }
+    (1.0 - cov / denom).max(0.0)
+}
+
 /// Compute distance using the specified metric.
 ///
 /// Dispatches to the best available SIMD kernel (AVX-512 > AVX2+FMA > NEON > scalar).
@@ -73,6 +190,13 @@ pub fn distance(a: &[f32], b: &[f32], metric: DistanceMetric) -> f32 {
         DistanceMetric::L2 => (rt.l2_squared)(a, b),
         DistanceMetric::Cosine => (rt.cosine_distance)(a, b),
         DistanceMetric::InnerProduct => (rt.neg_inner_product)(a, b),
+        // New metrics use scalar implementations (auto-vectorized by compiler).
+        // SIMD kernels can be added later if profiling shows these are hot.
+        DistanceMetric::Manhattan => manhattan(a, b),
+        DistanceMetric::Chebyshev => chebyshev(a, b),
+        DistanceMetric::Hamming => hamming_f32(a, b),
+        DistanceMetric::Jaccard => jaccard(a, b),
+        DistanceMetric::Pearson => pearson(a, b),
     }
 }
 
@@ -168,6 +292,63 @@ mod tests {
         let b = [1.0, 1.0];
         let d = cosine_distance(&a, &b);
         assert_eq!(d, 1.0); // degenerate case
+    }
+
+    #[test]
+    fn manhattan_known() {
+        let a = [0.0, 0.0];
+        let b = [3.0, 4.0];
+        assert_eq!(manhattan(&a, &b), 7.0); // |3| + |4|
+    }
+
+    #[test]
+    fn manhattan_identical_is_zero() {
+        let v = [1.0, 2.0, 3.0];
+        assert_eq!(manhattan(&v, &v), 0.0);
+    }
+
+    #[test]
+    fn chebyshev_known() {
+        let a = [0.0, 0.0];
+        let b = [3.0, 4.0];
+        assert_eq!(chebyshev(&a, &b), 4.0); // max(|3|, |4|)
+    }
+
+    #[test]
+    fn hamming_f32_binary() {
+        let a = [1.0, 0.0, 1.0, 0.0];
+        let b = [1.0, 1.0, 0.0, 0.0];
+        assert_eq!(hamming_f32(&a, &b), 2.0); // positions 1 and 2 differ
+    }
+
+    #[test]
+    fn jaccard_binary() {
+        let a = [1.0, 0.0, 1.0, 0.0]; // set = {0, 2}
+        let b = [1.0, 1.0, 0.0, 0.0]; // set = {0, 1}
+        // intersection = {0}, union = {0, 1, 2}
+        let d = jaccard(&a, &b);
+        assert!((d - (1.0 - 1.0 / 3.0)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn jaccard_identical_is_zero() {
+        let v = [1.0, 0.0, 1.0];
+        assert_eq!(jaccard(&v, &v), 0.0);
+    }
+
+    #[test]
+    fn pearson_identical_is_zero() {
+        let v = [1.0, 2.0, 3.0, 4.0];
+        let d = pearson(&v, &v);
+        assert!(d.abs() < 1e-6, "expected ~0, got {d}");
+    }
+
+    #[test]
+    fn pearson_anticorrelated_is_two() {
+        let a = [1.0, 2.0, 3.0, 4.0];
+        let b = [4.0, 3.0, 2.0, 1.0]; // perfectly anti-correlated
+        let d = pearson(&a, &b);
+        assert!((d - 2.0).abs() < 1e-6, "expected ~2, got {d}");
     }
 
     #[test]

@@ -96,6 +96,11 @@ impl VectorCollection {
             0 => DistanceMetric::L2,
             1 => DistanceMetric::Cosine,
             2 => DistanceMetric::InnerProduct,
+            3 => DistanceMetric::Manhattan,
+            4 => DistanceMetric::Chebyshev,
+            5 => DistanceMetric::Hamming,
+            6 => DistanceMetric::Jaccard,
+            7 => DistanceMetric::Pearson,
             _ => DistanceMetric::Cosine,
         };
         let params = HnswParams {

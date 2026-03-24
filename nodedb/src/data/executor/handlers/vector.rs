@@ -408,12 +408,17 @@ impl CoreLoop {
             "l2" | "euclidean" => DistanceMetric::L2,
             "cosine" => DistanceMetric::Cosine,
             "inner_product" | "ip" | "dot" => DistanceMetric::InnerProduct,
+            "manhattan" | "l1" => DistanceMetric::Manhattan,
+            "chebyshev" | "linf" => DistanceMetric::Chebyshev,
+            "hamming" => DistanceMetric::Hamming,
+            "jaccard" => DistanceMetric::Jaccard,
+            "pearson" => DistanceMetric::Pearson,
             _ => {
                 return self.response_error(
                     task,
                     ErrorCode::RejectedConstraint {
                         constraint: format!(
-                            "unknown metric '{metric}'; supported: l2, cosine, inner_product"
+                            "unknown metric '{metric}'; supported: l2, cosine, inner_product, manhattan, chebyshev, hamming, jaccard, pearson"
                         ),
                     },
                 );

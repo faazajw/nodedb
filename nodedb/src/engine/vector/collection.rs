@@ -221,6 +221,11 @@ impl VectorCollection {
                         DistanceMetric::L2 => codec.asymmetric_l2(query, sq8_vec),
                         DistanceMetric::Cosine => codec.asymmetric_cosine(query, sq8_vec),
                         DistanceMetric::InnerProduct => codec.asymmetric_ip(query, sq8_vec),
+                        // Non-core metrics: dequantize SQ8 → f32, compute scalar distance.
+                        _ => {
+                            let dequant = codec.dequantize(sq8_vec);
+                            super::distance::distance(query, &dequant, self.params.metric)
+                        }
                     };
                     candidates.push((i as u32, d));
                 }
