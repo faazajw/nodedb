@@ -277,6 +277,79 @@ pub async fn dispatch(
         return Some(result);
     }
 
+    // SHOW CHANGES FOR <collection> [SINCE <timestamp>] [LIMIT <n>]
+    if upper.starts_with("SHOW CHANGES ") {
+        if let Some(coll_name) = super::sql_parse::extract_collection_after(sql, " FOR ") {
+            let since_ms: u64 = if let Some(since_pos) = upper.find(" SINCE ") {
+                let since_str = sql[since_pos + 7..]
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("0");
+                match super::sql_parse::parse_since_timestamp(since_str) {
+                    Ok(ms) => ms,
+                    Err(msg) => {
+                        return Some(Err(super::super::types::sqlstate_error("22007", &msg)));
+                    }
+                }
+            } else {
+                0
+            };
+
+            // Return change stream metadata as a query result.
+            use futures::stream;
+            use pgwire::api::results::{DataRowEncoder, QueryResponse, Response};
+
+            let schema = std::sync::Arc::new(vec![
+                super::super::types::text_field("collection"),
+                super::super::types::text_field("since_ms"),
+                super::super::types::text_field("events_published"),
+                super::super::types::text_field("subscribers"),
+            ]);
+            let mut encoder = DataRowEncoder::new(schema.clone());
+            let _ = encoder.encode_field(&coll_name);
+            let _ = encoder.encode_field(&since_ms.to_string());
+            let _ = encoder.encode_field(&state.change_stream.events_published().to_string());
+            let _ = encoder.encode_field(&state.change_stream.subscriber_count().to_string());
+            let row = encoder.take_row();
+            return Some(Ok(vec![Response::Query(QueryResponse::new(
+                schema,
+                stream::iter(vec![Ok(row)]),
+            ))]));
+        }
+        return Some(Err(super::super::types::sqlstate_error(
+            "42601",
+            "syntax: SHOW CHANGES FOR <collection> [SINCE <timestamp>]",
+        )));
+    }
+
+    // LIVE SELECT ... FROM <collection> [WHERE ...]
+    // Registers a subscription on the change stream and returns the subscription ID.
+    if upper.starts_with("LIVE SELECT ") {
+        if let Some(coll_name) = super::sql_parse::extract_collection_after(sql, " FROM ") {
+            let tenant_id = identity.tenant_id;
+            let sub = state
+                .change_stream
+                .subscribe(Some(coll_name.clone()), Some(tenant_id));
+            let sub_id = sub.id;
+
+            use futures::stream;
+            use pgwire::api::results::{DataRowEncoder, QueryResponse, Response};
+            let schema =
+                std::sync::Arc::new(vec![super::super::types::text_field("subscription_id")]);
+            let mut encoder = DataRowEncoder::new(schema.clone());
+            let _ = encoder.encode_field(&sub_id.to_string());
+            let row = encoder.take_row();
+            return Some(Ok(vec![Response::Query(QueryResponse::new(
+                schema,
+                stream::iter(vec![Ok(row)]),
+            ))]));
+        }
+        return Some(Err(super::super::types::sqlstate_error(
+            "42601",
+            "syntax: LIVE SELECT [*|fields] FROM <collection> [WHERE ...]",
+        )));
+    }
+
     // DEFINE FIELD <name> ON <collection> [TYPE <type>] [DEFAULT <expr>] [VALUE <expr>] [ASSERT <expr>] [READONLY]
     if upper.starts_with("DEFINE FIELD ") {
         return Some(super::field_def::define_field(state, identity, sql));

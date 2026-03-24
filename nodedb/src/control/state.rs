@@ -87,6 +87,10 @@ pub struct SharedState {
     /// Migration tracker for observability (None in single-node mode).
     pub migration_tracker: Option<Arc<nodedb_cluster::MigrationTracker>>,
 
+    /// Change stream bus: broadcasts committed mutations to subscribers.
+    /// Used by LISTEN/NOTIFY, live queries, event triggers, and CDC.
+    pub change_stream: crate::control::change_stream::ChangeStream,
+
     /// Total connections rejected due to max_connections limit (monotonic counter).
     pub connections_rejected: AtomicU64,
 
@@ -123,6 +127,7 @@ impl SharedState {
             sync_dlq: Mutex::new(SyncDlq::new(DlqConfig::default())),
             audit_retention_days: 0,
             idle_timeout_secs: 0,
+            change_stream: crate::control::change_stream::ChangeStream::new(4096),
             connections_rejected: AtomicU64::new(0),
             connections_accepted: AtomicU64::new(0),
             system_metrics: Some(Arc::new(crate::control::metrics::SystemMetrics::new())),
@@ -182,6 +187,7 @@ impl SharedState {
             sync_dlq: Mutex::new(SyncDlq::new(DlqConfig::default())),
             audit_retention_days: auth_config.audit_retention_days,
             idle_timeout_secs: auth_config.idle_timeout_secs,
+            change_stream: crate::control::change_stream::ChangeStream::new(4096),
             connections_rejected: AtomicU64::new(0),
             connections_accepted: AtomicU64::new(0),
             system_metrics: Some(Arc::new(crate::control::metrics::SystemMetrics::new())),

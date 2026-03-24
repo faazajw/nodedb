@@ -110,3 +110,31 @@ pub(super) fn extract_clause(
     let value = original[value_start..end].trim().to_string();
     if value.is_empty() { None } else { Some(value) }
 }
+
+/// Extract a collection name after a SQL keyword marker.
+///
+/// Given `sql = "SHOW CHANGES FOR users SINCE ..."` and `marker = " FOR "`,
+/// returns `Some("users")`. Returns `None` if the marker is missing or
+/// the collection name is empty.
+pub(super) fn extract_collection_after(sql: &str, marker: &str) -> Option<String> {
+    let upper = sql.to_uppercase();
+    let pos = upper.find(marker)?;
+    let after = sql[pos + marker.len()..].trim();
+    let name = after.split_whitespace().next()?.to_lowercase();
+    if name.is_empty() { None } else { Some(name) }
+}
+
+/// Parse a timestamp from a SINCE clause.
+///
+/// Accepts ISO 8601 datetime strings or raw milliseconds.
+/// Returns an error with a descriptive message for invalid formats.
+pub(super) fn parse_since_timestamp(input: &str) -> Result<u64, String> {
+    // Try ISO 8601 first.
+    if let Some(dt) = nodedb_types::NdbDateTime::parse(input) {
+        return Ok(dt.unix_millis() as u64);
+    }
+    // Fall back to raw u64 milliseconds.
+    input.parse::<u64>().map_err(|_| {
+        format!("invalid SINCE format: '{input}'. Expected ISO 8601 datetime or milliseconds")
+    })
+}
