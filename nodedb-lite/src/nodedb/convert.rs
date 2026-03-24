@@ -14,10 +14,39 @@ pub(crate) fn value_to_loro(v: &Value) -> LoroValue {
         Value::Float(f) => LoroValue::Double(*f),
         Value::String(s) => LoroValue::String(s.clone().into()),
         Value::Bytes(b) => LoroValue::Binary(b.clone().into()),
-        Value::Array(_) | Value::Object(_) => {
+        Value::Array(_) | Value::Object(_) | Value::Set(_) => {
             // Serialize complex values as JSON string.
             let json = serde_json::to_string(v).unwrap_or_default();
             LoroValue::String(json.into())
+        }
+        Value::Regex(p) => LoroValue::String(p.clone().into()),
+        Value::Range {
+            start,
+            end,
+            inclusive,
+        } => {
+            let s = start
+                .as_deref()
+                .map(|b| serde_json::to_string(b).unwrap_or_default())
+                .unwrap_or_default();
+            let e = end
+                .as_deref()
+                .map(|b| serde_json::to_string(b).unwrap_or_default())
+                .unwrap_or_default();
+            let display = if *inclusive {
+                format!("{s}..={e}")
+            } else {
+                format!("{s}..{e}")
+            };
+            LoroValue::String(display.into())
+        }
+        Value::Record { table, id } => LoroValue::String(format!("{table}:{id}").into()),
+        Value::Uuid(s) | Value::Ulid(s) => LoroValue::String(s.clone().into()),
+        Value::DateTime(dt) => LoroValue::String(dt.to_iso8601().into()),
+        Value::Duration(d) => LoroValue::String(d.to_human().into()),
+        Value::Decimal(d) => LoroValue::String(d.to_string().into()),
+        Value::Geometry(g) => {
+            LoroValue::String(serde_json::to_string(g).unwrap_or_default().into())
         }
     }
 }

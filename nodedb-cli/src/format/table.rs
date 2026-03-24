@@ -91,6 +91,30 @@ pub fn display_value(v: &Value) -> String {
                 .collect();
             format!("{{{}}}", pairs.join(", "))
         }
+        Value::Set(items) => {
+            let inner: Vec<String> = items.iter().map(display_value).collect();
+            format!("[{}]", inner.join(", "))
+        }
+        Value::Regex(pattern) => format!("/{pattern}/"),
+        Value::Range {
+            start,
+            end,
+            inclusive,
+        } => {
+            let s = start.as_deref().map(display_value).unwrap_or_default();
+            let e = end.as_deref().map(display_value).unwrap_or_default();
+            if *inclusive {
+                format!("{s}..={e}")
+            } else {
+                format!("{s}..{e}")
+            }
+        }
+        Value::Record { table, id } => format!("{table}:{id}"),
+        Value::Uuid(s) | Value::Ulid(s) => s.clone(),
+        Value::DateTime(dt) => dt.to_iso8601(),
+        Value::Duration(d) => d.to_human(),
+        Value::Decimal(d) => d.to_string(),
+        Value::Geometry(g) => serde_json::to_string(g).unwrap_or_default(),
     }
 }
 

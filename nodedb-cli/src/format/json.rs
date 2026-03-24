@@ -57,6 +57,44 @@ fn value_to_json(v: &nodedb_types::Value) -> serde_json::Value {
                 .collect();
             serde_json::Value::Object(map)
         }
+        nodedb_types::Value::Set(items) => {
+            serde_json::Value::Array(items.iter().map(value_to_json).collect())
+        }
+        nodedb_types::Value::Regex(p) => serde_json::Value::String(p.clone()),
+        nodedb_types::Value::Range {
+            start,
+            end,
+            inclusive,
+        } => {
+            let mut map = serde_json::Map::new();
+            map.insert(
+                "start".to_string(),
+                start
+                    .as_deref()
+                    .map(value_to_json)
+                    .unwrap_or(serde_json::Value::Null),
+            );
+            map.insert(
+                "end".to_string(),
+                end.as_deref()
+                    .map(value_to_json)
+                    .unwrap_or(serde_json::Value::Null),
+            );
+            map.insert("inclusive".to_string(), serde_json::Value::Bool(*inclusive));
+            serde_json::Value::Object(map)
+        }
+        nodedb_types::Value::Record { table, id } => {
+            serde_json::Value::String(format!("{table}:{id}"))
+        }
+        nodedb_types::Value::Uuid(s) | nodedb_types::Value::Ulid(s) => {
+            serde_json::Value::String(s.clone())
+        }
+        nodedb_types::Value::DateTime(dt) => serde_json::Value::String(dt.to_iso8601()),
+        nodedb_types::Value::Duration(d) => serde_json::Value::String(d.to_human()),
+        nodedb_types::Value::Decimal(d) => serde_json::Value::String(d.to_string()),
+        nodedb_types::Value::Geometry(g) => {
+            serde_json::to_value(g).unwrap_or(serde_json::Value::Null)
+        }
     }
 }
 
