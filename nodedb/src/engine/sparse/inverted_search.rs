@@ -4,11 +4,9 @@ use std::collections::HashMap;
 
 use super::fuzzy;
 use super::inverted::{
-    BM25_B, BM25_K1, DOC_LENGTHS, POSTINGS, Posting, QueryMode, TextSearchResult,
+    BM25_B, BM25_K1, DOC_LENGTHS, InvertedIndex, POSTINGS, Posting, QueryMode, TextSearchResult,
 };
 use super::text_analyzer;
-
-use super::inverted::InvertedIndex;
 
 impl InvertedIndex {
     /// Search the inverted index using BM25 scoring.

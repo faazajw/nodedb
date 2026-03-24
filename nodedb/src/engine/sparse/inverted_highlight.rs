@@ -9,32 +9,21 @@ impl InvertedIndex {
     /// Returns the original text with each occurrence of a matched query term
     /// surrounded by `prefix` and `suffix` (e.g., `<b>` and `</b>`).
     pub fn highlight(&self, text: &str, query: &str, prefix: &str, suffix: &str) -> String {
-        let query_tokens = text_analyzer::analyze(query);
-        if query_tokens.is_empty() {
+        let matches = self.find_query_matches(text, query);
+        if matches.is_empty() {
             return text.to_string();
         }
 
-        let query_set: std::collections::HashSet<&str> =
-            query_tokens.iter().map(String::as_str).collect();
-        let stemmer = rust_stemmers::Stemmer::create(rust_stemmers::Algorithm::English);
-
-        let mut result = String::with_capacity(
-            text.len() + query_tokens.len() * (prefix.len() + suffix.len()) * 2,
-        );
+        let mut result =
+            String::with_capacity(text.len() + matches.len() * (prefix.len() + suffix.len()) * 2);
         let mut last_end = 0;
 
-        for (start, word) in WordBoundaryIter::new(text) {
-            let end = start + word.len();
-            let lower = word.to_lowercase();
-            let stemmed = stemmer.stem(&lower);
-
-            if query_set.contains(stemmed.as_ref()) {
-                result.push_str(&text[last_end..start]);
-                result.push_str(prefix);
-                result.push_str(word);
-                result.push_str(suffix);
-                last_end = end;
-            }
+        for m in &matches {
+            result.push_str(&text[last_end..m.start]);
+            result.push_str(prefix);
+            result.push_str(&text[m.start..m.end]);
+            result.push_str(suffix);
+            last_end = m.end;
         }
         result.push_str(&text[last_end..]);
         result
@@ -45,6 +34,11 @@ impl InvertedIndex {
     /// Each `MatchOffset` contains the start/end byte positions and the
     /// matched stemmed term.
     pub fn offsets(&self, text: &str, query: &str) -> Vec<MatchOffset> {
+        self.find_query_matches(text, query)
+    }
+
+    /// Find all query term matches in `text`, returning byte offsets and stemmed terms.
+    fn find_query_matches(&self, text: &str, query: &str) -> Vec<MatchOffset> {
         let query_tokens = text_analyzer::analyze(query);
         if query_tokens.is_empty() {
             return Vec::new();
