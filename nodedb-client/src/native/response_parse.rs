@@ -5,7 +5,6 @@ use std::collections::HashMap;
 use nodedb_types::error::NodeDbResult;
 use nodedb_types::id::{EdgeId, NodeId};
 use nodedb_types::result::{SearchResult, SubGraph, SubGraphEdge, SubGraphNode};
-use nodedb_types::value::Value;
 
 /// Parse search results from a native response.
 pub(crate) fn parse_search_results(
@@ -46,27 +45,8 @@ fn parse_single_search_result(v: &serde_json::Value) -> Option<SearchResult> {
     })
 }
 
-/// Convert a serde_json::Value to a nodedb Value (by value, consuming).
-pub(crate) fn json_to_value(v: serde_json::Value) -> Value {
-    match v {
-        serde_json::Value::Null => Value::Null,
-        serde_json::Value::Bool(b) => Value::Bool(b),
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                Value::Integer(i)
-            } else {
-                Value::Float(n.as_f64().unwrap_or(0.0))
-            }
-        }
-        serde_json::Value::String(s) => Value::String(s),
-        serde_json::Value::Array(arr) => Value::Array(arr.into_iter().map(json_to_value).collect()),
-        serde_json::Value::Object(obj) => Value::Object(
-            obj.into_iter()
-                .map(|(k, v)| (k, json_to_value(v)))
-                .collect(),
-        ),
-    }
-}
+// Re-export for use by client.rs
+pub(crate) use nodedb_types::conversion::json_to_value;
 
 /// Parse a graph traversal response into a SubGraph.
 pub(crate) fn parse_subgraph_response(
@@ -148,22 +128,9 @@ mod tests {
     #[test]
     fn parse_search_result_from_json() {
         let v = serde_json::json!({"id": "vec-1", "distance": 0.123});
-        let sr = parse_single_search_result(&v).unwrap();
+        let sr =
+            parse_single_search_result(&v).expect("failed to parse search result from valid JSON");
         assert_eq!(sr.id, "vec-1");
         assert!((sr.distance - 0.123).abs() < 0.001);
-    }
-
-    #[test]
-    fn json_to_value_conversion() {
-        assert_eq!(json_to_value(serde_json::Value::Null), Value::Null);
-        assert_eq!(
-            json_to_value(serde_json::Value::Bool(true)),
-            Value::Bool(true)
-        );
-        assert_eq!(json_to_value(serde_json::json!(42)), Value::Integer(42));
-        assert_eq!(
-            json_to_value(serde_json::json!("hello")),
-            Value::String("hello".into())
-        );
     }
 }

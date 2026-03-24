@@ -1,3 +1,4 @@
+pub mod conversion;
 pub mod document;
 pub mod error;
 pub mod filter;
