@@ -60,6 +60,7 @@ pub fn create_collection(
         owner: identity.username.clone(),
         created_at: now,
         fields,
+        field_defs: Vec::new(),
         is_active: true,
     };
 

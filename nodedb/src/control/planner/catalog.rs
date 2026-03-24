@@ -189,6 +189,7 @@ mod tests {
             owner: "admin".into(),
             created_at: 0,
             fields: vec![],
+            field_defs: vec![],
             is_active: true,
         };
         let schema = collection_to_arrow_schema(&coll);
@@ -204,6 +205,7 @@ mod tests {
             name: "users".into(),
             owner: "admin".into(),
             created_at: 0,
+            field_defs: vec![],
             fields: vec![
                 ("name".into(), "VARCHAR".into()),
                 ("age".into(), "INT".into()),

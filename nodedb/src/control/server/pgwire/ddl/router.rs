@@ -277,6 +277,11 @@ pub async fn dispatch(
         return Some(result);
     }
 
+    // DEFINE FIELD <name> ON <collection> [TYPE <type>] [DEFAULT <expr>] [VALUE <expr>] [ASSERT <expr>] [READONLY]
+    if upper.starts_with("DEFINE FIELD ") {
+        return Some(super::field_def::define_field(state, identity, sql));
+    }
+
     // ESTIMATE_COUNT('collection', 'field') — fast approximate count from HLL stats.
     if upper.starts_with("SELECT ESTIMATE_COUNT(") || upper.starts_with("SELECT ESTIMATE_COUNT (") {
         // Parse: SELECT ESTIMATE_COUNT('collection', 'field')

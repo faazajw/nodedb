@@ -1,4 +1,4 @@
-//! SQL literal parsing helpers for DDL INSERT dispatch.
+//! SQL parsing helpers shared across DDL handlers.
 
 /// Parse an `ARRAY[0.1, 0.2, 0.3]` literal into `Vec<f32>`.
 /// Also handles quoted form: `'ARRAY[0.1, 0.2, 0.3]'`.
@@ -76,4 +76,37 @@ pub(super) fn parse_sql_value(val: &str) -> serde_json::Value {
         return serde_json::json!(f);
     }
     serde_json::Value::String(trimmed.to_string())
+}
+
+/// Extract a clause value delimited by known keywords.
+///
+/// Given `upper = "TYPE INT DEFAULT 0 ASSERT $value > 0"`, `original` (same
+/// text in original case), and `keyword = "TYPE"`, returns `Some("int")`.
+/// The value spans from after the keyword to the next keyword or end of string.
+///
+/// `all_keywords` lists every keyword that can terminate the value.
+pub(super) fn extract_clause(
+    upper: &str,
+    original: &str,
+    keyword: &str,
+    all_keywords: &[&str],
+) -> Option<String> {
+    let kw_with_space = format!("{keyword} ");
+    let start = upper.find(&kw_with_space)?;
+    let value_start = start + kw_with_space.len();
+
+    let end = all_keywords
+        .iter()
+        .filter(|&&k| !k.eq_ignore_ascii_case(keyword))
+        .filter_map(|k| {
+            let needle = format!("{k} ");
+            upper[value_start..]
+                .find(&needle)
+                .map(|pos| value_start + pos)
+        })
+        .min()
+        .unwrap_or(original.len());
+
+    let value = original[value_start..end].trim().to_string();
+    if value.is_empty() { None } else { Some(value) }
 }

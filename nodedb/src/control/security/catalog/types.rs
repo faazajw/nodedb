@@ -172,7 +172,34 @@ pub struct StoredCollection {
     /// Format: [("field_name", "type_name"), ...]
     #[serde(default)]
     pub fields: Vec<(String, String)>,
+    /// Extended field definitions with DEFAULT, VALUE (computed), ASSERT, TYPE.
+    /// Keyed by field name. Stored alongside `fields` for backward compatibility.
+    #[serde(default)]
+    pub field_defs: Vec<FieldDefinition>,
     pub is_active: bool,
+}
+
+/// Extended field definition supporting DEFAULT, VALUE, ASSERT, and TYPE constraints.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct FieldDefinition {
+    pub name: String,
+    /// Type constraint: "int", "float", "string", "bool", "array", "object", "datetime", etc.
+    /// Empty = any type (schemaless).
+    #[serde(default)]
+    pub field_type: String,
+    /// Default expression (evaluated when field is missing on insert).
+    /// Stored as SqlExpr JSON string for deserialization on the Data Plane.
+    #[serde(default)]
+    pub default_expr: String,
+    /// Computed value expression (evaluated on every read, not stored).
+    #[serde(default)]
+    pub value_expr: String,
+    /// Assertion expression (must evaluate to true for writes to succeed).
+    #[serde(default)]
+    pub assert_expr: String,
+    /// Whether the field is read-only (cannot be set by user).
+    #[serde(default)]
+    pub readonly: bool,
 }
 
 pub struct SystemCatalog {
