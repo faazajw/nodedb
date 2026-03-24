@@ -196,42 +196,61 @@ pub(in crate::control::planner) fn expr_to_scan_filters(expr: &Expr) -> Vec<Scan
             }
         }
         // EXISTS (SELECT ...) / NOT EXISTS (SELECT ...)
-        // For uncorrelated subqueries, encode the sub-table and sub-filters
-        // into the ScanFilter value. The Data Plane handler evaluates the
-        // sub-scan and filters based on the result.
+        // IN (SELECT ...) / NOT IN (SELECT ...)
+        // Both encode the sub-table and sub-filters into a ScanFilter value.
+        // The Data Plane handler evaluates the sub-scan and filters based on the result.
         Expr::Exists(exists) => {
-            let subquery_plan = &exists.subquery.subquery;
-            let (sub_collection, sub_filter_bytes) = extract_exists_source(subquery_plan);
-            if let Some((coll, filters)) = sub_collection.zip(sub_filter_bytes) {
-                let op = if exists.negated {
-                    "not_exists"
-                } else {
-                    "exists"
-                };
-                vec![ScanFilter {
-                    field: String::new(),
-                    op: op.into(),
-                    value: serde_json::json!({
-                        "collection": coll,
-                        "filters": match serde_json::from_slice::<serde_json::Value>(&filters) {
-                            Ok(v) => v,
-                            Err(e) => {
-                                warn!("failed to deserialize exists subquery filters: {e}");
-                                serde_json::Value::Object(Default::default())
-                            }
-                        },
-                    }),
-                    clauses: Vec::new(),
-                }]
-            } else {
-                warn!("EXISTS subquery too complex; emitting match_all");
-                vec![ScanFilter {
-                    op: "match_all".into(),
-                    ..Default::default()
-                }]
-            }
+            subquery_to_scan_filter(&exists.subquery.subquery, exists.negated, "EXISTS")
+        }
+        Expr::InSubquery(in_sub) => {
+            subquery_to_scan_filter(&in_sub.subquery.subquery, in_sub.negated, "IN")
+        }
+        // Scalar subquery (correlated): DataFusion usually decorrelates these.
+        // If one reaches here, emit match_all as safe fallback.
+        Expr::ScalarSubquery(_) => {
+            warn!("correlated scalar subquery not fully supported; emitting match_all");
+            vec![ScanFilter {
+                op: "match_all".into(),
+                ..Default::default()
+            }]
         }
         _ => Vec::new(),
+    }
+}
+
+/// Shared handler for EXISTS and IN subquery expressions.
+///
+/// Extracts the sub-collection and sub-filters, then encodes as a ScanFilter
+/// with `"exists"` or `"not_exists"` operator.
+fn subquery_to_scan_filter(
+    subquery_plan: &LogicalPlan,
+    negated: bool,
+    label: &str,
+) -> Vec<ScanFilter> {
+    let (sub_collection, sub_filter_bytes) = extract_exists_source(subquery_plan);
+    if let Some((coll, filters)) = sub_collection.zip(sub_filter_bytes) {
+        let op = if negated { "not_exists" } else { "exists" };
+        vec![ScanFilter {
+            field: String::new(),
+            op: op.into(),
+            value: serde_json::json!({
+                "collection": coll,
+                "filters": match serde_json::from_slice::<serde_json::Value>(&filters) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        warn!("failed to deserialize {label} subquery filters: {e}");
+                        serde_json::Value::Object(Default::default())
+                    }
+                },
+            }),
+            clauses: Vec::new(),
+        }]
+    } else {
+        warn!("{label} subquery too complex; emitting match_all");
+        vec![ScanFilter {
+            op: "match_all".into(),
+            ..Default::default()
+        }]
     }
 }
 

@@ -516,10 +516,8 @@ impl PlanConverter {
                 Ok(all_tasks)
             }
 
-            // RecursiveQuery (WITH RECURSIVE): not supported yet.
-            // Non-recursive CTEs are inlined by DataFusion's optimizer.
             LogicalPlan::RecursiveQuery(_) => Err(crate::Error::PlanError {
-                detail: "WITH RECURSIVE is not supported".into(),
+                detail: "WITH RECURSIVE is not yet supported. Use iterative queries or graph traversal (GRAPH TRAVERSE) instead.".into(),
             }),
 
             _ => Err(crate::Error::PlanError {
