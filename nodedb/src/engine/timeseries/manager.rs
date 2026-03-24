@@ -34,10 +34,9 @@
 
 use super::bucket::{BucketConfig, BucketManager};
 use super::compress::LogDictionary;
-use super::memtable::{
-    FlushedSeries, IngestResult, LogEntry, MemtableConfig, MetricSample, SeriesId,
-    TimeseriesMemtable,
-};
+use nodedb_types::timeseries::{FlushedSeries, IngestResult, LogEntry, MetricSample, SeriesId};
+
+use super::memtable::{MemtableConfig, TimeseriesMemtable};
 
 /// Configuration for the timeseries manager.
 #[derive(Debug, Clone)]
@@ -120,37 +119,27 @@ impl TimeseriesManager {
     /// If the active memtable signals flush needed, the caller should call
     /// `try_flush()` to rotate and flush the frozen memtable.
     pub fn ingest_metric(&mut self, series_id: SeriesId, sample: MetricSample) -> IngestResult {
-        let result = self.active.ingest_metric(series_id, sample);
-        match result {
-            IngestResult::Rejected => {
-                // Try emergency flush if frozen is blocking us.
-                if self.frozen.is_some() {
-                    self.flush_frozen();
-                }
-                // Retry after flush.
-                let retry = self.active.ingest_metric(series_id, sample);
-                if retry.is_rejected() {
-                    self.total_rejected += 1;
-                }
-                self.total_ingested += 1;
-                retry
-            }
-            _ => {
-                self.total_ingested += 1;
-                result
-            }
-        }
+        self.do_ingest(|mt| mt.ingest_metric(series_id, sample))
     }
 
     /// Ingest a log entry.
     pub fn ingest_log(&mut self, series_id: SeriesId, entry: LogEntry) -> IngestResult {
-        let result = self.active.ingest_log(series_id, entry.clone());
+        let entry_clone = entry.clone();
+        self.do_ingest(|mt| mt.ingest_log(series_id, entry_clone.clone()))
+    }
+
+    /// Shared ingest logic: try active, emergency-flush frozen if rejected, retry.
+    fn do_ingest(
+        &mut self,
+        ingest_fn: impl Fn(&mut TimeseriesMemtable) -> IngestResult,
+    ) -> IngestResult {
+        let result = ingest_fn(&mut self.active);
         match result {
             IngestResult::Rejected => {
                 if self.frozen.is_some() {
                     self.flush_frozen();
                 }
-                let retry = self.active.ingest_log(series_id, entry);
+                let retry = ingest_fn(&mut self.active);
                 if retry.is_rejected() {
                     self.total_rejected += 1;
                 }

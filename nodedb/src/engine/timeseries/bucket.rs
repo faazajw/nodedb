@@ -16,7 +16,9 @@ use std::time::Duration;
 use tracing::{debug, info};
 
 use super::compress::{LogDictionary, compress_log};
-use super::memtable::{FlushedKind, FlushedSeries, SegmentIndex, SegmentKind, SegmentRef};
+use nodedb_types::timeseries::{FlushedKind, FlushedSeries, SegmentKind, SegmentRef};
+
+use super::segment_index::SegmentIndex;
 
 /// Configuration for the tiered bucketing system.
 #[derive(Debug, Clone)]
@@ -182,7 +184,7 @@ impl BucketManager {
     fn write_log_segment(
         &self,
         path: &Path,
-        entries: &[super::memtable::LogEntry],
+        entries: &[nodedb_types::timeseries::LogEntry],
         dict: Option<&LogDictionary>,
     ) -> std::io::Result<usize> {
         // Concatenate all log entries, then compress as one block.
@@ -354,8 +356,8 @@ pub struct CompactionResult {
 
 #[cfg(test)]
 mod tests {
-    use super::super::memtable::{FlushedKind, FlushedSeries, LogEntry};
     use super::*;
+    use nodedb_types::timeseries::{FlushedKind, FlushedSeries, LogEntry};
     use tempfile::TempDir;
 
     fn test_config(dir: &TempDir) -> BucketConfig {
@@ -455,7 +457,7 @@ mod tests {
 
         mgr.flush_to_l1(flushed, None).unwrap();
 
-        use super::super::memtable::TimeRange;
+        use nodedb_types::timeseries::TimeRange;
         let segs = mgr
             .segment_index()
             .query(1, &TimeRange::new(1_800_000, 5_400_000));

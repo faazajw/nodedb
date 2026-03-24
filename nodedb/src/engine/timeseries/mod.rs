@@ -5,3 +5,4 @@ pub mod manager;
 pub mod memtable;
 pub mod query;
 pub mod reader;
+pub mod segment_index;

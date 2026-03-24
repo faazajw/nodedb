@@ -19,7 +19,7 @@ use std::path::Path;
 
 use super::compress::{DictionaryRegistry, decompress_log};
 use super::gorilla::GorillaDecoder;
-use super::memtable::LogEntry;
+use nodedb_types::timeseries::LogEntry;
 
 const SEGMENT_MAGIC: &[u8; 4] = b"TSEG";
 const KIND_METRIC: u8 = 0x01;

@@ -16,8 +16,10 @@
 use std::path::Path;
 
 use super::compress::DictionaryRegistry;
-use super::memtable::{SegmentIndex, SegmentKind, SeriesId, TimeRange};
+use nodedb_types::timeseries::{SegmentKind, SeriesId, TimeRange};
+
 use super::reader::{self, MetricAggregation, SegmentReadError};
+use super::segment_index::SegmentIndex;
 
 /// Query result for metric data.
 #[derive(Debug)]
@@ -33,7 +35,7 @@ pub enum MetricQueryResult {
 /// Query result for log data.
 #[derive(Debug)]
 pub struct LogQueryResult {
-    pub entries: Vec<super::memtable::LogEntry>,
+    pub entries: Vec<nodedb_types::timeseries::LogEntry>,
 }
 
 /// Errors from query execution.
@@ -133,7 +135,7 @@ impl<'a> TimeseriesQueryEngine<'a> {
         &self,
         series_id: SeriesId,
         range: &TimeRange,
-    ) -> Result<Vec<super::memtable::LogEntry>, QueryError> {
+    ) -> Result<Vec<nodedb_types::timeseries::LogEntry>, QueryError> {
         let segments = self.segment_index.query(series_id, range);
         if segments.is_empty() {
             return Ok(Vec::new());
@@ -166,7 +168,8 @@ mod tests {
     use super::*;
     use crate::engine::timeseries::bucket::{BucketConfig, BucketManager};
     use crate::engine::timeseries::gorilla::GorillaEncoder;
-    use crate::engine::timeseries::memtable::{FlushedKind, FlushedSeries, SegmentIndex};
+    use crate::engine::timeseries::segment_index::SegmentIndex;
+    use nodedb_types::timeseries::{FlushedKind, FlushedSeries};
     use tempfile::TempDir;
 
     fn setup_test_data(dir: &TempDir) -> (SegmentIndex, DictionaryRegistry) {

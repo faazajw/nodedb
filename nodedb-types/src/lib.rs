@@ -11,6 +11,7 @@ pub mod namespace;
 pub mod protocol;
 pub mod result;
 pub mod sync;
+pub mod timeseries;
 pub mod value;
 pub mod vector_distance;
 
