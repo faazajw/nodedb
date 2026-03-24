@@ -1,3 +1,4 @@
+pub mod collection;
 pub mod conversion;
 pub mod datetime;
 pub mod document;
@@ -16,6 +17,7 @@ pub mod timeseries;
 pub mod value;
 pub mod vector_distance;
 
+pub use collection::CollectionType;
 pub use datetime::{NdbDateTime, NdbDuration};
 pub use document::Document;
 pub use error::NodeDbError;

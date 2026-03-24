@@ -9,7 +9,7 @@
 /// Every variant is actionable — clients can programmatically handle each one.
 #[derive(Debug, thiserror::Error)]
 pub enum NodeDbError {
-    // ─── Write path ──────────────────────────────────────────────────
+    // Write path
     #[error("constraint violation on {collection}: {detail}")]
     ConstraintViolation { collection: String, detail: String },
 
@@ -25,7 +25,7 @@ pub enum NodeDbError {
         document_id: String,
     },
 
-    // ─── Read path ───────────────────────────────────────────────────
+    // Read path
     #[error("collection '{collection}' not found")]
     CollectionNotFound { collection: String },
 
@@ -35,7 +35,7 @@ pub enum NodeDbError {
         document_id: String,
     },
 
-    // ─── Sync ────────────────────────────────────────────────────────
+    // Sync
     #[error("sync connection failed: {detail}")]
     SyncConnectionFailed { detail: String },
 
@@ -48,25 +48,25 @@ pub enum NodeDbError {
     #[error("shape subscription failed for '{shape_id}': {detail}")]
     ShapeSubscriptionFailed { shape_id: String, detail: String },
 
-    // ─── Storage ─────────────────────────────────────────────────────
+    // Storage
     #[error("storage error: {detail}")]
     Storage { detail: String },
 
     #[error("serialization error ({format}): {detail}")]
     Serialization { format: String, detail: String },
 
-    // ─── Client input ────────────────────────────────────────────────
+    // Client input
     #[error("bad request: {detail}")]
     BadRequest { detail: String },
 
     #[error("SQL not enabled (compile with 'sql' feature)")]
     SqlNotEnabled,
 
-    // ─── Memory ──────────────────────────────────────────────────────
+    // Memory
     #[error("memory budget exhausted for engine {engine}")]
     MemoryExhausted { engine: String },
 
-    // ─── Internal ────────────────────────────────────────────────────
+    // Internal
     #[error("internal error: {detail}")]
     Internal { detail: String },
 }
