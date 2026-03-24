@@ -173,78 +173,8 @@ fn sql_like_match(input: &str, pattern: &str, case_insensitive: bool) -> bool {
     j == pattern.len()
 }
 
-/// Compare two optional JSON values for sorting.
-///
-/// Performs type coercion: if one side is a number and the other is a string
-/// that parses as a number, both are compared numerically. This handles the
-/// common case of `"5" > 4` and `age > "25"` in mixed-type predicates.
-pub fn compare_json_values(
-    a: Option<&serde_json::Value>,
-    b: Option<&serde_json::Value>,
-) -> std::cmp::Ordering {
-    use std::cmp::Ordering;
-
-    match (a, b) {
-        (None, None) => Ordering::Equal,
-        (None, Some(_)) => Ordering::Less,
-        (Some(_), None) => Ordering::Greater,
-        (Some(a), Some(b)) => {
-            // Try direct numeric comparison (both are numbers).
-            if let (Some(af), Some(bf)) = (a.as_f64(), b.as_f64()) {
-                return af.partial_cmp(&bf).unwrap_or(Ordering::Equal);
-            }
-
-            // Type coercion: one number + one string-that-parses-as-number.
-            let af = coerce_to_f64(a);
-            let bf = coerce_to_f64(b);
-            if let (Some(af), Some(bf)) = (af, bf) {
-                return af.partial_cmp(&bf).unwrap_or(Ordering::Equal);
-            }
-
-            // Fall back to string comparison.
-            let a_str = a
-                .as_str()
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| format!("{a}"));
-            let b_str = b
-                .as_str()
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| format!("{b}"));
-            a_str.cmp(&b_str)
-        }
-    }
-}
-
-/// Try to coerce a JSON value to f64.
-///
-/// - Numbers: use `as_f64()` directly.
-/// - Strings: try parsing as f64 (handles "5", "3.14", "-10").
-/// - Other types: return None.
-fn coerce_to_f64(v: &serde_json::Value) -> Option<f64> {
-    if let Some(f) = v.as_f64() {
-        return Some(f);
-    }
-    if let Some(s) = v.as_str() {
-        return s.parse::<f64>().ok();
-    }
-    None
-}
-
-/// Check equality with type coercion.
-///
-/// Handles `"5" == 5` by coercing both sides to f64 when one is a number
-/// and the other is a numeric string.
-pub fn coerced_eq(a: &serde_json::Value, b: &serde_json::Value) -> bool {
-    // Fast path: identical types.
-    if a == b {
-        return true;
-    }
-    // Coerce: if both coerce to the same f64, they're equal.
-    if let (Some(af), Some(bf)) = (coerce_to_f64(a), coerce_to_f64(b)) {
-        return (af - bf).abs() < f64::EPSILON;
-    }
-    false
-}
+// Re-export shared JSON operations from the centralized module.
+pub use super::json_ops::{coerced_eq, compare_json_optional as compare_json_values};
 
 /// Compute an aggregate function over a group of JSON documents.
 ///
