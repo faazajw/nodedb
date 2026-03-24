@@ -94,12 +94,14 @@ impl SqlExpr {
 
             SqlExpr::Negate(inner) => {
                 let v = inner.eval(doc);
-                match json_to_f64(&v, true) {
-                    Some(n) => to_json_number(-n),
-                    None => match v.as_bool() {
-                        Some(b) => serde_json::Value::Bool(!b),
+                // Booleans: NOT (logical negation). Numbers: arithmetic negation.
+                if let Some(b) = v.as_bool() {
+                    serde_json::Value::Bool(!b)
+                } else {
+                    match json_to_f64(&v, false) {
+                        Some(n) => to_json_number(-n),
                         None => serde_json::Value::Null,
-                    },
+                    }
                 }
             }
 
@@ -276,7 +278,7 @@ mod tests {
             op: BinaryOp::Add,
             right: Box::new(SqlExpr::Literal(json!(1.5))),
         };
-        assert_eq!(expr.eval(&doc()), json!(12.0));
+        assert_eq!(expr.eval(&doc()), json!(12));
     }
 
     #[test]
