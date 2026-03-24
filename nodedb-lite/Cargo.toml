@@ -13,6 +13,7 @@ default = []
 nodedb-types = { workspace = true }
 nodedb-client = { workspace = true }
 nodedb-crdt = { workspace = true }
+nodedb-query = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

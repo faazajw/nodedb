@@ -10,5 +10,7 @@ pub mod sync;
 pub use error::LiteError;
 pub use memory::MemoryGovernor;
 pub use nodedb::NodeDbLite;
+pub use nodedb_query;
+pub use nodedb_types::id_gen;
 pub use storage::engine::{StorageEngine, WriteOp};
 pub use storage::redb_storage::RedbStorage;

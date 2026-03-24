@@ -1,11 +1,26 @@
 pub mod dispatch;
 pub mod envelope;
-pub mod expr_eval;
-pub mod json_ops;
 pub mod physical_plan;
-pub mod scan_filter;
 pub mod slab;
-pub mod window_func;
+
+// Re-export shared query engine from nodedb-query crate.
+// Origin's internal code continues to use `crate::bridge::expr_eval`,
+// `crate::bridge::json_ops`, `crate::bridge::scan_filter`, and
+// `crate::bridge::window_func` — they now resolve to nodedb-query.
+pub mod expr_eval {
+    pub use nodedb_query::expr::{BinaryOp, CastType, ComputedColumn, SqlExpr};
+}
+pub mod json_ops {
+    pub use nodedb_query::json_ops::*;
+}
+pub mod scan_filter {
+    pub use nodedb_query::json_ops::coerced_eq;
+    pub use nodedb_query::json_ops::compare_json_optional as compare_json_values;
+    pub use nodedb_query::scan_filter::*;
+}
+pub mod window_func {
+    pub use nodedb_query::window::*;
+}
 
 pub use dispatch::Dispatcher;
 pub use envelope::{Request, Response, Status};

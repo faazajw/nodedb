@@ -23,6 +23,7 @@ nodedb-cluster = { workspace = true }
 nodedb-raft = { workspace = true }
 nodedb-wal = { workspace = true }
 nodedb-mem = { workspace = true }
+nodedb-query = { workspace = true }
 nodedb-crdt = { workspace = true }
 
 # Async runtime (Control Plane)

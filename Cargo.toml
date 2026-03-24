@@ -13,6 +13,7 @@ members = [
   "nodedb-lite-ffi",
   "nodedb-lite-wasm",
   "nodedb-cli",
+  "nodedb-query",
 ]
 resolver = "2"
 
@@ -33,6 +34,7 @@ nodedb-mem = { path = "nodedb-mem" }
 nodedb-crdt = { path = "nodedb-crdt" }
 nodedb-raft = { path = "nodedb-raft" }
 nodedb-cluster = { path = "nodedb-cluster" }
+nodedb-query = { path = "nodedb-query" }
 
 # Async runtimes
 tokio = { version = "1", features = ["full"] }
