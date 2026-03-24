@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use redb::{Database, TableDefinition};
+use redb::{Database, ReadableTable, TableDefinition, WriteTransaction};
 use serde::{Deserialize, Serialize};
 
 /// Redb table for column statistics.
@@ -270,6 +270,59 @@ impl StatsStore {
                 self.put(tenant_id, collection, field, &stats)?;
             }
         }
+        Ok(())
+    }
+
+    /// Update statistics within an externally-owned write transaction.
+    ///
+    /// Opens the COLUMN_STATS table once and reads/writes all fields in a
+    /// single table open, eliminating per-field transaction overhead.
+    pub fn observe_document_in_txn(
+        &self,
+        txn: &WriteTransaction,
+        tenant_id: u32,
+        collection: &str,
+        doc: &serde_json::Value,
+    ) -> crate::Result<()> {
+        let Some(obj) = doc.as_object() else {
+            return Ok(());
+        };
+        if obj.is_empty() {
+            return Ok(());
+        }
+
+        let mut table = txn
+            .open_table(COLUMN_STATS)
+            .map_err(|e| crate::Error::Storage {
+                engine: "stats".into(),
+                detail: format!("open table: {e}"),
+            })?;
+
+        for (field, value) in obj {
+            let key = format!("{tenant_id}:{collection}:{field}");
+
+            // Read existing stats from the same write transaction.
+            let mut stats: ColumnStats = table
+                .get(key.as_str())
+                .ok()
+                .flatten()
+                .and_then(|guard| rmp_serde::from_slice(guard.value()).ok())
+                .unwrap_or_default();
+
+            stats.observe(Some(value));
+
+            let bytes = rmp_serde::to_vec_named(&stats).map_err(|e| crate::Error::Storage {
+                engine: "stats".into(),
+                detail: format!("serialize: {e}"),
+            })?;
+            table
+                .insert(key.as_str(), bytes.as_slice())
+                .map_err(|e| crate::Error::Storage {
+                    engine: "stats".into(),
+                    detail: format!("insert: {e}"),
+                })?;
+        }
+
         Ok(())
     }
 }

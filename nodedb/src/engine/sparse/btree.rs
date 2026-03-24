@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use redb::{Database, ReadableTable, TableDefinition};
+use redb::{Database, ReadableTable, TableDefinition, WriteTransaction};
 use tracing::{debug, info};
 
 /// Table definition for the primary document store.
@@ -131,6 +131,29 @@ impl SparseEngine {
             write_txn.commit().map_err(|e| redb_err("commit", e))?;
 
             debug!(collection, document_id, len = value.len(), "document put");
+            Ok(())
+        })
+    }
+
+    /// Insert or update a document within an externally-owned write transaction.
+    ///
+    /// This avoids opening a new transaction per call, enabling callers to
+    /// batch document writes with index and stats updates in a single commit.
+    pub fn put_in_txn(
+        &self,
+        txn: &WriteTransaction,
+        tenant_id: u32,
+        collection: &str,
+        document_id: &str,
+        value: &[u8],
+    ) -> crate::Result<()> {
+        with_tenant_key(tenant_id, collection, document_id, |key| {
+            let mut table = txn
+                .open_table(DOCUMENTS)
+                .map_err(|e| redb_err("open table", e))?;
+            table
+                .insert(key, value)
+                .map_err(|e| redb_err("insert", e))?;
             Ok(())
         })
     }
@@ -496,6 +519,16 @@ impl SparseEngine {
             Ok(None) => Ok(None),
             Err(e) => Err(redb_err("raw get", e)),
         }
+    }
+
+    /// Begin a write transaction on the underlying database.
+    ///
+    /// Used by the unified write path to batch document + index + stats
+    /// updates into a single transaction with one fsync.
+    pub fn begin_write(&self) -> crate::Result<WriteTransaction> {
+        self.db
+            .begin_write()
+            .map_err(|e| redb_err("begin write txn", e))
     }
 
     /// Get the underlying database handle (for advanced use / shared access).

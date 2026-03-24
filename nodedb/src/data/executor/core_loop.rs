@@ -333,13 +333,28 @@ impl CoreLoop {
 
     /// Run one iteration of the event loop: drain requests, process tasks.
     ///
+    /// Tries to batch consecutive PointPut writes into a single redb
+    /// transaction before falling back to one-at-a-time processing.
+    /// This amortizes fsync cost across N concurrent writes per core.
+    ///
     /// Returns the number of tasks processed.
     pub fn tick(&mut self) -> usize {
         self.poll_build_completions();
         self.drain_requests();
         let mut processed = 0;
-        while self.poll_one() {
-            processed += 1;
+        while !self.task_queue.is_empty() {
+            // Try to batch consecutive PointPuts into one transaction.
+            let batched = self.poll_write_batch();
+            if batched > 0 {
+                processed += batched;
+                continue;
+            }
+            // Not a batchable write — process individually.
+            if self.poll_one() {
+                processed += 1;
+            } else {
+                break;
+            }
         }
         processed
     }
