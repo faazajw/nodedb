@@ -166,7 +166,8 @@ pub fn required_permission(plan: &crate::bridge::envelope::PhysicalPlan) -> Perm
         | PhysicalPlan::HybridSearch { .. }
         | PhysicalPlan::PartialAggregate { .. }
         | PhysicalPlan::BroadcastJoin { .. }
-        | PhysicalPlan::ShuffleJoin { .. } => Permission::Read,
+        | PhysicalPlan::ShuffleJoin { .. }
+        | PhysicalPlan::TimeseriesScan { .. } => Permission::Read,
 
         // Write operations.
         PhysicalPlan::CrdtApply { .. }
@@ -184,7 +185,8 @@ pub fn required_permission(plan: &crate::bridge::envelope::PhysicalPlan) -> Perm
         | PhysicalPlan::BulkDelete { .. }
         | PhysicalPlan::Upsert { .. }
         | PhysicalPlan::InsertSelect { .. }
-        | PhysicalPlan::Truncate { .. } => Permission::Write,
+        | PhysicalPlan::Truncate { .. }
+        | PhysicalPlan::TimeseriesIngest { .. } => Permission::Write,
 
         // EstimateCount is a read operation.
         PhysicalPlan::EstimateCount { .. } => Permission::Read,

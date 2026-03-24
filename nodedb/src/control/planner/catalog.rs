@@ -191,7 +191,7 @@ mod tests {
             fields: vec![],
             field_defs: vec![],
             event_defs: vec![],
-            collection_type: "document".into(),
+            collection_type: nodedb_types::CollectionType::Document,
             timeseries_config: None,
             is_active: true,
         };
@@ -210,7 +210,7 @@ mod tests {
             created_at: 0,
             field_defs: vec![],
             event_defs: vec![],
-            collection_type: "document".into(),
+            collection_type: nodedb_types::CollectionType::Document,
             timeseries_config: None,
             fields: vec![
                 ("name".into(), "VARCHAR".into()),

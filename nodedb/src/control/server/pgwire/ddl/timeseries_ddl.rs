@@ -61,7 +61,7 @@ pub fn create_timeseries(
         fields,
         field_defs: Vec::new(),
         event_defs: Vec::new(),
-        collection_type: "timeseries".to_string(),
+        collection_type: nodedb_types::CollectionType::Timeseries,
         timeseries_config: config_json,
         is_active: true,
     };
@@ -113,7 +113,7 @@ pub fn show_partitions(
     // Verify collection exists and is timeseries.
     if let Some(catalog) = state.credentials.catalog() {
         match catalog.get_collection(tenant_id.as_u32(), &name) {
-            Ok(Some(coll)) if coll.collection_type == "timeseries" => {}
+            Ok(Some(coll)) if coll.collection_type.is_timeseries() => {}
             Ok(Some(_)) => {
                 return Err(sqlstate_error(
                     "42809",
@@ -202,7 +202,7 @@ pub fn alter_timeseries(
                 sqlstate_error("42P01", &format!("collection '{name}' does not exist"))
             })?;
 
-        if coll.collection_type != "timeseries" {
+        if !coll.collection_type.is_timeseries() {
             return Err(sqlstate_error(
                 "42809",
                 &format!("'{name}' is not a timeseries collection"),

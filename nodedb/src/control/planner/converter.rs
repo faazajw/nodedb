@@ -3,6 +3,7 @@ use datafusion::prelude::*;
 
 use crate::bridge::envelope::PhysicalPlan;
 use crate::control::planner::physical::PhysicalTask;
+use crate::control::security::credential::CredentialStore;
 use crate::types::{TenantId, VShardId};
 
 use super::extract::{expr_to_scan_filters, expr_to_usize, try_range_scan_from_predicate};
@@ -21,11 +22,32 @@ use super::sql_expr_convert::try_convert_projection;
 ///
 /// Lives on the Control Plane (Send + Sync).
 #[derive(Default)]
-pub struct PlanConverter;
+pub struct PlanConverter {
+    /// Optional catalog reference for collection-type-aware routing.
+    credentials: Option<std::sync::Arc<CredentialStore>>,
+}
 
 impl PlanConverter {
     pub fn new() -> Self {
-        Self
+        Self::default()
+    }
+
+    /// Create a converter with catalog access for timeseries detection.
+    pub fn with_credentials(credentials: std::sync::Arc<CredentialStore>) -> Self {
+        Self {
+            credentials: Some(credentials),
+        }
+    }
+
+    /// Check if a collection is a timeseries collection.
+    fn is_timeseries(&self, tenant_id: TenantId, collection: &str) -> bool {
+        if let Some(ref creds) = self.credentials
+            && let Some(catalog) = creds.catalog()
+            && let Ok(Some(coll)) = catalog.get_collection(tenant_id.as_u32(), collection)
+        {
+            return coll.collection_type.is_timeseries();
+        }
+        false
     }
 
     /// Convert a DataFusion logical plan into one or more physical tasks.
@@ -190,6 +212,25 @@ impl PlanConverter {
             LogicalPlan::TableScan(scan) => {
                 let collection = scan.table_name.to_string().to_lowercase();
                 let vshard = VShardId::from_collection(&collection);
+
+                // Timeseries routing: if collection is timeseries, emit TimeseriesScan.
+                if self.is_timeseries(tenant_id, &collection) {
+                    let limit = scan.fetch.unwrap_or(10_000);
+                    let (time_range, filter_bytes) =
+                        extract_timeseries_filters(&scan.filters)?;
+                    return Ok(vec![PhysicalTask {
+                        tenant_id,
+                        vshard_id: vshard,
+                        plan: PhysicalPlan::TimeseriesScan {
+                            collection,
+                            time_range,
+                            projection: Vec::new(),
+                            limit,
+                            filters: filter_bytes,
+                            bucket_interval_ms: 0,
+                        },
+                    }]);
+                }
 
                 // Check for filter pushdown: equality on id → point get.
                 if let Some(task) =
@@ -524,6 +565,79 @@ impl PlanConverter {
                 detail: format!("unsupported logical plan type: {}", plan.display()),
             }),
         }
+    }
+}
+
+/// Extract time-range predicates from filter expressions for timeseries routing.
+///
+/// Looks for patterns like `timestamp >= X AND timestamp <= Y` and extracts
+/// the range bounds. Non-timestamp filters are serialized as generic filters.
+/// Returns `((min_ts, max_ts), filter_bytes)`.
+fn extract_timeseries_filters(filters: &[Expr]) -> crate::Result<((i64, i64), Vec<u8>)> {
+    let mut min_ts = 0i64;
+    let mut max_ts = i64::MAX;
+    let mut remaining = Vec::new();
+
+    for f in filters {
+        if let Some((bound, is_lower)) = try_extract_timestamp_bound(f) {
+            if is_lower {
+                min_ts = min_ts.max(bound);
+            } else {
+                max_ts = max_ts.min(bound);
+            }
+        } else {
+            remaining.extend(expr_to_scan_filters(f));
+        }
+    }
+
+    let filter_bytes = if remaining.is_empty() {
+        Vec::new()
+    } else {
+        rmp_serde::to_vec_named(&remaining).map_err(|e| crate::Error::Serialization {
+            format: "msgpack".into(),
+            detail: format!("ts filter serialization: {e}"),
+        })?
+    };
+
+    Ok(((min_ts, max_ts), filter_bytes))
+}
+
+/// Try to extract a timestamp bound from a comparison expression.
+///
+/// Returns `Some((bound_value_ms, is_lower_bound))` if the expression
+/// is `timestamp >= X` or `timestamp <= X` (or `>`, `<`).
+fn try_extract_timestamp_bound(expr: &Expr) -> Option<(i64, bool)> {
+    match expr {
+        Expr::BinaryExpr(bin) => {
+            // Check if left side is a column named "timestamp" or "ts".
+            let col_name = match bin.left.as_ref() {
+                Expr::Column(col) => col.name.to_lowercase(),
+                _ => return None,
+            };
+            if col_name != "timestamp" && col_name != "ts" && col_name != "time" {
+                return None;
+            }
+
+            // Extract literal value.
+            let val = match bin.right.as_ref() {
+                Expr::Literal(datafusion::scalar::ScalarValue::Int64(Some(v)), _) => *v,
+                Expr::Literal(datafusion::scalar::ScalarValue::Float64(Some(v)), _) => *v as i64,
+                _ => return None,
+            };
+
+            match bin.op {
+                datafusion::logical_expr::Operator::GtEq
+                | datafusion::logical_expr::Operator::Gt => {
+                    Some((val, true)) // lower bound
+                }
+                datafusion::logical_expr::Operator::LtEq
+                | datafusion::logical_expr::Operator::Lt => {
+                    Some((val, false)) // upper bound
+                }
+                _ => None,
+            }
+        }
+        _ => None,
     }
 }
 

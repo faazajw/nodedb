@@ -126,6 +126,14 @@ pub struct CoreLoop {
     /// Per-core LRU document cache for O(1) hot-key point lookups.
     /// Invalidated write-through on PointPut/Delete/Update.
     pub(in crate::data::executor) doc_cache: DocCache,
+
+    /// Per-collection columnar timeseries memtables (!Send, per-core owned).
+    pub(in crate::data::executor) ts_memtables:
+        HashMap<String, crate::engine::timeseries::columnar_memtable::ColumnarMemtable>,
+
+    /// Per-collection timeseries partition registries for this core.
+    pub(in crate::data::executor) ts_registries:
+        HashMap<String, crate::engine::timeseries::partition_registry::PartitionRegistry>,
 }
 
 impl CoreLoop {
@@ -180,6 +188,8 @@ impl CoreLoop {
             index_configs: HashMap::new(),
             ivf_indexes: HashMap::new(),
             doc_cache: DocCache::new(4096),
+            ts_memtables: HashMap::new(),
+            ts_registries: HashMap::new(),
         })
     }
 

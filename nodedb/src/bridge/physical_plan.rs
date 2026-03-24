@@ -505,4 +505,35 @@ pub enum PhysicalPlan {
     /// The Control Plane collects checkpoint LSNs from all cores, takes
     /// the minimum, writes a WAL checkpoint marker, and truncates the WAL.
     Checkpoint,
+
+    /// Timeseries scan: reads columnar partition data with time-range pruning.
+    ///
+    /// The Data Plane reads only partitions whose `(min_ts, max_ts)` overlap
+    /// the query range, then applies column projection (only reads requested columns).
+    TimeseriesScan {
+        collection: String,
+        /// Time range filter: only partitions overlapping this range are read.
+        /// `(min_ts_ms, max_ts_ms)`. (0, i64::MAX) = no time filter.
+        time_range: (i64, i64),
+        /// Column projection: only read these columns from each partition.
+        /// Empty = read all columns.
+        projection: Vec<String>,
+        /// Maximum rows to return.
+        limit: usize,
+        /// Filter predicates (same format as DocumentScan filters).
+        /// Applied post-partition-pruning, pre-return.
+        filters: Vec<u8>,
+        /// time_bucket interval in milliseconds for GROUP BY time_bucket().
+        /// 0 = no bucketing.
+        bucket_interval_ms: i64,
+    },
+
+    /// Timeseries ingest: write a batch of samples to the columnar memtable.
+    TimeseriesIngest {
+        collection: String,
+        /// Serialized ILP batch or structured samples.
+        payload: Vec<u8>,
+        /// Payload format: "ilp" for InfluxDB Line Protocol, "samples" for structured.
+        format: String,
+    },
 }

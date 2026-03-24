@@ -423,6 +423,28 @@ impl CoreLoop {
             PhysicalPlan::Compact => self.execute_compact(task),
 
             PhysicalPlan::Checkpoint => self.execute_checkpoint(task),
+
+            PhysicalPlan::TimeseriesScan {
+                collection,
+                time_range,
+                limit,
+                filters,
+                bucket_interval_ms,
+                ..
+            } => self.execute_timeseries_scan(super::handlers::timeseries::TimeseriesScanParams {
+                task,
+                collection,
+                time_range: *time_range,
+                limit: *limit,
+                filters,
+                bucket_interval_ms: *bucket_interval_ms,
+            }),
+
+            PhysicalPlan::TimeseriesIngest {
+                collection,
+                payload,
+                format,
+            } => self.execute_timeseries_ingest(task, collection, payload, format),
         }
     }
 }

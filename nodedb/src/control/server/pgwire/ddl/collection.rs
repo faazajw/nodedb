@@ -62,7 +62,7 @@ pub fn create_collection(
         fields,
         field_defs: Vec::new(),
         event_defs: Vec::new(),
-        collection_type: "document".to_string(),
+        collection_type: nodedb_types::CollectionType::Document,
         timeseries_config: None,
         is_active: true,
     };

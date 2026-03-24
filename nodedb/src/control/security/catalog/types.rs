@@ -179,13 +179,9 @@ pub struct StoredCollection {
     /// Event/trigger definitions (DEFINE EVENT).
     #[serde(default)]
     pub event_defs: Vec<EventDefinition>,
-    /// Collection type: `"document"` (default) or `"timeseries"`.
-    ///
-    /// - `"document"`: schemaless JSON store with optional typed fields.
-    /// - `"timeseries"`: columnar storage with time-partitioning, Gorilla
-    ///   compression, and ILP ingest support.
-    #[serde(default = "default_collection_type")]
-    pub collection_type: String,
+    /// Collection type: determines storage engine and query routing.
+    #[serde(default)]
+    pub collection_type: nodedb_types::CollectionType,
     /// Timeseries-specific configuration (JSON-serialized `TieredPartitionConfig`).
     ///
     /// Only populated when `collection_type == "timeseries"`. Contains
@@ -194,10 +190,6 @@ pub struct StoredCollection {
     #[serde(default)]
     pub timeseries_config: Option<String>,
     pub is_active: bool,
-}
-
-fn default_collection_type() -> String {
-    "document".to_string()
 }
 
 /// Extended field definition supporting DEFAULT, VALUE, ASSERT, and TYPE constraints.

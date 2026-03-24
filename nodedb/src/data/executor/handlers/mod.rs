@@ -8,5 +8,6 @@ pub mod graph_rag;
 pub mod join;
 pub mod point;
 pub mod text_search;
+pub mod timeseries;
 pub mod transaction;
 pub mod vector;
