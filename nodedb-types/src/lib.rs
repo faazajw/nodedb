@@ -9,6 +9,7 @@ pub mod protocol;
 pub mod result;
 pub mod sync;
 pub mod value;
+pub mod vector_distance;
 
 pub use document::Document;
 pub use error::NodeDbError;
