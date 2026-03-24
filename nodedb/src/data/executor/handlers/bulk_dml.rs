@@ -11,6 +11,49 @@ use crate::data::executor::core_loop::CoreLoop;
 use crate::data::executor::task::ExecutionTask;
 
 impl CoreLoop {
+    /// Scan documents in a collection matching the given filters.
+    ///
+    /// Returns document IDs of all matching documents.
+    fn scan_matching_documents(
+        &self,
+        tid: u32,
+        collection: &str,
+        filters: &[ScanFilter],
+    ) -> crate::Result<Vec<String>> {
+        let prefix = format!("{tid}:{collection}:");
+        let end = format!("{tid}:{collection}:\u{ffff}");
+
+        let read_txn = self
+            .sparse
+            .db()
+            .begin_read()
+            .map_err(|e| crate::Error::Storage {
+                engine: "sparse".into(),
+                detail: format!("read txn: {e}"),
+            })?;
+        let table = read_txn
+            .open_table(crate::engine::sparse::btree::DOCUMENTS)
+            .map_err(|e| crate::Error::Storage {
+                engine: "sparse".into(),
+                detail: format!("open table: {e}"),
+            })?;
+
+        let mut ids = Vec::new();
+        if let Ok(range) = table.range(prefix.as_str()..end.as_str()) {
+            for entry in range.flatten() {
+                let key = entry.0.value();
+                let value_bytes = entry.1.value();
+                if let Some(doc) = super::super::doc_format::decode_document(value_bytes)
+                    && filters.iter().all(|f| f.matches(&doc))
+                    && let Some(doc_id) = key.strip_prefix(&prefix)
+                {
+                    ids.push(doc_id.to_string());
+                }
+            }
+        }
+        Ok(ids)
+    }
+
     /// Bulk update: scan documents matching filters, apply field updates.
     ///
     /// Returns affected row count as JSON payload: `{"affected": N}`.
@@ -36,45 +79,13 @@ impl CoreLoop {
             }
         };
 
-        // Scan all documents in the collection and collect matching IDs.
-        let prefix = format!("{tid}:{collection}:");
-        let end = format!("{tid}:{collection}:\u{ffff}");
-
-        let matching_ids: Vec<String> = match self.sparse.db().begin_read() {
-            Ok(read_txn) => {
-                let table = match read_txn.open_table(crate::engine::sparse::btree::DOCUMENTS) {
-                    Ok(t) => t,
-                    Err(e) => {
-                        return self.response_error(
-                            task,
-                            ErrorCode::Internal {
-                                detail: format!("open table: {e}"),
-                            },
-                        );
-                    }
-                };
-
-                let mut ids = Vec::new();
-                if let Ok(range) = table.range(prefix.as_str()..end.as_str()) {
-                    for entry in range.flatten() {
-                        let key = entry.0.value();
-                        let value_bytes = entry.1.value();
-
-                        if let Some(doc) = super::super::doc_format::decode_document(value_bytes)
-                            && filters.iter().all(|f| f.matches(&doc))
-                            && let Some(doc_id) = key.strip_prefix(&prefix)
-                        {
-                            ids.push(doc_id.to_string());
-                        }
-                    }
-                }
-                ids
-            }
+        let matching_ids = match self.scan_matching_documents(tid, collection, &filters) {
+            Ok(ids) => ids,
             Err(e) => {
                 return self.response_error(
                     task,
                     ErrorCode::Internal {
-                        detail: format!("read txn: {e}"),
+                        detail: e.to_string(),
                     },
                 );
             }
@@ -144,44 +155,13 @@ impl CoreLoop {
             }
         };
 
-        // Scan and collect matching document IDs.
-        let prefix = format!("{tid}:{collection}:");
-        let end = format!("{tid}:{collection}:\u{ffff}");
-
-        let matching_ids: Vec<String> = match self.sparse.db().begin_read() {
-            Ok(read_txn) => {
-                let table = match read_txn.open_table(crate::engine::sparse::btree::DOCUMENTS) {
-                    Ok(t) => t,
-                    Err(e) => {
-                        return self.response_error(
-                            task,
-                            ErrorCode::Internal {
-                                detail: format!("open table: {e}"),
-                            },
-                        );
-                    }
-                };
-
-                let mut ids = Vec::new();
-                if let Ok(range) = table.range(prefix.as_str()..end.as_str()) {
-                    for entry in range.flatten() {
-                        let key = entry.0.value();
-                        let value_bytes = entry.1.value();
-                        if let Some(doc) = super::super::doc_format::decode_document(value_bytes)
-                            && filters.iter().all(|f| f.matches(&doc))
-                            && let Some(doc_id) = key.strip_prefix(&prefix)
-                        {
-                            ids.push(doc_id.to_string());
-                        }
-                    }
-                }
-                ids
-            }
+        let matching_ids = match self.scan_matching_documents(tid, collection, &filters) {
+            Ok(ids) => ids,
             Err(e) => {
                 return self.response_error(
                     task,
                     ErrorCode::Internal {
-                        detail: format!("read txn: {e}"),
+                        detail: e.to_string(),
                     },
                 );
             }
