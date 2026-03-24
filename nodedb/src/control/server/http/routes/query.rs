@@ -201,3 +201,77 @@ fn responses_to_json(responses: Vec<pgwire::api::results::Response>) -> Vec<serd
     }
     rows
 }
+
+/// POST /query/stream — execute SQL and return results as NDJSON (newline-delimited JSON).
+///
+/// Each result row is a separate JSON line terminated by `\n`.
+/// Content-Type: application/x-ndjson
+///
+/// This is suitable for streaming large result sets without buffering
+/// the entire response. Clients can process each line as it arrives.
+pub async fn query_ndjson(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: String,
+) -> impl IntoResponse {
+    use axum::http::StatusCode;
+    use axum::response::Response;
+
+    let identity = match resolve_identity(&headers, &state, "http") {
+        Ok(id) => id,
+        Err(e) => return e.into_response(),
+    };
+
+    let sql = body.trim().trim_matches('"');
+    if sql.is_empty() {
+        return (StatusCode::BAD_REQUEST, "empty SQL").into_response();
+    }
+
+    let tenant_id = identity.tenant_id;
+    let query_ctx = &state.query_ctx;
+
+    let tasks = match query_ctx.plan_sql(sql, tenant_id).await {
+        Ok(t) => t,
+        Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+    };
+
+    let mut ndjson = String::new();
+    for task in tasks {
+        match crate::control::server::dispatch_utils::dispatch_to_data_plane(
+            &state.shared,
+            task.tenant_id,
+            task.vshard_id,
+            task.plan,
+            0,
+        )
+        .await
+        {
+            Ok(resp) if !resp.payload.is_empty() => {
+                let json_str =
+                    crate::data::executor::response_codec::decode_payload_to_json(&resp.payload);
+                // Try to parse as array and emit each element as a line.
+                if let Ok(serde_json::Value::Array(items)) =
+                    serde_json::from_str::<serde_json::Value>(&json_str)
+                {
+                    for item in &items {
+                        ndjson.push_str(&item.to_string());
+                        ndjson.push('\n');
+                    }
+                } else {
+                    ndjson.push_str(&json_str);
+                    ndjson.push('\n');
+                }
+            }
+            Ok(_) => {}
+            Err(e) => {
+                ndjson.push_str(&serde_json::json!({"error": e.to_string()}).to_string());
+                ndjson.push('\n');
+            }
+        }
+    }
+
+    Response::builder()
+        .header("Content-Type", "application/x-ndjson")
+        .body(axum::body::Body::from(ndjson))
+        .unwrap_or_else(|_| (StatusCode::INTERNAL_SERVER_ERROR, "encoding error").into_response())
+}

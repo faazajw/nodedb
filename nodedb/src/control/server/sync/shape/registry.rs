@@ -44,7 +44,8 @@ impl ShapeRegistry {
 
     /// Register a shape subscription for a session.
     pub fn subscribe(&self, session_id: &str, tenant_id: u32, shape: ShapeDefinition) {
-        let mut sessions = self.sessions.write().unwrap_or_else(|p| p.into_inner());
+        let mut sessions =
+            crate::control::lock_utils::write_or_recover(self.sessions.write(), "shape_sessions");
         let client = sessions
             .entry(session_id.to_string())
             .or_insert_with(|| ClientShapes {
@@ -63,7 +64,8 @@ impl ShapeRegistry {
 
     /// Unsubscribe a shape for a session.
     pub fn unsubscribe(&self, session_id: &str, shape_id: &str) -> bool {
-        let mut sessions = self.sessions.write().unwrap_or_else(|p| p.into_inner());
+        let mut sessions =
+            crate::control::lock_utils::write_or_recover(self.sessions.write(), "shape_sessions");
         if let Some(client) = sessions.get_mut(session_id) {
             let removed = client.shapes.remove(shape_id).is_some();
             if removed {
@@ -78,7 +80,8 @@ impl ShapeRegistry {
 
     /// Remove all shapes for a session (disconnect cleanup).
     pub fn remove_session(&self, session_id: &str) {
-        let mut sessions = self.sessions.write().unwrap_or_else(|p| p.into_inner());
+        let mut sessions =
+            crate::control::lock_utils::write_or_recover(self.sessions.write(), "shape_sessions");
         if let Some(client) = sessions.remove(session_id) {
             info!(
                 session = session_id,
@@ -90,7 +93,8 @@ impl ShapeRegistry {
 
     /// Get all shape IDs for a session.
     pub fn shapes_for_session(&self, session_id: &str) -> Vec<ShapeId> {
-        let sessions = self.sessions.read().unwrap_or_else(|p| p.into_inner());
+        let sessions =
+            crate::control::lock_utils::read_or_recover(self.sessions.read(), "shape_sessions");
         sessions
             .get(session_id)
             .map(|c| c.shapes.keys().cloned().collect())
@@ -108,7 +112,8 @@ impl ShapeRegistry {
         collection: &str,
         doc_id: &str,
     ) -> Vec<(String, ShapeId)> {
-        let sessions = self.sessions.read().unwrap_or_else(|p| p.into_inner());
+        let sessions =
+            crate::control::lock_utils::read_or_recover(self.sessions.read(), "shape_sessions");
         let mut matches = Vec::new();
 
         for (session_id, client) in sessions.iter() {
@@ -127,7 +132,8 @@ impl ShapeRegistry {
 
     /// Get the session ID for a session's shape state.
     pub fn session_info(&self, session_id: &str) -> Option<(u32, usize)> {
-        let sessions = self.sessions.read().unwrap_or_else(|p| p.into_inner());
+        let sessions =
+            crate::control::lock_utils::read_or_recover(self.sessions.read(), "shape_sessions");
         sessions
             .get(session_id)
             .map(|c| (c.tenant_id, c.shapes.len()))
@@ -135,19 +141,22 @@ impl ShapeRegistry {
 
     /// Total active shape subscriptions across all sessions.
     pub fn total_shapes(&self) -> usize {
-        let sessions = self.sessions.read().unwrap_or_else(|p| p.into_inner());
+        let sessions =
+            crate::control::lock_utils::read_or_recover(self.sessions.read(), "shape_sessions");
         sessions.values().map(|c| c.shapes.len()).sum()
     }
 
     /// Number of sessions with active shapes.
     pub fn active_sessions(&self) -> usize {
-        let sessions = self.sessions.read().unwrap_or_else(|p| p.into_inner());
+        let sessions =
+            crate::control::lock_utils::read_or_recover(self.sessions.read(), "shape_sessions");
         sessions.len()
     }
 
     /// Get a shape definition by session + shape_id.
     pub fn get_shape(&self, session_id: &str, shape_id: &str) -> Option<ShapeDefinition> {
-        let sessions = self.sessions.read().unwrap_or_else(|p| p.into_inner());
+        let sessions =
+            crate::control::lock_utils::read_or_recover(self.sessions.read(), "shape_sessions");
         sessions
             .get(session_id)
             .and_then(|c| c.shapes.get(shape_id).cloned())
@@ -155,7 +164,8 @@ impl ShapeRegistry {
 
     /// Export all shapes for persistence (serializable snapshot).
     pub fn export_all(&self) -> Vec<(String, u32, ShapeDefinition)> {
-        let sessions = self.sessions.read().unwrap_or_else(|p| p.into_inner());
+        let sessions =
+            crate::control::lock_utils::read_or_recover(self.sessions.read(), "shape_sessions");
         let mut result = Vec::new();
         for (session_id, client) in sessions.iter() {
             for shape in client.shapes.values() {
@@ -167,7 +177,8 @@ impl ShapeRegistry {
 
     /// Import shapes from a persisted snapshot (called on startup).
     pub fn import(&self, shapes: Vec<(String, u32, ShapeDefinition)>) {
-        let mut sessions = self.sessions.write().unwrap_or_else(|p| p.into_inner());
+        let mut sessions =
+            crate::control::lock_utils::write_or_recover(self.sessions.write(), "shape_sessions");
         for (session_id, tenant_id, shape) in shapes {
             let client = sessions.entry(session_id).or_insert_with(|| ClientShapes {
                 shapes: HashMap::new(),
@@ -176,6 +187,18 @@ impl ShapeRegistry {
             });
             client.shapes.insert(shape.shape_id.clone(), shape);
         }
+    }
+
+    /// Compact stale sessions: remove sessions with no shapes or sessions
+    /// that haven't been modified within the given duration.
+    pub fn compact(&self, max_idle: std::time::Duration) -> usize {
+        let mut sessions =
+            crate::control::lock_utils::write_or_recover(self.sessions.write(), "shape_sessions");
+        let before = sessions.len();
+        sessions.retain(|_, client| {
+            !client.shapes.is_empty() && client.last_modified.elapsed() < max_idle
+        });
+        before - sessions.len()
     }
 }
 
@@ -193,6 +216,7 @@ mod tests {
                 predicate: Vec::new(),
             },
             description: format!("all {collection}"),
+            field_filter: vec![],
         }
     }
 

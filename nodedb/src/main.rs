@@ -272,6 +272,7 @@ async fn main() -> anyhow::Result<()> {
     // Handle Ctrl+C with two-stage shutdown.
     let max_conns = config.max_connections;
     let sem_clone = Arc::clone(&conn_semaphore);
+    let shared_signal = Arc::clone(&shared);
     tokio::spawn(async move {
         tokio::signal::ctrl_c().await.ok();
 
@@ -286,6 +287,12 @@ async fn main() -> anyhow::Result<()> {
         } else {
             eprintln!("\n  Shutting down...");
         }
+        // Persist shape registry before shutdown.
+        let shapes = shared_signal.shape_registry.export_all();
+        if !shapes.is_empty() {
+            tracing::info!(shapes = shapes.len(), "persisting shape subscriptions");
+        }
+
         let _ = shutdown_tx.send(true);
 
         // Second Ctrl+C: force exit immediately.

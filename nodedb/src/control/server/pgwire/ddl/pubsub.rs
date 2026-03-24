@@ -44,7 +44,11 @@ pub fn drop_topic(
     _identity: &AuthenticatedIdentity,
     parts: &[&str],
 ) -> PgWireResult<Vec<Response>> {
-    let name = parts.get(2).unwrap_or(&"").to_lowercase();
+    let name = parts
+        .get(2)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| sqlstate_error("42601", "DROP TOPIC requires a name"))?
+        .to_lowercase();
     state
         .topic_registry
         .drop_topic(&name)
@@ -129,19 +133,35 @@ pub fn subscribe_to(
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
 
-    let (sub_id, _rx, backlog) = state
-        .topic_registry
-        .subscribe(&topic_name, since_seq)
-        .map_err(|e| sqlstate_error("42P01", &e.to_string()))?;
+    // Check for GROUP clause: SUBSCRIBE TO topic GROUP group_name [SINCE seq]
+    let group_name = upper
+        .find(" GROUP ")
+        .map(|pos| sql[pos + 7..].split_whitespace().next().unwrap_or(""))
+        .filter(|g| !g.is_empty())
+        .map(|g| g.to_lowercase());
+
+    let (sub_id, _rx, backlog) = if let Some(ref group) = group_name {
+        state
+            .topic_registry
+            .subscribe_group(&topic_name, group, since_seq)
+            .map_err(|e| sqlstate_error("42P01", &e.to_string()))?
+    } else {
+        state
+            .topic_registry
+            .subscribe(&topic_name, since_seq)
+            .map_err(|e| sqlstate_error("42P01", &e.to_string()))?
+    };
 
     let schema = Arc::new(vec![
         text_field("subscription_id"),
         text_field("topic"),
+        text_field("group"),
         text_field("backlog"),
     ]);
     let mut encoder = DataRowEncoder::new(schema.clone());
     let _ = encoder.encode_field(&sub_id.to_string());
     let _ = encoder.encode_field(&topic_name);
+    let _ = encoder.encode_field(&group_name.as_deref().unwrap_or("-"));
     let _ = encoder.encode_field(&backlog.len().to_string());
     let row = encoder.take_row();
     Ok(vec![Response::Query(QueryResponse::new(

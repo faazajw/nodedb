@@ -50,12 +50,53 @@ impl fmt::Display for TopicError {
     }
 }
 
+/// A consumer group: named set of subscribers sharing load via round-robin.
+struct ConsumerGroup {
+    /// Members: sub_id → sender channel.
+    members: Vec<(u64, tokio::sync::mpsc::Sender<PubSubMessage>)>,
+    /// Round-robin index for next delivery.
+    next_index: usize,
+}
+
+impl ConsumerGroup {
+    fn new() -> Self {
+        Self {
+            members: Vec::new(),
+            next_index: 0,
+        }
+    }
+
+    /// Deliver message to exactly one member (round-robin). Remove dead members.
+    fn deliver(&mut self, msg: &PubSubMessage) {
+        if self.members.is_empty() {
+            return;
+        }
+        let mut attempts = 0;
+        while attempts < self.members.len() {
+            let idx = self.next_index % self.members.len();
+            self.next_index = idx + 1;
+            if self.members[idx].1.try_send(msg.clone()).is_ok() {
+                return;
+            }
+            // Dead member — remove and try next.
+            self.members.remove(idx);
+            if self.next_index > 0 {
+                self.next_index -= 1;
+            }
+            attempts += 1;
+        }
+    }
+}
+
 /// A named topic with bounded message log and active subscribers.
 struct Topic {
     messages: Vec<PubSubMessage>,
     next_seq: u64,
     max_messages: usize,
+    /// Broadcast subscribers: all get every message.
     subscribers: HashMap<u64, tokio::sync::mpsc::Sender<PubSubMessage>>,
+    /// Consumer groups: each message delivered to exactly one member per group.
+    consumer_groups: HashMap<String, ConsumerGroup>,
 }
 
 impl Topic {
@@ -65,6 +106,20 @@ impl Topic {
             next_seq: 1,
             max_messages,
             subscribers: HashMap::new(),
+            consumer_groups: HashMap::new(),
+        }
+    }
+
+    /// Get backlog of messages since a given sequence number.
+    fn get_backlog(&self, since_seq: u64) -> Vec<PubSubMessage> {
+        if since_seq > 0 {
+            self.messages
+                .iter()
+                .filter(|m| m.seq >= since_seq)
+                .cloned()
+                .collect()
+        } else {
+            Vec::new()
         }
     }
 }
@@ -87,7 +142,7 @@ impl TopicRegistry {
 
     /// Create a new topic.
     pub fn create_topic(&self, name: &str) -> Result<(), TopicError> {
-        let mut topics = self.topics.write().unwrap_or_else(|p| p.into_inner());
+        let mut topics = super::lock_utils::write_or_recover(self.topics.write(), "topics");
         if topics.contains_key(name) {
             return Err(TopicError::AlreadyExists(name.to_string()));
         }
@@ -101,7 +156,7 @@ impl TopicRegistry {
 
     /// Drop a topic and all its messages.
     pub fn drop_topic(&self, name: &str) -> Result<(), TopicError> {
-        let mut topics = self.topics.write().unwrap_or_else(|p| p.into_inner());
+        let mut topics = super::lock_utils::write_or_recover(self.topics.write(), "topics");
         if topics.remove(name).is_some() {
             debug!(topic = name, "topic dropped");
             Ok(())
@@ -112,7 +167,7 @@ impl TopicRegistry {
 
     /// List all topic names.
     pub fn list_topics(&self) -> Vec<String> {
-        let topics = self.topics.read().unwrap_or_else(|p| p.into_inner());
+        let topics = super::lock_utils::read_or_recover(self.topics.read(), "topics");
         topics.keys().cloned().collect()
     }
 
@@ -123,11 +178,11 @@ impl TopicRegistry {
         payload: String,
         publisher: &str,
     ) -> Result<u64, TopicError> {
-        let topics = self.topics.read().unwrap_or_else(|p| p.into_inner());
+        let topics = super::lock_utils::read_or_recover(self.topics.read(), "topics");
         let topic_mutex = topics
             .get(topic_name)
             .ok_or_else(|| TopicError::NotFound(topic_name.to_string()))?;
-        let mut topic = topic_mutex.lock().unwrap_or_else(|p| p.into_inner());
+        let mut topic = super::lock_utils::lock_or_recover(topic_mutex.lock(), "topic");
 
         let seq = topic.next_seq;
         topic.next_seq += 1;
@@ -147,7 +202,7 @@ impl TopicRegistry {
         }
         topic.messages.push(msg.clone());
 
-        // Deliver to active subscribers. Remove dead channels.
+        // Deliver to broadcast subscribers. Remove dead channels.
         let mut dead = Vec::new();
         for (&sub_id, sender) in &topic.subscribers {
             if sender.try_send(msg.clone()).is_err() {
@@ -160,6 +215,11 @@ impl TopicRegistry {
         }
         for sub_id in dead {
             topic.subscribers.remove(&sub_id);
+        }
+
+        // Deliver to consumer groups (one member per group, round-robin).
+        for group in topic.consumer_groups.values_mut() {
+            group.deliver(&msg);
         }
 
         debug!(topic = topic_name, seq, "message published");
@@ -182,25 +242,16 @@ impl TopicRegistry {
         ),
         TopicError,
     > {
-        let topics = self.topics.read().unwrap_or_else(|p| p.into_inner());
+        let topics = super::lock_utils::read_or_recover(self.topics.read(), "topics");
         let topic_mutex = topics
             .get(topic_name)
             .ok_or_else(|| TopicError::NotFound(topic_name.to_string()))?;
-        let mut topic = topic_mutex.lock().unwrap_or_else(|p| p.into_inner());
+        let mut topic = super::lock_utils::lock_or_recover(topic_mutex.lock(), "topic");
 
         let sub_id = self.next_sub_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = tokio::sync::mpsc::channel(256);
 
-        let backlog: Vec<PubSubMessage> = if since_seq > 0 {
-            topic
-                .messages
-                .iter()
-                .filter(|m| m.seq >= since_seq)
-                .cloned()
-                .collect()
-        } else {
-            Vec::new()
-        };
+        let backlog = topic.get_backlog(since_seq);
 
         topic.subscribers.insert(sub_id, tx);
         debug!(
@@ -212,11 +263,57 @@ impl TopicRegistry {
         Ok((sub_id, rx, backlog))
     }
 
+    /// Subscribe to a topic as a consumer group member.
+    ///
+    /// Messages are delivered to exactly ONE member of the group (round-robin).
+    /// Multiple subscribers with the same `group_name` share the load.
+    /// Returns (subscription_id, receiver, backlog).
+    pub fn subscribe_group(
+        &self,
+        topic_name: &str,
+        group_name: &str,
+        since_seq: u64,
+    ) -> Result<
+        (
+            u64,
+            tokio::sync::mpsc::Receiver<PubSubMessage>,
+            Vec<PubSubMessage>,
+        ),
+        TopicError,
+    > {
+        let topics = super::lock_utils::read_or_recover(self.topics.read(), "topics");
+        let topic_mutex = topics
+            .get(topic_name)
+            .ok_or_else(|| TopicError::NotFound(topic_name.to_string()))?;
+        let mut topic = super::lock_utils::lock_or_recover(topic_mutex.lock(), "topic");
+
+        let sub_id = self.next_sub_id.fetch_add(1, Ordering::Relaxed);
+        let (tx, rx) = tokio::sync::mpsc::channel(256);
+
+        let backlog = topic.get_backlog(since_seq);
+
+        let group = topic
+            .consumer_groups
+            .entry(group_name.to_string())
+            .or_insert_with(ConsumerGroup::new);
+        group.members.push((sub_id, tx));
+
+        debug!(
+            topic = topic_name,
+            group = group_name,
+            sub_id,
+            members = group.members.len(),
+            backlog = backlog.len(),
+            "subscribed to consumer group"
+        );
+        Ok((sub_id, rx, backlog))
+    }
+
     /// Unsubscribe from a topic.
     pub fn unsubscribe(&self, topic_name: &str, sub_id: u64) {
-        let topics = self.topics.read().unwrap_or_else(|p| p.into_inner());
+        let topics = super::lock_utils::read_or_recover(self.topics.read(), "topics");
         if let Some(topic_mutex) = topics.get(topic_name) {
-            let mut topic = topic_mutex.lock().unwrap_or_else(|p| p.into_inner());
+            let mut topic = super::lock_utils::lock_or_recover(topic_mutex.lock(), "topic");
             topic.subscribers.remove(&sub_id);
             debug!(topic = topic_name, sub_id, "unsubscribed");
         }
@@ -224,13 +321,14 @@ impl TopicRegistry {
 
     /// Get topic stats.
     pub fn topic_stats(&self, topic_name: &str) -> Option<TopicStats> {
-        let topics = self.topics.read().unwrap_or_else(|p| p.into_inner());
+        let topics = super::lock_utils::read_or_recover(self.topics.read(), "topics");
         let topic_mutex = topics.get(topic_name)?;
-        let topic = topic_mutex.lock().unwrap_or_else(|p| p.into_inner());
+        let topic = super::lock_utils::lock_or_recover(topic_mutex.lock(), "topic");
         Some(TopicStats {
             name: topic_name.to_string(),
             message_count: topic.messages.len(),
             subscriber_count: topic.subscribers.len(),
+            consumer_group_count: topic.consumer_groups.len(),
             next_seq: topic.next_seq,
         })
     }
@@ -242,6 +340,7 @@ pub struct TopicStats {
     pub name: String,
     pub message_count: usize,
     pub subscriber_count: usize,
+    pub consumer_group_count: usize,
     pub next_seq: u64,
 }
 
@@ -322,5 +421,50 @@ mod tests {
         let stats = registry.topic_stats("stats").unwrap();
         assert_eq!(stats.message_count, 2);
         assert_eq!(stats.next_seq, 3);
+    }
+
+    #[tokio::test]
+    async fn consumer_group_round_robin() {
+        let registry = TopicRegistry::new(1000);
+        registry.create_topic("tasks").unwrap();
+
+        // Two members in the same consumer group.
+        let (_id1, mut rx1, _) = registry.subscribe_group("tasks", "workers", 0).unwrap();
+        let (_id2, mut rx2, _) = registry.subscribe_group("tasks", "workers", 0).unwrap();
+
+        // Publish 4 messages.
+        registry.publish("tasks", "a".into(), "system").unwrap();
+        registry.publish("tasks", "b".into(), "system").unwrap();
+        registry.publish("tasks", "c".into(), "system").unwrap();
+        registry.publish("tasks", "d".into(), "system").unwrap();
+
+        // Each member should get ~2 messages (round-robin).
+        let mut count1 = 0;
+        let mut count2 = 0;
+        while let Ok(msg) = rx1.try_recv() {
+            count1 += 1;
+            let _ = msg;
+        }
+        while let Ok(msg) = rx2.try_recv() {
+            count2 += 1;
+            let _ = msg;
+        }
+        assert_eq!(count1 + count2, 4);
+        assert!(
+            count1 >= 1 && count2 >= 1,
+            "both members should get messages: c1={count1}, c2={count2}"
+        );
+    }
+
+    #[test]
+    fn consumer_group_stats() {
+        let registry = TopicRegistry::new(1000);
+        registry.create_topic("cg").unwrap();
+        registry.subscribe_group("cg", "g1", 0).unwrap();
+        registry.subscribe_group("cg", "g1", 0).unwrap();
+        registry.subscribe_group("cg", "g2", 0).unwrap();
+
+        let stats = registry.topic_stats("cg").unwrap();
+        assert_eq!(stats.consumer_group_count, 2);
     }
 }

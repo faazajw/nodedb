@@ -17,9 +17,14 @@ use tracing::debug;
 use crate::types::{Lsn, TenantId};
 
 /// A single mutation event broadcast by the change stream.
+///
+/// **Ordering guarantee**: Events are published in WAL commit order (by LSN).
+/// Within a single core, events are strictly ordered. Across cores, events
+/// are ordered by the time `dispatch_to_data_plane` returns (response arrival).
+/// The LSN field provides a total order for consumers that need it.
 #[derive(Debug, Clone)]
 pub struct ChangeEvent {
-    /// WAL LSN of this mutation.
+    /// WAL LSN of this mutation. Provides total ordering across all events.
     pub lsn: Lsn,
     /// Tenant that performed the mutation.
     pub tenant_id: TenantId,
@@ -68,6 +73,9 @@ pub struct Subscription {
     pub collection_filter: Option<String>,
     /// Optional tenant filter (None = all tenants).
     pub tenant_filter: Option<TenantId>,
+    /// Optional field filter: only include these fields in live query events.
+    /// Empty = all fields.
+    pub field_filter: Vec<String>,
     /// Shared counter for automatic cleanup on drop.
     active_counter: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
@@ -179,6 +187,7 @@ impl ChangeStream {
             receiver,
             collection_filter,
             tenant_filter,
+            field_filter: Vec::new(),
             active_counter: std::sync::Arc::clone(&self.active_subscriptions),
         }
     }
