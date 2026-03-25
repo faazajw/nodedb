@@ -14,6 +14,7 @@ members = [
   "nodedb-lite-wasm",
   "nodedb-cli",
   "nodedb-query",
+  "nodedb-codec",
 ]
 resolver = "2"
 
@@ -35,6 +36,7 @@ nodedb-crdt = { path = "nodedb-crdt" }
 nodedb-raft = { path = "nodedb-raft" }
 nodedb-cluster = { path = "nodedb-cluster" }
 nodedb-query = { path = "nodedb-query" }
+nodedb-codec = { path = "nodedb-codec" }
 
 # Async runtimes
 tokio = { version = "1", features = ["full"] }
@@ -131,6 +133,7 @@ nexar = "0.1"
 
 # Compression
 zstd = "0.13"
+lz4_flex = { version = "0.11", default-features = false, features = ["safe-encode", "safe-decode"] }
 
 # PostgreSQL wire protocol
 pgwire = { version = "0.38", default-features = false, features = [
