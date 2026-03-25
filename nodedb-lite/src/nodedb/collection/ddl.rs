@@ -39,16 +39,23 @@ impl<S: StorageEngine> NodeDbLite<S> {
     }
 
     /// Drop a collection — deletes all documents and metadata.
+    ///
+    /// Uses `clear_collection` for single-batch deletion (one Loro delta
+    /// for all document removals). Also removes the text index.
     pub async fn drop_collection(&self, name: &str) -> NodeDbResult<()> {
-        let ids = {
-            let crdt = self.crdt.lock_or_recover();
-            crdt.list_ids(name)
-        };
-        for id in &ids {
+        // Batch-delete all documents in one delta.
+        {
             let mut crdt = self.crdt.lock_or_recover();
-            crdt.delete(name, id).map_err(NodeDbError::storage)?;
+            crdt.clear_collection(name).map_err(NodeDbError::storage)?;
         }
 
+        // Remove text index for this collection.
+        {
+            let mut indices = self.text_indices.lock().unwrap_or_else(|p| p.into_inner());
+            indices.remove(name);
+        }
+
+        // Delete collection metadata from redb.
         let key = format!("collection:{name}");
         self.storage
             .delete(nodedb_types::Namespace::Meta, key.as_bytes())
