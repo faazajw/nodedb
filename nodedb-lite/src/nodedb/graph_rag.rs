@@ -103,12 +103,11 @@ impl<S: StorageEngine> NodeDbLite<S> {
         }
 
         // Step 3: Fuse scores and rank.
-        let mut fused: Vec<(String, f64)> = rrf_scores
+        let combined: HashMap<String, f64> = rrf_scores
             .into_iter()
             .map(|(id, (v_score, g_score))| (id, v_score + g_score))
             .collect();
-        fused.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        fused.truncate(params.top_k);
+        let fused = rank_and_truncate(combined, params.top_k);
 
         // Step 4: Build result set. Reuse metadata from vector results where available.
         let vector_map: HashMap<&str, &SearchResult> =
@@ -146,6 +145,96 @@ impl<S: StorageEngine> NodeDbLite<S> {
             .collect();
 
         Ok(results)
+    }
+}
+
+/// Hybrid search parameters.
+pub struct HybridSearchParams<'a> {
+    /// Collection to search.
+    pub collection: &'a str,
+    /// Query embedding for vector similarity.
+    pub query_embedding: &'a [f32],
+    /// Query text for BM25 relevance.
+    pub query_text: &'a str,
+    /// Number of vector candidates.
+    pub vector_k: usize,
+    /// Number of text candidates.
+    pub text_k: usize,
+    /// Final number of results to return after fusion.
+    pub top_k: usize,
+    /// Optional metadata filter for vector search.
+    pub filter: Option<&'a MetadataFilter>,
+}
+
+/// Apply RRF scoring to a ranked result list, accumulating into `scores`.
+fn apply_rrf_scores(results: &[SearchResult], rrf_k: f64, scores: &mut HashMap<String, f64>) {
+    for (rank, result) in results.iter().enumerate() {
+        let score = 1.0 / (rrf_k + rank as f64 + 1.0);
+        *scores.entry(result.id.clone()).or_default() += score;
+    }
+}
+
+/// Sort fused scores descending and truncate to `top_k`.
+fn rank_and_truncate(scores: HashMap<String, f64>, top_k: usize) -> Vec<(String, f64)> {
+    let mut fused: Vec<(String, f64)> = scores.into_iter().collect();
+    fused.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    fused.truncate(top_k);
+    fused
+}
+
+impl<S: StorageEngine> NodeDbLite<S> {
+    /// Hybrid search: vector similarity + BM25 text relevance fused via RRF.
+    ///
+    /// 1. Vector search returns `vector_k` candidates by embedding similarity.
+    /// 2. Text search returns `text_k` candidates by BM25 relevance.
+    /// 3. RRF fuses both rankings into a single score per document.
+    /// 4. Top `top_k` results returned.
+    ///
+    /// Documents found by both searches get boosted (RRF scores are additive).
+    pub async fn hybrid_search(
+        &self,
+        params: &HybridSearchParams<'_>,
+    ) -> NodeDbResult<Vec<SearchResult>> {
+        let rrf_k = 60.0f64;
+
+        let vector_results = self
+            .vector_search(
+                params.collection,
+                params.query_embedding,
+                params.vector_k,
+                params.filter,
+            )
+            .await?;
+
+        let text_results = self
+            .text_search(params.collection, params.query_text, params.text_k)
+            .await?;
+
+        // RRF fusion.
+        let mut rrf_scores: HashMap<String, f64> = HashMap::new();
+        let mut metadata_cache: HashMap<String, HashMap<String, nodedb_types::Value>> =
+            HashMap::new();
+
+        for results in [&vector_results, &text_results] {
+            apply_rrf_scores(results, rrf_k, &mut rrf_scores);
+            for result in results.iter() {
+                metadata_cache
+                    .entry(result.id.clone())
+                    .or_insert_with(|| result.metadata.clone());
+            }
+        }
+
+        let fused = rank_and_truncate(rrf_scores, params.top_k);
+
+        Ok(fused
+            .into_iter()
+            .map(|(id, score)| SearchResult {
+                id: id.clone(),
+                node_id: None,
+                distance: 1.0 / (1.0 + score as f32),
+                metadata: metadata_cache.remove(&id).unwrap_or_default(),
+            })
+            .collect())
     }
 }
 
