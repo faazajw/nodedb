@@ -1,29 +1,35 @@
 //! Compression codecs for NodeDB timeseries columnar storage.
 //!
 //! Provides per-column codec selection with **cascading compression**:
-//! type-aware encoding (ALP, FastLanes, Delta) followed by a terminal
-//! byte compressor (lz4_flex). Each column can use a different codec chain
-//! optimized for its data distribution.
+//! type-aware encoding (ALP, FastLanes, FSST, Pcodec) followed by a terminal
+//! byte compressor (lz4_flex for hot/warm, rANS for cold/S3).
 //!
-//! Cascading chains:
-//! - `AlpFastLanesLz4`:   f64 → ALP (decimal→int) → FastLanes → lz4
-//! - `DeltaFastLanesLz4`: i64 → Delta → FastLanes bit-pack → lz4
-//! - `FastLanesLz4`:      i64 → FastLanes bit-pack → lz4
+//! Cascading chains (hot/warm — lz4 terminal):
+//! - `AlpFastLanesLz4`:   f64 metrics → ALP → FastLanes → lz4
+//! - `DeltaFastLanesLz4`: i64 timestamps/counters → Delta → FastLanes → lz4
+//! - `FastLanesLz4`:      i64 raw integers → FastLanes → lz4
+//! - `FsstLz4`:           strings/logs → FSST → lz4
+//! - `PcodecLz4`:         complex numerics → Pcodec → lz4
+//! - `AlpRdLz4`:          true doubles → ALP-RD → lz4
 //!
-//! Legacy single-step codecs (Gorilla, DoubleDelta, Delta, LZ4, Zstd, Raw)
-//! are retained for small partitions (<1024 values) and backward compatibility.
+//! Cold/S3 tier chains (rANS terminal):
+//! - `AlpFastLanesRans`, `DeltaFastLanesRans`, `FsstRans`
 //!
 //! Shared by Origin and Lite. Compiles to WASM.
 
 pub mod alp;
+pub mod alp_rd;
 pub mod delta;
 pub mod detect;
 pub mod double_delta;
 pub mod error;
 pub mod fastlanes;
+pub mod fsst;
 pub mod gorilla;
 pub mod lz4;
+pub mod pcodec;
 pub mod pipeline;
+pub mod rans;
 pub mod raw;
 pub mod zstd_codec;
 
@@ -53,16 +59,27 @@ pub enum ColumnCodec {
     /// distribution (analyzed at flush time).
     Auto,
 
-    // -- Cascading chains (Stage 1 → Stage 2) --
-    /// f64 metrics: ALP (decimal→int) → FastLanes bit-pack → lz4.
-    /// Best for fixed-point-origin floats (e.g., 23.5, 99.99). 3-6x better than Gorilla.
+    // -- Cascading chains: hot/warm (lz4 terminal) --
+    /// f64 metrics: ALP (decimal→int) → FastLanes → lz4.
     AlpFastLanesLz4,
-    /// i64 timestamps/counters: Delta → FastLanes bit-pack → lz4.
-    /// Best for monotonic sequences. 2-3x better than DoubleDelta.
+    /// f64 true doubles: ALP-RD (front-bit dict) → lz4.
+    AlpRdLz4,
+    /// f64/i64 complex: Pcodec → lz4.
+    PcodecLz4,
+    /// i64 timestamps/counters: Delta → FastLanes → lz4.
     DeltaFastLanesLz4,
-    /// i64/u32 raw integers: FastLanes bit-pack → lz4.
-    /// Best for small-range integers (symbol IDs, enum values).
+    /// i64/u32 raw integers: FastLanes → lz4.
     FastLanesLz4,
+    /// Strings/logs: FSST (substring dict) → lz4.
+    FsstLz4,
+
+    // -- Cascading chains: cold/S3 (rANS terminal) --
+    /// f64 metrics cold: ALP → FastLanes → rANS.
+    AlpFastLanesRans,
+    /// i64 cold: Delta → FastLanes → rANS.
+    DeltaFastLanesRans,
+    /// Strings cold: FSST → rANS.
+    FsstRans,
 
     // -- Legacy single-step codecs (small partitions, backward compat) --
     /// Gorilla XOR encoding — legacy f64 codec.
@@ -88,7 +105,23 @@ impl ColumnCodec {
     pub fn is_cascading(&self) -> bool {
         matches!(
             self,
-            Self::AlpFastLanesLz4 | Self::DeltaFastLanesLz4 | Self::FastLanesLz4
+            Self::AlpFastLanesLz4
+                | Self::AlpRdLz4
+                | Self::PcodecLz4
+                | Self::DeltaFastLanesLz4
+                | Self::FastLanesLz4
+                | Self::FsstLz4
+                | Self::AlpFastLanesRans
+                | Self::DeltaFastLanesRans
+                | Self::FsstRans
+        )
+    }
+
+    /// Whether this codec uses rANS as terminal (cold tier).
+    pub fn is_cold_tier(&self) -> bool {
+        matches!(
+            self,
+            Self::AlpFastLanesRans | Self::DeltaFastLanesRans | Self::FsstRans
         )
     }
 
@@ -96,8 +129,14 @@ impl ColumnCodec {
         match self {
             Self::Auto => "auto",
             Self::AlpFastLanesLz4 => "alp_fastlanes_lz4",
+            Self::AlpRdLz4 => "alp_rd_lz4",
+            Self::PcodecLz4 => "pcodec_lz4",
             Self::DeltaFastLanesLz4 => "delta_fastlanes_lz4",
             Self::FastLanesLz4 => "fastlanes_lz4",
+            Self::FsstLz4 => "fsst_lz4",
+            Self::AlpFastLanesRans => "alp_fastlanes_rans",
+            Self::DeltaFastLanesRans => "delta_fastlanes_rans",
+            Self::FsstRans => "fsst_rans",
             Self::Gorilla => "gorilla",
             Self::DoubleDelta => "double_delta",
             Self::Delta => "delta",
@@ -268,8 +307,14 @@ mod tests {
         for codec in [
             ColumnCodec::Auto,
             ColumnCodec::AlpFastLanesLz4,
+            ColumnCodec::AlpRdLz4,
+            ColumnCodec::PcodecLz4,
             ColumnCodec::DeltaFastLanesLz4,
             ColumnCodec::FastLanesLz4,
+            ColumnCodec::FsstLz4,
+            ColumnCodec::AlpFastLanesRans,
+            ColumnCodec::DeltaFastLanesRans,
+            ColumnCodec::FsstRans,
             ColumnCodec::Gorilla,
             ColumnCodec::DoubleDelta,
             ColumnCodec::Delta,

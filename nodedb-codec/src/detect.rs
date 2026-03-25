@@ -39,7 +39,7 @@ pub fn detect_codec(codec: ColumnCodec, type_hint: ColumnTypeHint) -> ColumnCode
         ColumnTypeHint::Float64 => ColumnCodec::AlpFastLanesLz4,
         ColumnTypeHint::Int64 => ColumnCodec::DeltaFastLanesLz4,
         ColumnTypeHint::Symbol => ColumnCodec::FastLanesLz4,
-        ColumnTypeHint::String => ColumnCodec::Lz4,
+        ColumnTypeHint::String => ColumnCodec::FsstLz4,
     }
 }
 
@@ -159,7 +159,7 @@ mod tests {
     fn auto_string() {
         assert_eq!(
             detect_codec(ColumnCodec::Auto, ColumnTypeHint::String),
-            ColumnCodec::Lz4
+            ColumnCodec::FsstLz4
         );
     }
 

@@ -24,8 +24,15 @@ use crate::error::CodecError;
 /// delegates to the single-step encoder.
 pub fn encode_i64_pipeline(values: &[i64], codec: ColumnCodec) -> Result<Vec<u8>, CodecError> {
     match codec {
+        // Cascading chains — lz4 terminal.
         ColumnCodec::DeltaFastLanesLz4 => encode_delta_fastlanes_lz4(values),
         ColumnCodec::FastLanesLz4 => encode_fastlanes_lz4_i64(values),
+        ColumnCodec::PcodecLz4 => {
+            let pco_bytes = crate::pcodec::encode_i64(values)?;
+            Ok(crate::lz4::encode(&pco_bytes))
+        }
+        // Cascading chains — rANS terminal (cold tier).
+        ColumnCodec::DeltaFastLanesRans => encode_delta_fastlanes_rans(values),
         // Legacy single-step codecs.
         ColumnCodec::DoubleDelta => Ok(crate::double_delta::encode(values)),
         ColumnCodec::Delta => Ok(crate::delta::encode(values)),
@@ -49,7 +56,18 @@ pub fn encode_i64_pipeline(values: &[i64], codec: ColumnCodec) -> Result<Vec<u8>
 /// Encode f64 values through a cascading pipeline.
 pub fn encode_f64_pipeline(values: &[f64], codec: ColumnCodec) -> Result<Vec<u8>, CodecError> {
     match codec {
+        // Cascading chains — lz4 terminal.
         ColumnCodec::AlpFastLanesLz4 => encode_alp_fastlanes_lz4(values),
+        ColumnCodec::AlpRdLz4 => {
+            let alp_rd_bytes = crate::alp_rd::encode(values)?;
+            Ok(crate::lz4::encode(&alp_rd_bytes))
+        }
+        ColumnCodec::PcodecLz4 => {
+            let pco_bytes = crate::pcodec::encode_f64(values)?;
+            Ok(crate::lz4::encode(&pco_bytes))
+        }
+        // Cascading chains — rANS terminal (cold tier).
+        ColumnCodec::AlpFastLanesRans => encode_alp_fastlanes_rans(values),
         // Legacy single-step codecs.
         ColumnCodec::Gorilla => Ok(crate::gorilla::encode_f64(values)),
         ColumnCodec::Raw => {
@@ -68,9 +86,18 @@ pub fn encode_f64_pipeline(values: &[f64], codec: ColumnCodec) -> Result<Vec<u8>
     }
 }
 
-/// Encode raw bytes (symbol columns) through a pipeline.
+/// Encode raw bytes (symbol columns or string data) through a pipeline.
 pub fn encode_bytes_pipeline(raw: &[u8], codec: ColumnCodec) -> Result<Vec<u8>, CodecError> {
     match codec {
+        ColumnCodec::FsstLz4 => {
+            // FSST expects an array of strings. Treat raw as a single blob.
+            let fsst_bytes = crate::fsst::encode(&[raw]);
+            Ok(crate::lz4::encode(&fsst_bytes))
+        }
+        ColumnCodec::FsstRans => {
+            let fsst_bytes = crate::fsst::encode(&[raw]);
+            Ok(crate::rans::encode(&fsst_bytes))
+        }
         ColumnCodec::Raw => Ok(crate::raw::encode(raw)),
         ColumnCodec::Lz4 => Ok(crate::lz4::encode(raw)),
         ColumnCodec::Zstd => crate::zstd_codec::encode(raw),
@@ -97,8 +124,15 @@ pub fn encode_bytes_pipeline(raw: &[u8], codec: ColumnCodec) -> Result<Vec<u8>, 
 /// Decode i64 values from a cascading pipeline.
 pub fn decode_i64_pipeline(data: &[u8], codec: ColumnCodec) -> Result<Vec<i64>, CodecError> {
     match codec {
+        // Cascading — lz4 terminal.
         ColumnCodec::DeltaFastLanesLz4 => decode_delta_fastlanes_lz4(data),
         ColumnCodec::FastLanesLz4 => decode_fastlanes_lz4_i64(data),
+        ColumnCodec::PcodecLz4 => {
+            let pco_bytes = crate::lz4::decode(data)?;
+            crate::pcodec::decode_i64(&pco_bytes)
+        }
+        // Cascading — rANS terminal.
+        ColumnCodec::DeltaFastLanesRans => decode_delta_fastlanes_rans(data),
         // Legacy single-step codecs.
         ColumnCodec::DoubleDelta => crate::double_delta::decode(data),
         ColumnCodec::Delta => crate::delta::decode(data),
@@ -122,7 +156,18 @@ pub fn decode_i64_pipeline(data: &[u8], codec: ColumnCodec) -> Result<Vec<i64>, 
 /// Decode f64 values from a cascading pipeline.
 pub fn decode_f64_pipeline(data: &[u8], codec: ColumnCodec) -> Result<Vec<f64>, CodecError> {
     match codec {
+        // Cascading — lz4 terminal.
         ColumnCodec::AlpFastLanesLz4 => decode_alp_fastlanes_lz4(data),
+        ColumnCodec::AlpRdLz4 => {
+            let alp_rd_bytes = crate::lz4::decode(data)?;
+            crate::alp_rd::decode(&alp_rd_bytes)
+        }
+        ColumnCodec::PcodecLz4 => {
+            let pco_bytes = crate::lz4::decode(data)?;
+            crate::pcodec::decode_f64(&pco_bytes)
+        }
+        // Cascading — rANS terminal.
+        ColumnCodec::AlpFastLanesRans => decode_alp_fastlanes_rans(data),
         // Legacy single-step codecs.
         ColumnCodec::Gorilla => crate::gorilla::decode_f64(data),
         ColumnCodec::Raw => {
@@ -141,24 +186,34 @@ pub fn decode_f64_pipeline(data: &[u8], codec: ColumnCodec) -> Result<Vec<f64>, 
     }
 }
 
-/// Decode raw bytes (symbol columns) from a pipeline.
+/// Decode raw bytes (symbol columns or string data) from a pipeline.
 pub fn decode_bytes_pipeline(data: &[u8], codec: ColumnCodec) -> Result<Vec<u8>, CodecError> {
     match codec {
+        ColumnCodec::FsstLz4 => {
+            let fsst_bytes = crate::lz4::decode(data)?;
+            let strings = crate::fsst::decode(&fsst_bytes)?;
+            strings.into_iter().next().ok_or(CodecError::Corrupt {
+                detail: "FSST decode produced no output".into(),
+            })
+        }
+        ColumnCodec::FsstRans => {
+            let fsst_bytes = crate::rans::decode(data)?;
+            let strings = crate::fsst::decode(&fsst_bytes)?;
+            strings.into_iter().next().ok_or(CodecError::Corrupt {
+                detail: "FSST decode produced no output".into(),
+            })
+        }
         ColumnCodec::Raw => crate::raw::decode(data),
         ColumnCodec::Lz4 => crate::lz4::decode(data),
         ColumnCodec::Zstd => crate::zstd_codec::decode(data),
         ColumnCodec::FastLanesLz4 => {
-            // Decode i64s, convert back to u32 LE bytes.
             let i64_vals = decode_fastlanes_lz4_i64(data)?;
             Ok(i64_vals
                 .iter()
                 .flat_map(|&v| (v as u32).to_le_bytes())
                 .collect())
         }
-        _ => {
-            // Try raw decode; fall back to bare bytes for legacy.
-            crate::raw::decode(data).or_else(|_| Ok(data.to_vec()))
-        }
+        _ => crate::raw::decode(data).or_else(|_| Ok(data.to_vec())),
     }
 }
 
@@ -229,6 +284,51 @@ fn encode_fastlanes_lz4_i64(values: &[i64]) -> Result<Vec<u8>, CodecError> {
 fn decode_fastlanes_lz4_i64(data: &[u8]) -> Result<Vec<i64>, CodecError> {
     let packed = crate::lz4::decode(data)?;
     crate::fastlanes::decode(&packed)
+}
+
+/// ALP → FastLanes → rANS: f64 metrics cold tier.
+fn encode_alp_fastlanes_rans(values: &[f64]) -> Result<Vec<u8>, CodecError> {
+    let alp_encoded = crate::alp::encode(values);
+    Ok(crate::rans::encode(&alp_encoded))
+}
+
+fn decode_alp_fastlanes_rans(data: &[u8]) -> Result<Vec<f64>, CodecError> {
+    let alp_bytes = crate::rans::decode(data)?;
+    crate::alp::decode(&alp_bytes)
+}
+
+/// Delta → FastLanes → rANS: i64 cold tier.
+fn encode_delta_fastlanes_rans(values: &[i64]) -> Result<Vec<u8>, CodecError> {
+    if values.is_empty() {
+        return Ok(crate::rans::encode(&crate::fastlanes::encode(&[])));
+    }
+
+    let mut deltas = Vec::with_capacity(values.len());
+    deltas.push(values[0]);
+    for i in 1..values.len() {
+        deltas.push(values[i].wrapping_sub(values[i - 1]));
+    }
+
+    let packed = crate::fastlanes::encode(&deltas);
+    Ok(crate::rans::encode(&packed))
+}
+
+fn decode_delta_fastlanes_rans(data: &[u8]) -> Result<Vec<i64>, CodecError> {
+    let packed = crate::rans::decode(data)?;
+    let deltas = crate::fastlanes::decode(&packed)?;
+
+    if deltas.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut values = Vec::with_capacity(deltas.len());
+    values.push(deltas[0]);
+    for &d in &deltas[1..] {
+        let prev = values[values.len() - 1];
+        values.push(prev.wrapping_add(d));
+    }
+
+    Ok(values)
 }
 
 // ---------------------------------------------------------------------------
