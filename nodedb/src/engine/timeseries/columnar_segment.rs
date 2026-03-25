@@ -96,6 +96,17 @@ impl ColumnarSegmentWriter {
         std::fs::write(partition_dir.join("schema.json"), &schema_json)
             .map_err(|e| SegmentError::Io(format!("write schema: {e}")))?;
 
+        // Build and write sparse index from raw (pre-compression) column data.
+        let sparse_idx = super::sparse_index::SparseIndex::build(
+            &drain.columns,
+            &drain.schema,
+            drain.row_count,
+            super::sparse_index::DEFAULT_BLOCK_SIZE,
+        );
+        let sparse_bytes = sparse_idx.to_bytes();
+        std::fs::write(partition_dir.join("sparse_index.bin"), &sparse_bytes)
+            .map_err(|e| SegmentError::Io(format!("write sparse index: {e}")))?;
+
         let size_bytes = dir_size(&partition_dir)?;
 
         let meta = PartitionMeta {
@@ -322,6 +333,78 @@ impl ColumnarSegmentReader {
             ));
         }
         Ok(unsafe { std::slice::from_raw_parts(mmap.as_ptr() as *const u32, mmap.len() / 4) })
+    }
+
+    /// Read the sparse primary index for a partition.
+    ///
+    /// Returns `None` if no sparse index exists (legacy partitions).
+    pub fn read_sparse_index(
+        partition_dir: &Path,
+    ) -> Result<Option<super::sparse_index::SparseIndex>, SegmentError> {
+        let idx_path = partition_dir.join("sparse_index.bin");
+        match std::fs::read(&idx_path) {
+            Ok(data) => {
+                let idx = super::sparse_index::SparseIndex::from_bytes(&data)
+                    .map_err(|e| SegmentError::Corrupt(format!("sparse index: {e}")))?;
+                Ok(Some(idx))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(SegmentError::Io(format!(
+                "read {}: {e}",
+                idx_path.display()
+            ))),
+        }
+    }
+
+    // -- Metadata-only query methods (Level 0 read avoidance) --
+
+    /// Get the row count from partition metadata without reading any column data.
+    pub fn metadata_row_count(partition_dir: &Path) -> Result<u64, SegmentError> {
+        let meta = Self::read_meta(partition_dir)?;
+        Ok(meta.row_count)
+    }
+
+    /// Get the timestamp range from partition metadata.
+    pub fn metadata_ts_range(partition_dir: &Path) -> Result<(i64, i64), SegmentError> {
+        let meta = Self::read_meta(partition_dir)?;
+        Ok((meta.min_ts, meta.max_ts))
+    }
+
+    /// Get per-column statistics from partition metadata.
+    ///
+    /// Enables answering `MIN/MAX/SUM/COUNT` queries without decompression:
+    /// - `COUNT(*)` → `row_count`
+    /// - `MIN(col)` → `column_stats[col].min`
+    /// - `MAX(col)` → `column_stats[col].max`
+    /// - `SUM(col)` → `column_stats[col].sum`
+    pub fn metadata_column_stats(
+        partition_dir: &Path,
+        col_name: &str,
+    ) -> Result<Option<ColumnStatistics>, SegmentError> {
+        let meta = Self::read_meta(partition_dir)?;
+        Ok(meta.column_stats.get(col_name).cloned())
+    }
+
+    /// Check if a partition could contain rows matching a predicate,
+    /// using only partition-level column statistics (no block-level index).
+    ///
+    /// Returns `false` if the partition can definitely be skipped.
+    pub fn metadata_might_match(
+        partition_dir: &Path,
+        col_name: &str,
+        predicate: &super::sparse_index::BlockPredicate,
+    ) -> Result<bool, SegmentError> {
+        let meta = Self::read_meta(partition_dir)?;
+        match meta.column_stats.get(col_name) {
+            Some(stats) => {
+                let block_stats = super::sparse_index::BlockColumnStats {
+                    min: stats.min.unwrap_or(f64::NEG_INFINITY),
+                    max: stats.max.unwrap_or(f64::INFINITY),
+                };
+                Ok(predicate.might_match(&block_stats))
+            }
+            None => Ok(true), // No stats → can't skip.
+        }
     }
 }
 
@@ -809,5 +892,215 @@ mod tests {
         assert_eq!(recovered.columns, schema.columns);
         assert_eq!(recovered.timestamp_idx, 0);
         assert_eq!(recovered.codecs, schema.codecs);
+    }
+
+    #[test]
+    fn sparse_index_written_during_flush() {
+        let tmp = TempDir::new().unwrap();
+        let writer = ColumnarSegmentWriter::new(tmp.path());
+
+        let mut mt = ColumnarMemtable::new_metric(test_config());
+        for i in 0..2048 {
+            mt.ingest_metric(
+                1,
+                MetricSample {
+                    timestamp_ms: 1_700_000_000_000 + i * 10_000,
+                    value: (i % 100) as f64,
+                },
+            );
+        }
+        let drain = mt.drain();
+        writer
+            .write_partition("ts-sparse", &drain, 86_400_000, 0)
+            .unwrap();
+
+        // Verify sparse index file exists and is readable.
+        let part_dir = tmp.path().join("ts-sparse");
+        let sparse = ColumnarSegmentReader::read_sparse_index(&part_dir)
+            .unwrap()
+            .expect("sparse index should exist");
+
+        assert_eq!(sparse.total_rows(), 2048);
+        assert_eq!(sparse.block_count(), 2); // 2048 / 1024 = 2 blocks
+        assert_eq!(sparse.column_names, vec!["timestamp", "value"]);
+
+        // Block 0 should have timestamps for rows 0..1024.
+        assert_eq!(sparse.blocks[0].min_ts, 1_700_000_000_000);
+        assert_eq!(sparse.blocks[0].max_ts, 1_700_000_000_000 + 1023 * 10_000);
+
+        // Block 1 should have timestamps for rows 1024..2048.
+        assert_eq!(sparse.blocks[1].min_ts, 1_700_000_000_000 + 1024 * 10_000);
+    }
+
+    #[test]
+    fn sparse_index_time_range_query() {
+        let tmp = TempDir::new().unwrap();
+        let writer = ColumnarSegmentWriter::new(tmp.path());
+
+        let mut mt = ColumnarMemtable::new_metric(test_config());
+        for i in 0..5000 {
+            mt.ingest_metric(
+                1,
+                MetricSample {
+                    timestamp_ms: 1_700_000_000_000 + i * 1000,
+                    value: i as f64,
+                },
+            );
+        }
+        let drain = mt.drain();
+        writer
+            .write_partition("ts-range", &drain, 86_400_000, 0)
+            .unwrap();
+
+        let part_dir = tmp.path().join("ts-range");
+        let sparse = ColumnarSegmentReader::read_sparse_index(&part_dir)
+            .unwrap()
+            .unwrap();
+
+        // 5000 rows / 1024 = 5 blocks (4 full + 1 partial).
+        assert_eq!(sparse.block_count(), 5);
+
+        // Query middle range: should match ~2 blocks, NOT all 5.
+        let start = 1_700_000_000_000 + 2000 * 1000;
+        let end = 1_700_000_000_000 + 3000 * 1000;
+        let matching = sparse.blocks_in_time_range(start, end);
+        assert!(matching.len() < 5, "should skip at least 1 block");
+        assert!(!matching.is_empty());
+    }
+
+    #[test]
+    fn sparse_index_predicate_pushdown() {
+        let tmp = TempDir::new().unwrap();
+        let writer = ColumnarSegmentWriter::new(tmp.path());
+
+        // Block 0: values 0..1024 → min=0, max=99 (cycling mod 100)
+        // Block 1: values 1024..2048 → min=0, max=99 (same cycle)
+        let schema = ColumnarSchema {
+            columns: vec![
+                ("timestamp".into(), ColumnType::Timestamp),
+                ("cpu".into(), ColumnType::Float64),
+            ],
+            timestamp_idx: 0,
+            codecs: vec![ColumnCodec::Auto; 2],
+        };
+        let mut mt = ColumnarMemtable::new(schema, test_config());
+        for i in 0..2048 {
+            mt.ingest_row(
+                1,
+                &[
+                    ColumnValue::Timestamp(1_700_000_000_000 + i as i64 * 1000),
+                    ColumnValue::Float64(if i < 1024 {
+                        (i % 50) as f64 // Block 0: 0..49
+                    } else {
+                        50.0 + (i % 50) as f64 // Block 1: 50..99
+                    }),
+                ],
+            )
+            .unwrap();
+        }
+        let drain = mt.drain();
+        writer
+            .write_partition("ts-pred", &drain, 86_400_000, 0)
+            .unwrap();
+
+        let part_dir = tmp.path().join("ts-pred");
+        let sparse = ColumnarSegmentReader::read_sparse_index(&part_dir)
+            .unwrap()
+            .unwrap();
+
+        // WHERE cpu > 60 → only block 1 (max of block 0 is 49).
+        use crate::engine::timeseries::sparse_index::BlockPredicate;
+        let preds = vec![BlockPredicate::GreaterThan {
+            column_idx: 1,
+            threshold: 60.0,
+        }];
+        let matching = sparse.filter_blocks(i64::MIN, i64::MAX, &preds);
+        assert_eq!(matching, vec![1]);
+    }
+
+    #[test]
+    fn metadata_only_queries() {
+        let tmp = TempDir::new().unwrap();
+        let writer = ColumnarSegmentWriter::new(tmp.path());
+
+        let mut mt = ColumnarMemtable::new_metric(test_config());
+        for i in 0..1000 {
+            mt.ingest_metric(
+                1,
+                MetricSample {
+                    timestamp_ms: 1_700_000_000_000 + i * 10_000,
+                    value: 42.0 + i as f64 * 0.1,
+                },
+            );
+        }
+        let drain = mt.drain();
+        writer
+            .write_partition("ts-meta", &drain, 86_400_000, 0)
+            .unwrap();
+
+        let part_dir = tmp.path().join("ts-meta");
+
+        // Level 0: COUNT(*) from metadata — zero decompression.
+        let count = ColumnarSegmentReader::metadata_row_count(&part_dir).unwrap();
+        assert_eq!(count, 1000);
+
+        // Level 0: MIN/MAX(ts) from metadata.
+        let (min_ts, max_ts) = ColumnarSegmentReader::metadata_ts_range(&part_dir).unwrap();
+        assert_eq!(min_ts, 1_700_000_000_000);
+        assert_eq!(max_ts, 1_700_000_000_000 + 999 * 10_000);
+
+        // Level 0: Column stats for SUM/MIN/MAX.
+        let stats = ColumnarSegmentReader::metadata_column_stats(&part_dir, "value")
+            .unwrap()
+            .unwrap();
+        assert_eq!(stats.count, 1000);
+        assert!(stats.min.unwrap() < 43.0);
+        assert!(stats.max.unwrap() > 140.0);
+
+        // Partition-level predicate: WHERE value > 200 → skip entire partition.
+        use crate::engine::timeseries::sparse_index::BlockPredicate;
+        let pred = BlockPredicate::GreaterThan {
+            column_idx: 0, // unused in metadata check
+            threshold: 200.0,
+        };
+        let might = ColumnarSegmentReader::metadata_might_match(&part_dir, "value", &pred).unwrap();
+        assert!(!might, "partition max < 200, should be skippable");
+
+        // WHERE value > 50 → partition might match.
+        let pred2 = BlockPredicate::GreaterThan {
+            column_idx: 0,
+            threshold: 50.0,
+        };
+        let might2 =
+            ColumnarSegmentReader::metadata_might_match(&part_dir, "value", &pred2).unwrap();
+        assert!(might2);
+    }
+
+    #[test]
+    fn legacy_partition_no_sparse_index() {
+        let tmp = TempDir::new().unwrap();
+        // Create a partition dir without sparse_index.bin.
+        let part_dir = tmp.path().join("ts-legacy");
+        std::fs::create_dir_all(&part_dir).unwrap();
+        std::fs::write(
+            part_dir.join("partition.meta"),
+            serde_json::to_vec(&PartitionMeta {
+                min_ts: 0,
+                max_ts: 100,
+                row_count: 10,
+                size_bytes: 100,
+                schema_version: 1,
+                state: PartitionState::Sealed,
+                interval_ms: 86_400_000,
+                last_flushed_wal_lsn: 0,
+                column_stats: std::collections::HashMap::new(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        // read_sparse_index returns None for legacy partitions.
+        let sparse = ColumnarSegmentReader::read_sparse_index(&part_dir).unwrap();
+        assert!(sparse.is_none());
     }
 }

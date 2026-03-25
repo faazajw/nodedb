@@ -19,6 +19,7 @@ pub mod s3_archive;
 pub mod schema_evolution;
 pub mod segment_index;
 pub mod simd_agg;
+pub mod sparse_index;
 pub mod time_bucket;
 pub mod ts_detect;
 #[cfg(test)]
