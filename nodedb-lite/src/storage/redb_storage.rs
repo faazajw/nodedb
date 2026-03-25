@@ -33,11 +33,59 @@ pub struct RedbStorage {
 
 impl RedbStorage {
     /// Open or create a database at the given path.
+    ///
+    /// If the database file is corrupted (redb returns a `DatabaseError`),
+    /// the corrupted file is renamed to `{path}.corrupt.{timestamp}` and
+    /// a fresh database is created. This ensures the application can always
+    /// start — data recovery happens via full re-sync from Origin.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, LiteError> {
-        let db = Database::create(path).map_err(|e| LiteError::Storage {
-            detail: format!("redb open failed: {e}"),
-        })?;
-        Ok(Self { db: Mutex::new(db) })
+        let path = path.as_ref();
+        match Database::create(path) {
+            Ok(db) => Ok(Self { db: Mutex::new(db) }),
+            Err(e) => {
+                // Check if the file exists — if it does, it's likely corrupted.
+                if path.exists() {
+                    let timestamp = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    let corrupt_path = path.with_extension(format!("corrupt.{timestamp}"));
+
+                    tracing::error!(
+                        path = %path.display(),
+                        corrupt_backup = %corrupt_path.display(),
+                        error = %e,
+                        "redb database corrupted — renaming to backup and creating fresh database. \
+                         A full re-sync from Origin is needed to recover data."
+                    );
+
+                    if let Err(rename_err) = std::fs::rename(path, &corrupt_path) {
+                        tracing::error!(
+                            error = %rename_err,
+                            "failed to rename corrupted database file"
+                        );
+                        return Err(LiteError::Storage {
+                            detail: format!(
+                                "redb corrupted and rename failed: open={e}, rename={rename_err}"
+                            ),
+                        });
+                    }
+
+                    // Try creating a fresh database.
+                    let db = Database::create(path).map_err(|e2| LiteError::Storage {
+                        detail: format!(
+                            "redb corrupted, backup saved to {}, fresh create failed: {e2}",
+                            corrupt_path.display()
+                        ),
+                    })?;
+                    Ok(Self { db: Mutex::new(db) })
+                } else {
+                    Err(LiteError::Storage {
+                        detail: format!("redb open failed: {e}"),
+                    })
+                }
+            }
+        }
     }
 
     /// Create an in-memory database (for testing and WASM without persistence).
