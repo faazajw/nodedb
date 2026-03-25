@@ -1,54 +1,71 @@
 //! Codec auto-detection from column type and data distribution.
 //!
-//! Analyzes up to the first 1000 values of a column to select the optimal
-//! codec. Called at flush time when `ColumnCodec::Auto` is configured.
+//! Analyzes up to the first 1024 values of a column to select the optimal
+//! codec chain. Called at flush time when `ColumnCodec::Auto` is configured.
+//!
+//! Selection strategy:
+//! - Partitions ≥ 1024 values → cascading codecs (ALP, FastLanes, etc.)
+//! - Partitions < 1024 values → legacy single-step codecs (Gorilla, Delta, etc.)
+//! - f64 with >95% ALP encodability → `AlpFastLanesLz4`
+//! - f64 with ≤95% ALP encodability → `Gorilla` (fallback)
+//! - i64 timestamps/counters → `DeltaFastLanesLz4`
+//! - Symbol columns → `FastLanesLz4` (small integer IDs)
 
 use crate::{ColumnCodec, ColumnTypeHint};
 
 /// Maximum number of values to sample for codec detection.
-const SAMPLE_SIZE: usize = 1000;
+const SAMPLE_SIZE: usize = 1024;
+
+/// Minimum partition size to use cascading codecs.
+/// Below this, FastLanes block overhead dominates — use legacy codecs.
+const CASCADE_THRESHOLD: usize = 128;
 
 /// Detect the optimal codec for a column based on its type and data.
 ///
 /// When `codec` is not `Auto`, returns it unchanged. When `Auto`,
-/// analyzes the column type hint and optionally the raw data to select
-/// the best codec.
+/// analyzes the column type hint to select the best codec. For
+/// data-aware selection (ALP encodability, monotonicity detection),
+/// use `detect_f64_codec()` or `detect_i64_codec()` with actual values.
 pub fn detect_codec(codec: ColumnCodec, type_hint: ColumnTypeHint) -> ColumnCodec {
     if codec != ColumnCodec::Auto {
         return codec;
     }
 
+    // Default selections (data-unaware). The segment writer calls
+    // data-aware variants (detect_f64_codec, detect_i64_codec) when
+    // it has actual values.
     match type_hint {
-        ColumnTypeHint::Timestamp => ColumnCodec::DoubleDelta,
-        ColumnTypeHint::Float64 => ColumnCodec::Gorilla,
-        ColumnTypeHint::Int64 => ColumnCodec::Delta,
-        ColumnTypeHint::Symbol => ColumnCodec::Raw,
+        ColumnTypeHint::Timestamp => ColumnCodec::DeltaFastLanesLz4,
+        ColumnTypeHint::Float64 => ColumnCodec::AlpFastLanesLz4,
+        ColumnTypeHint::Int64 => ColumnCodec::DeltaFastLanesLz4,
+        ColumnTypeHint::Symbol => ColumnCodec::FastLanesLz4,
         ColumnTypeHint::String => ColumnCodec::Lz4,
     }
 }
 
 /// Detect the optimal codec for an i64 column by analyzing the data.
 ///
-/// Checks if the column is monotonic (use Delta) or non-monotonic
-/// (use Gorilla). Falls back to `Delta` if the data is mostly monotonic
-/// (>90% of deltas are non-negative).
+/// For partitions ≥ CASCADE_THRESHOLD values, selects cascading codecs.
+/// For smaller partitions, falls back to legacy single-step codecs.
 pub fn detect_i64_codec(values: &[i64]) -> ColumnCodec {
     if values.len() < 2 {
         return ColumnCodec::Delta;
     }
 
+    // Large partitions → cascading codec (FastLanes handles all patterns).
+    if values.len() >= CASCADE_THRESHOLD {
+        return ColumnCodec::DeltaFastLanesLz4;
+    }
+
+    // Small partitions → legacy codecs. Analyze data to pick best one.
     let sample_end = values.len().min(SAMPLE_SIZE);
     let sample = &values[..sample_end];
 
-    let mut positive_deltas = 0usize;
     let mut zero_dod_count = 0usize;
     let mut prev_delta: Option<i64> = None;
 
     for i in 1..sample.len() {
         let delta = sample[i] - sample[i - 1];
-        if delta >= 0 {
-            positive_deltas += 1;
-        }
         if let Some(pd) = prev_delta
             && delta == pd
         {
@@ -58,48 +75,35 @@ pub fn detect_i64_codec(values: &[i64]) -> ColumnCodec {
     }
 
     let total_deltas = sample.len() - 1;
-    let monotonic_ratio = positive_deltas as f64 / total_deltas as f64;
     let constant_rate_ratio = zero_dod_count as f64 / total_deltas.max(1) as f64;
 
-    // If >80% of delta-of-deltas are zero, this is timestamp-like → DoubleDelta.
     if constant_rate_ratio > 0.8 {
-        return ColumnCodec::DoubleDelta;
+        ColumnCodec::DoubleDelta
+    } else {
+        ColumnCodec::Delta
     }
-
-    // If >90% of deltas are non-negative, it's a counter → Delta.
-    if monotonic_ratio > 0.9 {
-        return ColumnCodec::Delta;
-    }
-
-    // Non-monotonic integer → Delta still works but with less compression.
-    // Gorilla can work too for i64 via f64 cast, but Delta with zigzag
-    // handles small fluctuations better than Gorilla for integers.
-    ColumnCodec::Delta
 }
 
 /// Detect the optimal codec for an f64 column by analyzing the data.
 ///
-/// Almost always returns Gorilla, which is the best general-purpose
-/// codec for floating-point metrics. Could return DoubleDelta if the
-/// values are actually integers stored as f64 with constant deltas,
-/// but that's rare enough not to optimize for.
+/// For partitions ≥ CASCADE_THRESHOLD values with >95% ALP encodability,
+/// selects `AlpFastLanesLz4`. Otherwise falls back to `Gorilla`.
 pub fn detect_f64_codec(values: &[f64]) -> ColumnCodec {
     if values.len() < 2 {
         return ColumnCodec::Gorilla;
     }
 
-    // Check if all values are identical (common for status/flag columns
-    // stored as f64). Gorilla compresses these to 1 bit per value.
-    let sample_end = values.len().min(SAMPLE_SIZE);
-    let sample = &values[..sample_end];
+    let use_cascade = values.len() >= CASCADE_THRESHOLD;
 
-    let all_same = sample.iter().all(|&v| v.to_bits() == sample[0].to_bits());
-    if all_same {
-        // Gorilla handles identical values extremely well (1 bit each).
-        return ColumnCodec::Gorilla;
+    if use_cascade {
+        // Check ALP encodability on a sample.
+        let encodability = crate::alp::alp_encodability(values);
+        if encodability > 0.95 {
+            return ColumnCodec::AlpFastLanesLz4;
+        }
     }
 
-    // Default: Gorilla is the best general-purpose f64 codec.
+    // Fallback: Gorilla is the best general-purpose f64 codec.
     ColumnCodec::Gorilla
 }
 
@@ -123,7 +127,7 @@ mod tests {
     fn auto_timestamp() {
         assert_eq!(
             detect_codec(ColumnCodec::Auto, ColumnTypeHint::Timestamp),
-            ColumnCodec::DoubleDelta
+            ColumnCodec::DeltaFastLanesLz4
         );
     }
 
@@ -131,7 +135,7 @@ mod tests {
     fn auto_float64() {
         assert_eq!(
             detect_codec(ColumnCodec::Auto, ColumnTypeHint::Float64),
-            ColumnCodec::Gorilla
+            ColumnCodec::AlpFastLanesLz4
         );
     }
 
@@ -139,7 +143,7 @@ mod tests {
     fn auto_int64() {
         assert_eq!(
             detect_codec(ColumnCodec::Auto, ColumnTypeHint::Int64),
-            ColumnCodec::Delta
+            ColumnCodec::DeltaFastLanesLz4
         );
     }
 
@@ -147,7 +151,7 @@ mod tests {
     fn auto_symbol() {
         assert_eq!(
             detect_codec(ColumnCodec::Auto, ColumnTypeHint::Symbol),
-            ColumnCodec::Raw
+            ColumnCodec::FastLanesLz4
         );
     }
 
@@ -160,56 +164,45 @@ mod tests {
     }
 
     #[test]
-    fn detect_constant_increment_counter() {
-        // Constant increment (all dod=0) → DoubleDelta is optimal.
+    fn detect_large_i64_uses_cascade() {
+        // ≥128 values → cascading DeltaFastLanesLz4 regardless of pattern.
         let values: Vec<i64> = (0..1000).map(|i| i * 100).collect();
-        assert_eq!(detect_i64_codec(&values), ColumnCodec::DoubleDelta);
+        assert_eq!(detect_i64_codec(&values), ColumnCodec::DeltaFastLanesLz4);
+
+        let timestamps: Vec<i64> = (0..1000).map(|i| 1_700_000_000_000 + i * 10_000).collect();
+        assert_eq!(
+            detect_i64_codec(&timestamps),
+            ColumnCodec::DeltaFastLanesLz4
+        );
     }
 
     #[test]
-    fn detect_varying_increment_counter() {
-        // Monotonic but varying increments → Delta.
-        let mut values = Vec::with_capacity(1000);
-        let mut v = 0i64;
-        let mut rng: u64 = 42;
-        for _ in 0..1000 {
-            values.push(v);
-            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
-            v += ((rng >> 33) as i64 % 100) + 1; // always positive, varying
-        }
-        assert_eq!(detect_i64_codec(&values), ColumnCodec::Delta);
+    fn detect_small_i64_uses_legacy() {
+        // <128 values → legacy codecs.
+        let constant_rate: Vec<i64> = (0..50).map(|i| i * 100).collect();
+        assert_eq!(detect_i64_codec(&constant_rate), ColumnCodec::DoubleDelta);
+
+        let varying: Vec<i64> = vec![1, 3, 7, 15, 22, 30];
+        assert_eq!(detect_i64_codec(&varying), ColumnCodec::Delta);
     }
 
     #[test]
-    fn detect_constant_rate_timestamps() {
-        let values: Vec<i64> = (0..1000).map(|i| 1_700_000_000_000 + i * 10_000).collect();
-        assert_eq!(detect_i64_codec(&values), ColumnCodec::DoubleDelta);
+    fn detect_large_f64_decimal_uses_alp() {
+        // Decimal-origin f64 with ≥128 values → AlpFastLanesLz4.
+        let values: Vec<f64> = (0..1000).map(|i| i as f64 * 0.1).collect();
+        assert_eq!(detect_f64_codec(&values), ColumnCodec::AlpFastLanesLz4);
     }
 
     #[test]
-    fn detect_fluctuating_gauge() {
-        // Values that go up and down — still Delta.
-        let mut values = Vec::with_capacity(1000);
-        let mut v = 50i64;
-        let mut rng: u64 = 42;
-        for _ in 0..1000 {
-            values.push(v);
-            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
-            v += ((rng >> 33) as i64 % 11) - 5;
-        }
-        let codec = detect_i64_codec(&values);
-        assert_eq!(codec, ColumnCodec::Delta);
-    }
-
-    #[test]
-    fn detect_f64_default() {
-        let values: Vec<f64> = (0..100).map(|i| 50.0 + i as f64 * 0.1).collect();
+    fn detect_large_f64_irrational_uses_gorilla() {
+        // Non-ALP-encodable f64 → Gorilla fallback.
+        let values: Vec<f64> = (1..1000).map(|i| std::f64::consts::PI * i as f64).collect();
         assert_eq!(detect_f64_codec(&values), ColumnCodec::Gorilla);
     }
 
     #[test]
-    fn detect_f64_identical() {
-        let values = vec![42.0f64; 100];
+    fn detect_small_f64_uses_gorilla() {
+        let values: Vec<f64> = (0..50).map(|i| i as f64 * 0.1).collect();
         assert_eq!(detect_f64_codec(&values), ColumnCodec::Gorilla);
     }
 

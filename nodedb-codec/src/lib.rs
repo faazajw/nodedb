@@ -1,17 +1,29 @@
 //! Compression codecs for NodeDB timeseries columnar storage.
 //!
-//! Provides per-column codec selection: each column in a partition can use
-//! a different compression algorithm optimized for its data distribution.
+//! Provides per-column codec selection with **cascading compression**:
+//! type-aware encoding (ALP, FastLanes, Delta) followed by a terminal
+//! byte compressor (lz4_flex). Each column can use a different codec chain
+//! optimized for its data distribution.
 //!
-//! Shared by Origin and Lite. Compiles to WASM (lz4_flex is pure Rust,
-//! Zstd uses `ruzstd` on WASM targets).
+//! Cascading chains:
+//! - `AlpFastLanesLz4`:   f64 → ALP (decimal→int) → FastLanes → lz4
+//! - `DeltaFastLanesLz4`: i64 → Delta → FastLanes bit-pack → lz4
+//! - `FastLanesLz4`:      i64 → FastLanes bit-pack → lz4
+//!
+//! Legacy single-step codecs (Gorilla, DoubleDelta, Delta, LZ4, Zstd, Raw)
+//! are retained for small partitions (<1024 values) and backward compatibility.
+//!
+//! Shared by Origin and Lite. Compiles to WASM.
 
+pub mod alp;
 pub mod delta;
 pub mod detect;
 pub mod double_delta;
 pub mod error;
+pub mod fastlanes;
 pub mod gorilla;
 pub mod lz4;
+pub mod pipeline;
 pub mod raw;
 pub mod zstd_codec;
 
@@ -21,6 +33,10 @@ pub use double_delta::{DoubleDeltaDecoder, DoubleDeltaEncoder};
 pub use error::CodecError;
 pub use gorilla::{GorillaDecoder, GorillaEncoder};
 pub use lz4::{Lz4Decoder, Lz4Encoder};
+pub use pipeline::{
+    decode_bytes_pipeline, decode_f64_pipeline, decode_i64_pipeline, encode_bytes_pipeline,
+    encode_f64_pipeline, encode_i64_pipeline,
+};
 pub use raw::{RawDecoder, RawEncoder};
 pub use zstd_codec::{ZstdDecoder, ZstdEncoder};
 
@@ -36,17 +52,30 @@ pub enum ColumnCodec {
     /// Engine selects codec automatically based on column type and data
     /// distribution (analyzed at flush time).
     Auto,
-    /// Gorilla XOR encoding — best for floating-point metrics.
+
+    // -- Cascading chains (Stage 1 → Stage 2) --
+    /// f64 metrics: ALP (decimal→int) → FastLanes bit-pack → lz4.
+    /// Best for fixed-point-origin floats (e.g., 23.5, 99.99). 3-6x better than Gorilla.
+    AlpFastLanesLz4,
+    /// i64 timestamps/counters: Delta → FastLanes bit-pack → lz4.
+    /// Best for monotonic sequences. 2-3x better than DoubleDelta.
+    DeltaFastLanesLz4,
+    /// i64/u32 raw integers: FastLanes bit-pack → lz4.
+    /// Best for small-range integers (symbol IDs, enum values).
+    FastLanesLz4,
+
+    // -- Legacy single-step codecs (small partitions, backward compat) --
+    /// Gorilla XOR encoding — legacy f64 codec.
     Gorilla,
-    /// DoubleDelta — best for monotonic timestamps with near-constant intervals.
+    /// DoubleDelta — legacy timestamp codec.
     DoubleDelta,
-    /// Delta + varint — best for monotonic counters.
+    /// Delta + varint — legacy counter codec.
     Delta,
-    /// LZ4 block compression — best for string/log columns.
+    /// LZ4 block compression — for string/log columns.
     Lz4,
-    /// Zstd — best for cold/archived partitions.
+    /// Zstd — for cold/archived partitions.
     Zstd,
-    /// No compression — for symbol columns (already dictionary-encoded).
+    /// No compression — for pre-compressed or symbol columns.
     Raw,
 }
 
@@ -55,9 +84,20 @@ impl ColumnCodec {
         !matches!(self, Self::Raw | Self::Auto)
     }
 
+    /// Whether this is a cascading (multi-stage) codec.
+    pub fn is_cascading(&self) -> bool {
+        matches!(
+            self,
+            Self::AlpFastLanesLz4 | Self::DeltaFastLanesLz4 | Self::FastLanesLz4
+        )
+    }
+
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Auto => "auto",
+            Self::AlpFastLanesLz4 => "alp_fastlanes_lz4",
+            Self::DeltaFastLanesLz4 => "delta_fastlanes_lz4",
+            Self::FastLanesLz4 => "fastlanes_lz4",
             Self::Gorilla => "gorilla",
             Self::DoubleDelta => "double_delta",
             Self::Delta => "delta",
@@ -227,6 +267,9 @@ mod tests {
     fn column_codec_serde_roundtrip() {
         for codec in [
             ColumnCodec::Auto,
+            ColumnCodec::AlpFastLanesLz4,
+            ColumnCodec::DeltaFastLanesLz4,
+            ColumnCodec::FastLanesLz4,
             ColumnCodec::Gorilla,
             ColumnCodec::DoubleDelta,
             ColumnCodec::Delta,

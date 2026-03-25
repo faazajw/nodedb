@@ -123,9 +123,10 @@ impl ColumnarSegmentWriter {
 // Per-column encoding with codec selection
 // ---------------------------------------------------------------------------
 
-/// Encode a single column using the appropriate codec.
+/// Encode a single column using the appropriate codec pipeline.
 ///
 /// Resolves `Auto` to the optimal codec based on column type and data.
+/// Delegates to `nodedb_codec::pipeline` for both cascading and legacy codecs.
 /// Returns (encoded_bytes, resolved_codec, column_statistics).
 fn encode_column(
     col_data: &ColumnData,
@@ -135,100 +136,55 @@ fn encode_column(
     match col_type {
         ColumnType::Timestamp => {
             let values = col_data.as_timestamps();
-            let type_hint = ColumnTypeHint::Timestamp;
-            let codec = nodedb_codec::detect_codec(requested_codec, type_hint);
-            let encoded = encode_i64_with_codec(values, codec)?;
+            let codec = if requested_codec == ColumnCodec::Auto {
+                nodedb_codec::detect::detect_i64_codec(values)
+            } else {
+                requested_codec
+            };
+            let encoded = nodedb_codec::encode_i64_pipeline(values, codec)
+                .map_err(|e| SegmentError::Io(format!("encode ts: {e}")))?;
             let stats = ColumnStatistics::from_i64(values, codec, encoded.len() as u64);
             Ok((encoded, codec, stats))
         }
         ColumnType::Float64 => {
             let values = col_data.as_f64();
-            let codec = nodedb_codec::detect_codec(requested_codec, ColumnTypeHint::Float64);
-            let encoded = encode_f64_with_codec(values, codec)?;
+            let codec = if requested_codec == ColumnCodec::Auto {
+                nodedb_codec::detect::detect_f64_codec(values)
+            } else {
+                requested_codec
+            };
+            let encoded = nodedb_codec::encode_f64_pipeline(values, codec)
+                .map_err(|e| SegmentError::Io(format!("encode f64: {e}")))?;
             let stats = ColumnStatistics::from_f64(values, codec, encoded.len() as u64);
             Ok((encoded, codec, stats))
         }
         ColumnType::Int64 => {
             let values = col_data.as_i64();
             let codec = if requested_codec == ColumnCodec::Auto {
-                // Use data-aware detection for i64 columns.
                 nodedb_codec::detect::detect_i64_codec(values)
             } else {
                 requested_codec
             };
-            let encoded = encode_i64_with_codec(values, codec)?;
+            let encoded = nodedb_codec::encode_i64_pipeline(values, codec)
+                .map_err(|e| SegmentError::Io(format!("encode i64: {e}")))?;
             let stats = ColumnStatistics::from_i64(values, codec, encoded.len() as u64);
             Ok((encoded, codec, stats))
         }
         ColumnType::Symbol => {
             let values = col_data.as_symbols();
-            let codec = nodedb_codec::detect_codec(requested_codec, ColumnTypeHint::Symbol);
+            let codec = if requested_codec == ColumnCodec::Auto {
+                nodedb_codec::detect_codec(requested_codec, ColumnTypeHint::Symbol)
+            } else {
+                requested_codec
+            };
             let raw: Vec<u8> = values.iter().flat_map(|id| id.to_le_bytes()).collect();
-            let encoded = encode_bytes_with_codec(&raw, codec)?;
+            let encoded = nodedb_codec::encode_bytes_pipeline(&raw, codec)
+                .map_err(|e| SegmentError::Io(format!("encode sym: {e}")))?;
             let cardinality = values.iter().copied().max().map_or(0, |m| m + 1);
             let stats =
                 ColumnStatistics::from_symbols(values, cardinality, codec, encoded.len() as u64);
             Ok((encoded, codec, stats))
         }
-    }
-}
-
-/// Encode i64 values with a specific codec.
-fn encode_i64_with_codec(values: &[i64], codec: ColumnCodec) -> Result<Vec<u8>, SegmentError> {
-    match codec {
-        ColumnCodec::DoubleDelta => Ok(nodedb_codec::double_delta::encode(values)),
-        ColumnCodec::Delta => Ok(nodedb_codec::delta::encode(values)),
-        ColumnCodec::Gorilla => Ok(nodedb_codec::gorilla::encode_timestamps(values)),
-        ColumnCodec::Raw => {
-            let raw: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
-            Ok(nodedb_codec::raw::encode(&raw))
-        }
-        ColumnCodec::Lz4 => {
-            let raw: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
-            Ok(nodedb_codec::lz4::encode(&raw))
-        }
-        ColumnCodec::Zstd => {
-            let raw: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
-            nodedb_codec::zstd_codec::encode(&raw)
-                .map_err(|e| SegmentError::Io(format!("zstd encode: {e}")))
-        }
-        ColumnCodec::Auto => {
-            // Should have been resolved before calling this.
-            Ok(nodedb_codec::double_delta::encode(values))
-        }
-    }
-}
-
-/// Encode f64 values with a specific codec.
-fn encode_f64_with_codec(values: &[f64], codec: ColumnCodec) -> Result<Vec<u8>, SegmentError> {
-    match codec {
-        ColumnCodec::Gorilla => Ok(nodedb_codec::gorilla::encode_f64(values)),
-        ColumnCodec::Raw => {
-            let raw: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
-            Ok(nodedb_codec::raw::encode(&raw))
-        }
-        ColumnCodec::Lz4 => {
-            let raw: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
-            Ok(nodedb_codec::lz4::encode(&raw))
-        }
-        ColumnCodec::Zstd => {
-            let raw: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
-            nodedb_codec::zstd_codec::encode(&raw)
-                .map_err(|e| SegmentError::Io(format!("zstd encode: {e}")))
-        }
-        _ => Ok(nodedb_codec::gorilla::encode_f64(values)),
-    }
-}
-
-/// Encode raw bytes with a specific codec (for symbol columns).
-fn encode_bytes_with_codec(raw: &[u8], codec: ColumnCodec) -> Result<Vec<u8>, SegmentError> {
-    match codec {
-        ColumnCodec::Raw => Ok(nodedb_codec::raw::encode(raw)),
-        ColumnCodec::Lz4 => Ok(nodedb_codec::lz4::encode(raw)),
-        ColumnCodec::Zstd => nodedb_codec::zstd_codec::encode(raw)
-            .map_err(|e| SegmentError::Io(format!("zstd encode: {e}"))),
-        // Symbol columns default to Raw (already dictionary-encoded).
-        _ => Ok(nodedb_codec::raw::encode(raw)),
     }
 }
 
@@ -383,152 +339,37 @@ fn legacy_default_codec(col_type: ColumnType) -> ColumnCodec {
     }
 }
 
-/// Decode a column file using the specified codec.
+/// Decode a column file using the codec pipeline.
+///
+/// Delegates to `nodedb_codec::pipeline` for both cascading and legacy codecs.
 fn decode_column(
     data: &[u8],
     col_type: ColumnType,
     codec: ColumnCodec,
 ) -> Result<ColumnData, SegmentError> {
-    match (col_type, codec) {
-        // --- Timestamp ---
-        (ColumnType::Timestamp, ColumnCodec::DoubleDelta) => {
-            let values = nodedb_codec::double_delta::decode(data)
-                .map_err(|e| SegmentError::Corrupt(format!("double_delta: {e}")))?;
-            Ok(ColumnData::Timestamp(values))
-        }
-        (ColumnType::Timestamp, ColumnCodec::Delta) => {
-            let values = nodedb_codec::delta::decode(data)
-                .map_err(|e| SegmentError::Corrupt(format!("delta: {e}")))?;
-            Ok(ColumnData::Timestamp(values))
-        }
-        (ColumnType::Timestamp, ColumnCodec::Gorilla) => {
-            let values = nodedb_codec::gorilla::decode_timestamps(data)
-                .map_err(|e| SegmentError::Corrupt(format!("gorilla ts: {e}")))?;
-            Ok(ColumnData::Timestamp(values))
-        }
-        (ColumnType::Timestamp, ColumnCodec::Raw) => {
-            let raw = nodedb_codec::raw::decode(data)
-                .map_err(|e| SegmentError::Corrupt(format!("raw: {e}")))?;
-            Ok(ColumnData::Timestamp(raw_to_i64(&raw)?))
-        }
+    let map_err = |e: nodedb_codec::CodecError| SegmentError::Corrupt(format!("{codec}: {e}"));
 
-        // --- Float64 ---
-        (ColumnType::Float64, ColumnCodec::Gorilla) => {
-            let values = nodedb_codec::gorilla::decode_f64(data)
-                .map_err(|e| SegmentError::Corrupt(format!("gorilla f64: {e}")))?;
+    match col_type {
+        ColumnType::Timestamp => {
+            let values = nodedb_codec::decode_i64_pipeline(data, codec).map_err(map_err)?;
+            Ok(ColumnData::Timestamp(values))
+        }
+        ColumnType::Float64 => {
+            let values = nodedb_codec::decode_f64_pipeline(data, codec).map_err(map_err)?;
             Ok(ColumnData::Float64(values))
         }
-        (ColumnType::Float64, ColumnCodec::Raw) => {
-            let raw = nodedb_codec::raw::decode(data)
-                .map_err(|e| SegmentError::Corrupt(format!("raw: {e}")))?;
-            Ok(ColumnData::Float64(raw_to_f64(&raw)?))
-        }
-
-        // --- Int64 ---
-        (ColumnType::Int64, ColumnCodec::Delta) => {
-            let values = nodedb_codec::delta::decode(data)
-                .map_err(|e| SegmentError::Corrupt(format!("delta: {e}")))?;
+        ColumnType::Int64 => {
+            let values = nodedb_codec::decode_i64_pipeline(data, codec).map_err(map_err)?;
             Ok(ColumnData::Int64(values))
         }
-        (ColumnType::Int64, ColumnCodec::DoubleDelta) => {
-            let values = nodedb_codec::double_delta::decode(data)
-                .map_err(|e| SegmentError::Corrupt(format!("double_delta: {e}")))?;
-            Ok(ColumnData::Int64(values))
+        ColumnType::Symbol => {
+            let raw = nodedb_codec::decode_bytes_pipeline(data, codec).map_err(map_err)?;
+            let ids: Vec<u32> = raw
+                .chunks_exact(4)
+                .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                .collect();
+            Ok(ColumnData::Symbol(ids))
         }
-        (ColumnType::Int64, ColumnCodec::Gorilla) => {
-            let values = nodedb_codec::gorilla::decode_timestamps(data)
-                .map_err(|e| SegmentError::Corrupt(format!("gorilla i64: {e}")))?;
-            Ok(ColumnData::Int64(values))
-        }
-        (ColumnType::Int64, ColumnCodec::Raw) => {
-            // Legacy: raw LE i64 without the nodedb-codec Raw header.
-            // Try codec-aware decode first; fall back to bare LE bytes.
-            match nodedb_codec::raw::decode(data) {
-                Ok(raw) => Ok(ColumnData::Int64(raw_to_i64(&raw)?)),
-                Err(_) => {
-                    // Legacy bare LE bytes (no length header).
-                    Ok(ColumnData::Int64(raw_to_i64(data)?))
-                }
-            }
-        }
-
-        // --- Symbol ---
-        (ColumnType::Symbol, ColumnCodec::Raw) => {
-            // Try codec-aware decode first; fall back to bare LE bytes.
-            match nodedb_codec::raw::decode(data) {
-                Ok(raw) => Ok(ColumnData::Symbol(raw_to_u32(&raw)?)),
-                Err(_) => {
-                    // Legacy bare LE bytes (no length header).
-                    Ok(ColumnData::Symbol(raw_to_u32(data)?))
-                }
-            }
-        }
-
-        // --- Generic LZ4/Zstd for any column type ---
-        (_, ColumnCodec::Lz4) => {
-            let raw = nodedb_codec::lz4::decode(data)
-                .map_err(|e| SegmentError::Corrupt(format!("lz4: {e}")))?;
-            raw_to_column_data(&raw, col_type)
-        }
-        (_, ColumnCodec::Zstd) => {
-            let raw = nodedb_codec::zstd_codec::decode(data)
-                .map_err(|e| SegmentError::Corrupt(format!("zstd: {e}")))?;
-            raw_to_column_data(&raw, col_type)
-        }
-
-        // Catch-all: unsupported codec for this column type.
-        (_, codec) => Err(SegmentError::Corrupt(format!(
-            "unsupported codec {codec} for column type {col_type:?}"
-        ))),
-    }
-}
-
-/// Convert raw LE bytes to i64 values.
-fn raw_to_i64(data: &[u8]) -> Result<Vec<i64>, SegmentError> {
-    if !data.len().is_multiple_of(8) {
-        return Err(SegmentError::Corrupt(
-            "i64 data not aligned to 8 bytes".into(),
-        ));
-    }
-    Ok(data
-        .chunks_exact(8)
-        .map(|chunk| i64::from_le_bytes(chunk.try_into().unwrap()))
-        .collect())
-}
-
-/// Convert raw LE bytes to f64 values.
-fn raw_to_f64(data: &[u8]) -> Result<Vec<f64>, SegmentError> {
-    if !data.len().is_multiple_of(8) {
-        return Err(SegmentError::Corrupt(
-            "f64 data not aligned to 8 bytes".into(),
-        ));
-    }
-    Ok(data
-        .chunks_exact(8)
-        .map(|chunk| f64::from_le_bytes(chunk.try_into().unwrap()))
-        .collect())
-}
-
-/// Convert raw LE bytes to u32 values.
-fn raw_to_u32(data: &[u8]) -> Result<Vec<u32>, SegmentError> {
-    if !data.len().is_multiple_of(4) {
-        return Err(SegmentError::Corrupt(
-            "u32 data not aligned to 4 bytes".into(),
-        ));
-    }
-    Ok(data
-        .chunks_exact(4)
-        .map(|chunk| u32::from_le_bytes(chunk.try_into().unwrap()))
-        .collect())
-}
-
-/// Convert raw LE bytes to typed column data.
-fn raw_to_column_data(raw: &[u8], col_type: ColumnType) -> Result<ColumnData, SegmentError> {
-    match col_type {
-        ColumnType::Timestamp => Ok(ColumnData::Timestamp(raw_to_i64(raw)?)),
-        ColumnType::Float64 => Ok(ColumnData::Float64(raw_to_f64(raw)?)),
-        ColumnType::Int64 => Ok(ColumnData::Int64(raw_to_i64(raw)?)),
-        ColumnType::Symbol => Ok(ColumnData::Symbol(raw_to_u32(raw)?)),
     }
 }
 
@@ -800,7 +641,7 @@ mod tests {
             .write_partition("ts-tags", &drain, 86_400_000, 99)
             .unwrap();
         assert_eq!(meta.row_count, 50);
-        assert_eq!(meta.column_stats["host"].codec, ColumnCodec::Raw);
+        assert_eq!(meta.column_stats["host"].codec, ColumnCodec::FastLanesLz4);
         assert_eq!(meta.column_stats["host"].cardinality, Some(2));
 
         let part_dir = tmp.path().join("ts-tags");
@@ -808,7 +649,7 @@ mod tests {
             &part_dir,
             "host",
             ColumnType::Symbol,
-            Some(ColumnCodec::Raw),
+            Some(ColumnCodec::FastLanesLz4),
         )
         .unwrap();
         assert_eq!(host_col.as_symbols().len(), 50);
