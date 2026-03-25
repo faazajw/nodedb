@@ -85,12 +85,8 @@ impl Pool {
     pub async fn acquire(&self) -> NodeDbResult<PooledConnection<'_>> {
         let permit = tokio::time::timeout(self.config.connect_timeout, self.semaphore.acquire())
             .await
-            .map_err(|_| NodeDbError::SyncConnectionFailed {
-                detail: "pool acquire timeout".into(),
-            })?
-            .map_err(|_| NodeDbError::SyncConnectionFailed {
-                detail: "pool closed".into(),
-            })?;
+            .map_err(|_| NodeDbError::sync_connection_failed("pool acquire timeout"))?
+            .map_err(|_| NodeDbError::sync_connection_failed("pool closed"))?;
 
         // std::sync::Mutex is intentional here (not tokio::sync::Mutex):
         // 1. Critical section is trivial (pop_front / push_back only)
@@ -126,9 +122,7 @@ impl Pool {
             }
         })
         .await
-        .map_err(|_| NodeDbError::SyncConnectionFailed {
-            detail: "connect timeout".into(),
-        })??;
+        .map_err(|_| NodeDbError::sync_connection_failed("connect timeout"))??;
 
         // Authenticate.
         conn.authenticate(self.config.auth.clone()).await?;

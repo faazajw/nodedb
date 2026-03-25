@@ -39,11 +39,9 @@ impl NodeDbRemote {
     /// `config` is a standard PostgreSQL connection string:
     /// `"host=localhost port=5432 user=app dbname=mydb"`
     pub async fn connect(config: &str) -> NodeDbResult<Self> {
-        let (client, connection) = tokio_postgres::connect(config, NoTls).await.map_err(|e| {
-            NodeDbError::SyncConnectionFailed {
-                detail: e.to_string(),
-            }
-        })?;
+        let (client, connection) = tokio_postgres::connect(config, NoTls)
+            .await
+            .map_err(|e| NodeDbError::sync_connection_failed(e.to_string()))?;
 
         // Spawn the connection handler — it runs in the background.
         tokio::spawn(async move {
@@ -67,9 +65,7 @@ impl NodeDbRemote {
         let rows = client
             .query(sql, params)
             .await
-            .map_err(|e| NodeDbError::Storage {
-                detail: format!("pgwire query failed: {e}"),
-            })?;
+            .map_err(|e| NodeDbError::storage(format!("pgwire query failed: {e}")))?;
 
         if rows.is_empty() {
             return Ok((Vec::new(), Vec::new()));
@@ -104,9 +100,7 @@ impl NodeDbRemote {
         client
             .execute(sql, params)
             .await
-            .map_err(|e| NodeDbError::Storage {
-                detail: format!("pgwire execute failed: {e}"),
-            })
+            .map_err(|e| NodeDbError::storage(format!("pgwire execute failed: {e}")))
     }
 }
 
@@ -124,9 +118,9 @@ impl NodeDb for NodeDbRemote {
         filter: Option<&MetadataFilter>,
     ) -> NodeDbResult<Vec<SearchResult>> {
         if filter.is_some() {
-            return Err(NodeDbError::Storage {
-                detail: "metadata filters not yet supported on remote client".into(),
-            });
+            return Err(NodeDbError::storage(
+                "metadata filters not yet supported on remote client",
+            ));
         }
         let collection = quote_identifier(collection);
         // Use NodeDB DSL: SEARCH <collection> USING VECTOR(ARRAY[...], <k>)
@@ -181,9 +175,8 @@ impl NodeDb for NodeDbRemote {
     ) -> NodeDbResult<()> {
         let collection = quote_identifier(collection);
         let meta_json = match metadata {
-            Some(d) => serde_json::to_string(&d).map_err(|e| NodeDbError::Storage {
-                detail: format!("metadata serialization: {e}"),
-            })?,
+            Some(d) => serde_json::to_string(&d)
+                .map_err(|e| NodeDbError::storage(format!("metadata serialization: {e}")))?,
             None => "{}".into(),
         };
 
@@ -270,9 +263,8 @@ impl NodeDb for NodeDbRemote {
         properties: Option<Document>,
     ) -> NodeDbResult<EdgeId> {
         let props_json = match properties {
-            Some(d) => serde_json::to_string(&d).map_err(|e| NodeDbError::Storage {
-                detail: format!("properties serialization: {e}"),
-            })?,
+            Some(d) => serde_json::to_string(&d)
+                .map_err(|e| NodeDbError::storage(format!("properties serialization: {e}")))?,
             None => "{}".into(),
         };
 
@@ -333,9 +325,8 @@ impl NodeDb for NodeDbRemote {
 
     async fn document_put(&self, collection: &str, doc: Document) -> NodeDbResult<()> {
         let collection = quote_identifier(collection);
-        let data_json = serde_json::to_string(&doc.fields).map_err(|e| NodeDbError::Storage {
-            detail: format!("document serialization: {e}"),
-        })?;
+        let data_json = serde_json::to_string(&doc.fields)
+            .map_err(|e| NodeDbError::storage(format!("document serialization: {e}")))?;
         let sql = format!(
             "INSERT INTO {collection} (id, data) VALUES ($1, $2::jsonb) \
              ON CONFLICT (id) DO UPDATE SET data = $2::jsonb"
@@ -353,9 +344,9 @@ impl NodeDb for NodeDbRemote {
 
     async fn execute_sql(&self, query: &str, params: &[Value]) -> NodeDbResult<QueryResult> {
         if !params.is_empty() {
-            return Err(NodeDbError::Storage {
-                detail: "parameter binding not yet supported on remote client; use literal values in SQL".into(),
-            });
+            return Err(NodeDbError::storage(
+                "parameter binding not yet supported on remote client; use literal values in SQL",
+            ));
         }
         let (columns, rows) = self.query_raw(query, &[]).await?;
 
@@ -370,11 +361,8 @@ impl NodeDb for NodeDbRemote {
 /// Parse a JSON string from the DSL's "result" column into `Vec<SearchResult>`.
 fn parse_vector_search_json(json_text: &str) -> NodeDbResult<Vec<SearchResult>> {
     // The DSL returns MessagePack-encoded results as text. Try JSON parse.
-    let parsed: serde_json::Value =
-        serde_json::from_str(json_text).map_err(|e| NodeDbError::Serialization {
-            format: "json".into(),
-            detail: e.to_string(),
-        })?;
+    let parsed: serde_json::Value = serde_json::from_str(json_text)
+        .map_err(|e| NodeDbError::serialization("json", e.to_string()))?;
 
     let mut results = Vec::new();
     if let Some(arr) = parsed.as_array() {
@@ -399,11 +387,8 @@ fn parse_vector_search_json(json_text: &str) -> NodeDbResult<Vec<SearchResult>> 
 
 /// Parse a JSON string from graph_traverse into `SubGraph`.
 fn parse_graph_traverse_json(json_text: &str) -> NodeDbResult<SubGraph> {
-    let parsed: serde_json::Value =
-        serde_json::from_str(json_text).map_err(|e| NodeDbError::Serialization {
-            format: "json".into(),
-            detail: e.to_string(),
-        })?;
+    let parsed: serde_json::Value = serde_json::from_str(json_text)
+        .map_err(|e| NodeDbError::serialization("json", e.to_string()))?;
 
     let mut nodes = Vec::new();
     let mut edges = Vec::new();

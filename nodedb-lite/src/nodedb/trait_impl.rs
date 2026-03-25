@@ -95,9 +95,7 @@ impl<S: StorageEngine> NodeDb for NodeDbLite<S> {
             let id_before = index.len() as u32;
             index
                 .insert(embedding.to_vec())
-                .map_err(|e| NodeDbError::BadRequest {
-                    detail: e.to_string(),
-                })?;
+                .map_err(NodeDbError::bad_request)?;
             id_before
         };
 
@@ -120,9 +118,7 @@ impl<S: StorageEngine> NodeDb for NodeDbLite<S> {
                 }
             }
             crdt.upsert(collection, id, &fields)
-                .map_err(|e| NodeDbError::Storage {
-                    detail: e.to_string(),
-                })?;
+                .map_err(NodeDbError::storage)?;
         }
 
         self.update_memory_stats();
@@ -149,10 +145,7 @@ impl<S: StorageEngine> NodeDb for NodeDbLite<S> {
         // ── Record in CRDT ──
         {
             let mut crdt = self.crdt.lock_or_recover();
-            crdt.delete(collection, id)
-                .map_err(|e| NodeDbError::Storage {
-                    detail: e.to_string(),
-                })?;
+            crdt.delete(collection, id).map_err(NodeDbError::storage)?;
         }
 
         Ok(())
@@ -229,9 +222,7 @@ impl<S: StorageEngine> NodeDb for NodeDbLite<S> {
                     ("label", LoroValue::String(edge_type.into())),
                 ],
             )
-            .map_err(|e| NodeDbError::Storage {
-                detail: e.to_string(),
-            })?;
+            .map_err(NodeDbError::storage)?;
         }
 
         self.update_memory_stats();
@@ -255,9 +246,7 @@ impl<S: StorageEngine> NodeDb for NodeDbLite<S> {
         {
             let mut crdt = self.crdt.lock_or_recover();
             crdt.delete("__edges", id_str)
-                .map_err(|e| NodeDbError::Storage {
-                    detail: e.to_string(),
-                })?;
+                .map_err(NodeDbError::storage)?;
         }
 
         Ok(())
@@ -289,9 +278,7 @@ impl<S: StorageEngine> NodeDb for NodeDbLite<S> {
             .collect();
 
         crdt.upsert(collection, &doc_id, &fields)
-            .map_err(|e| NodeDbError::Storage {
-                detail: e.to_string(),
-            })?;
+            .map_err(NodeDbError::storage)?;
 
         Ok(())
     }
@@ -299,15 +286,12 @@ impl<S: StorageEngine> NodeDb for NodeDbLite<S> {
     async fn document_delete(&self, collection: &str, id: &str) -> NodeDbResult<()> {
         let mut crdt = self.crdt.lock_or_recover();
 
-        crdt.delete(collection, id)
-            .map_err(|e| NodeDbError::Storage {
-                detail: e.to_string(),
-            })?;
+        crdt.delete(collection, id).map_err(NodeDbError::storage)?;
 
         Ok(())
     }
 
     async fn execute_sql(&self, _query: &str, _params: &[Value]) -> NodeDbResult<QueryResult> {
-        Err(NodeDbError::SqlNotEnabled)
+        Err(NodeDbError::sql_not_enabled())
     }
 }

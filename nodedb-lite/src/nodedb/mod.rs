@@ -86,14 +86,10 @@ impl<S: StorageEngine> NodeDbLite<S> {
             .get(Namespace::LoroState, META_CRDT_SNAPSHOT)
             .await?
         {
-            Some(snapshot) => {
-                CrdtEngine::from_snapshot(peer_id, &snapshot).map_err(|e| NodeDbError::Storage {
-                    detail: format!("CRDT restore failed: {e}"),
-                })?
-            }
-            None => CrdtEngine::new(peer_id).map_err(|e| NodeDbError::Storage {
-                detail: format!("CRDT init failed: {e}"),
-            })?,
+            Some(snapshot) => CrdtEngine::from_snapshot(peer_id, &snapshot)
+                .map_err(|e| NodeDbError::storage(format!("CRDT restore failed: {e}")))?,
+            None => CrdtEngine::new(peer_id)
+                .map_err(|e| NodeDbError::storage(format!("CRDT init failed: {e}")))?,
         };
 
         // Restore pending deltas.
@@ -154,9 +150,7 @@ impl<S: StorageEngine> NodeDbLite<S> {
         // ── Persist CRDT snapshot ──
         {
             let crdt = self.crdt.lock_or_recover();
-            let snapshot = crdt.export_snapshot().map_err(|e| NodeDbError::Storage {
-                detail: e.to_string(),
-            })?;
+            let snapshot = crdt.export_snapshot().map_err(NodeDbError::storage)?;
             ops.push(WriteOp::Put {
                 ns: Namespace::LoroState,
                 key: META_CRDT_SNAPSHOT.to_vec(),
@@ -165,9 +159,7 @@ impl<S: StorageEngine> NodeDbLite<S> {
 
             let deltas = crdt
                 .serialize_pending_deltas()
-                .map_err(|e| NodeDbError::Storage {
-                    detail: e.to_string(),
-                })?;
+                .map_err(NodeDbError::storage)?;
             ops.push(WriteOp::Put {
                 ns: Namespace::Crdt,
                 key: META_CRDT_DELTAS.to_vec(),
@@ -190,11 +182,8 @@ impl<S: StorageEngine> NodeDbLite<S> {
         {
             let indices = self.hnsw_indices.lock_or_recover();
             let names: Vec<String> = indices.keys().cloned().collect();
-            let names_bytes =
-                rmp_serde::to_vec_named(&names).map_err(|e| NodeDbError::Serialization {
-                    format: "msgpack".into(),
-                    detail: e.to_string(),
-                })?;
+            let names_bytes = rmp_serde::to_vec_named(&names)
+                .map_err(|e| NodeDbError::serialization("msgpack", e))?;
             ops.push(WriteOp::Put {
                 ns: Namespace::Meta,
                 key: META_HNSW_COLLECTIONS.to_vec(),
@@ -215,9 +204,7 @@ impl<S: StorageEngine> NodeDbLite<S> {
         self.storage
             .batch_write(&ops)
             .await
-            .map_err(|e| NodeDbError::Storage {
-                detail: e.to_string(),
-            })?;
+            .map_err(NodeDbError::storage)?;
 
         Ok(())
     }
@@ -281,9 +268,7 @@ impl<S: StorageEngine> NodeDbLite<S> {
                 let internal_id = index.len() as u32;
                 index
                     .insert(embedding.to_vec())
-                    .map_err(|e| NodeDbError::BadRequest {
-                        detail: e.to_string(),
-                    })?;
+                    .map_err(NodeDbError::bad_request)?;
                 id_map.insert(
                     format!("{collection}:{internal_id}"),
                     (id.to_string(), internal_id),
@@ -309,9 +294,7 @@ impl<S: StorageEngine> NodeDbLite<S> {
                 .map(|(&(id, _), f)| (collection, id, f.as_slice()))
                 .collect();
 
-            crdt.batch_upsert(&ops).map_err(|e| NodeDbError::Storage {
-                detail: e.to_string(),
-            })?;
+            crdt.batch_upsert(&ops).map_err(NodeDbError::storage)?;
         }
 
         self.update_memory_stats();
@@ -359,9 +342,7 @@ impl<S: StorageEngine> NodeDbLite<S> {
                 .map(|(id, fields)| ("__edges", id.as_str(), fields.as_slice()))
                 .collect();
 
-            crdt.batch_upsert(&refs).map_err(|e| NodeDbError::Storage {
-                detail: e.to_string(),
-            })?;
+            crdt.batch_upsert(&refs).map_err(NodeDbError::storage)?;
         }
 
         self.update_memory_stats();
@@ -412,9 +393,7 @@ impl<S: StorageEngine> NodeDbLite<S> {
             self.storage
                 .put(Namespace::Vector, key.as_bytes(), &checkpoint)
                 .await
-                .map_err(|e| NodeDbError::Storage {
-                    detail: e.to_string(),
-                })?;
+                .map_err(NodeDbError::storage)?;
 
             // Remove from memory.
             {
@@ -474,9 +453,7 @@ impl<S: StorageEngine> NodeDbLite<S> {
     /// Import remote deltas from Origin.
     pub fn import_remote_deltas(&self, data: &[u8]) -> NodeDbResult<()> {
         let crdt = self.crdt.lock_or_recover();
-        crdt.import_remote(data).map_err(|e| NodeDbError::Storage {
-            detail: e.to_string(),
-        })
+        crdt.import_remote(data).map_err(NodeDbError::storage)
     }
 
     /// Reject a specific delta (rollback optimistic local state).
@@ -662,7 +639,10 @@ mod tests {
     async fn sql_not_enabled() {
         let db = make_db().await;
         let result = db.execute_sql("SELECT 1", &[]).await;
-        assert!(matches!(result, Err(NodeDbError::SqlNotEnabled)));
+        assert!(result.as_ref().is_err_and(|e| matches!(
+            e.details(),
+            nodedb_types::error::ErrorDetails::SqlNotEnabled
+        )));
     }
 
     #[tokio::test]

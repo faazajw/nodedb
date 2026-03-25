@@ -1,43 +1,50 @@
 //! Standardized error types for the NodeDB public API.
 //!
-//! These are the errors that application code sees through the `NodeDb` trait.
-//! Every error carries a stable numeric [`ErrorCode`] for programmatic handling
-//! and a human-readable message for debugging.
+//! [`NodeDbError`] is a **struct** (not an enum) that separates:
+//! - `code` — stable numeric code for programmatic handling (`NDB-1000`)
+//! - `message` — human-readable explanation
+//! - `details` — machine-matchable [`ErrorDetails`] enum with structured data
+//! - `cause` — optional chained error for debugging
+//!
+//! # Wire format
+//!
+//! Serializes to:
+//! ```json
+//! {
+//!   "code": "NDB-1000",
+//!   "message": "constraint violation on users: duplicate email",
+//!   "details": { "kind": "constraint_violation", "collection": "users" }
+//! }
+//! ```
 //!
 //! # Error code ranges
 //!
-//! | Range       | Category      | Examples                              |
-//! |-------------|---------------|---------------------------------------|
-//! | 1000–1099   | Write path    | constraint violation, write conflict   |
-//! | 1100–1199   | Read path     | collection/document not found          |
-//! | 1200–1299   | Query         | plan error, fan-out exceeded           |
-//! | 2000–2099   | Auth/Security | authorization denied, auth expired     |
-//! | 3000–3099   | Sync          | connection failed, delta rejected      |
-//! | 4000–4099   | Storage       | I/O, segment corruption, cold storage  |
-//! | 4100–4199   | WAL           | checksum mismatch, sealed              |
-//! | 4200–4299   | Serialization | encode/decode failures                 |
-//! | 5000–5099   | Config        | invalid configuration                  |
-//! | 6000–6099   | Cluster       | no leader, not leader, migration       |
-//! | 7000–7099   | Memory        | budget exhausted, ceiling exceeded     |
-//! | 8000–8099   | Encryption    | key load, DEK, rotation                |
-//! | 9000–9099   | Internal      | catch-all, bridge, dispatch            |
-//!
-//! Infrastructure-specific errors (WAL, io_uring, Raft) live in their
-//! respective crates. At the public API boundary they convert into
-//! `NodeDbError` so consumers never see internal implementation details.
+//! | Range       | Category      |
+//! |-------------|---------------|
+//! | 1000–1099   | Write path    |
+//! | 1100–1199   | Read path     |
+//! | 1200–1299   | Query         |
+//! | 2000–2099   | Auth/Security |
+//! | 3000–3099   | Sync          |
+//! | 4000–4099   | Storage       |
+//! | 4100–4199   | WAL           |
+//! | 4200–4299   | Serialization |
+//! | 5000–5099   | Config        |
+//! | 6000–6099   | Cluster       |
+//! | 7000–7099   | Memory        |
+//! | 8000–8099   | Encryption    |
+//! | 9000–9099   | Internal      |
 
 use std::fmt;
+
+use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
 // Error codes
 // ---------------------------------------------------------------------------
 
 /// Stable numeric error codes for programmatic error handling.
-///
-/// Clients can match on these codes without parsing error messages.
-/// Codes are intentionally sparse within each range so new codes can be
-/// added without renumbering.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ErrorCode(pub u16);
 
 impl ErrorCode {
@@ -69,12 +76,9 @@ impl ErrorCode {
     pub const STORAGE: Self = Self(4000);
     pub const SEGMENT_CORRUPTED: Self = Self(4001);
     pub const COLD_STORAGE: Self = Self(4002);
-    pub const PARQUET: Self = Self(4003);
 
     // WAL (4100–4199)
     pub const WAL: Self = Self(4100);
-    pub const WAL_CHECKSUM_MISMATCH: Self = Self(4101);
-    pub const WAL_SEALED: Self = Self(4102);
 
     // Serialization (4200–4299)
     pub const SERIALIZATION: Self = Self(4200);
@@ -82,6 +86,7 @@ impl ErrorCode {
 
     // Config (5000–5099)
     pub const CONFIG: Self = Self(5000);
+    pub const BAD_REQUEST: Self = Self(5001);
 
     // Cluster (6000–6099)
     pub const NO_LEADER: Self = Self(6000);
@@ -109,251 +114,584 @@ impl fmt::Display for ErrorCode {
 }
 
 // ---------------------------------------------------------------------------
-// NodeDbError
+// ErrorDetails — machine-matchable structured data
 // ---------------------------------------------------------------------------
 
-/// Errors returned by `NodeDb` trait methods.
+/// Structured error details for programmatic matching.
 ///
-/// Every variant is actionable — clients can programmatically handle each one
-/// via the associated [`ErrorCode`]. Internal infrastructure errors (WAL,
-/// Raft, io_uring) are mapped to appropriate public variants at the API
-/// boundary so callers never see implementation details.
-#[derive(Debug, thiserror::Error)]
-pub enum NodeDbError {
-    // ── Write path ──────────────────────────────────────────────────────
-    #[error("[{code}] constraint violation on {collection}: {detail}",
-            code = ErrorCode::CONSTRAINT_VIOLATION)]
-    ConstraintViolation { collection: String, detail: String },
-
-    #[error("[{code}] write conflict on {collection}/{document_id}, retry with idempotency key",
-            code = ErrorCode::WRITE_CONFLICT)]
+/// Clients match on the variant to determine the error category, then
+/// extract structured fields. The `message` on [`NodeDbError`] carries
+/// the human-readable explanation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ErrorDetails {
+    // Write path
+    ConstraintViolation {
+        collection: String,
+    },
     WriteConflict {
         collection: String,
         document_id: String,
     },
-
-    #[error("[{code}] request exceeded deadline", code = ErrorCode::DEADLINE_EXCEEDED)]
     DeadlineExceeded,
+    PrevalidationRejected {
+        constraint: String,
+    },
 
-    #[error("[{code}] pre-validation rejected: {constraint} — {reason}",
-            code = ErrorCode::PREVALIDATION_REJECTED)]
-    PrevalidationRejected { constraint: String, reason: String },
-
-    // ── Read path ───────────────────────────────────────────────────────
-    #[error("[{code}] collection '{collection}' not found",
-            code = ErrorCode::COLLECTION_NOT_FOUND)]
-    CollectionNotFound { collection: String },
-
-    #[error("[{code}] document '{document_id}' not found in '{collection}'",
-            code = ErrorCode::DOCUMENT_NOT_FOUND)]
+    // Read path
+    CollectionNotFound {
+        collection: String,
+    },
     DocumentNotFound {
         collection: String,
         document_id: String,
     },
 
-    // ── Query ───────────────────────────────────────────────────────────
-    #[error("[{code}] query plan error: {detail}", code = ErrorCode::PLAN_ERROR)]
-    PlanError { detail: String },
-
-    #[error("[{code}] query fan-out exceeded: {shards_touched} shards > limit {limit}",
-            code = ErrorCode::FAN_OUT_EXCEEDED)]
-    FanOutExceeded { shards_touched: u16, limit: u16 },
-
-    #[error("[{code}] SQL not enabled (compile with 'sql' feature)",
-            code = ErrorCode::SQL_NOT_ENABLED)]
+    // Query
+    PlanError,
+    FanOutExceeded {
+        shards_touched: u16,
+        limit: u16,
+    },
     SqlNotEnabled,
 
-    // ── Auth / Security ─────────────────────────────────────────────────
-    #[error("[{code}] authorization denied on {resource}",
-            code = ErrorCode::AUTHORIZATION_DENIED)]
-    AuthorizationDenied { resource: String },
+    // Auth
+    AuthorizationDenied {
+        resource: String,
+    },
+    AuthExpired,
 
-    #[error("[{code}] auth expired: re-authenticate before proceeding",
-            code = ErrorCode::AUTH_EXPIRED)]
-    AuthExpired { detail: String },
-
-    // ── Sync ────────────────────────────────────────────────────────────
-    #[error("[{code}] sync connection failed: {detail}",
-            code = ErrorCode::SYNC_CONNECTION_FAILED)]
-    SyncConnectionFailed { detail: String },
-
-    #[error("[{code}] sync delta rejected: {reason}",
-            code = ErrorCode::SYNC_DELTA_REJECTED)]
+    // Sync
+    SyncConnectionFailed,
     SyncDeltaRejected {
-        reason: String,
         compensation: Option<crate::sync::compensation::CompensationHint>,
     },
+    ShapeSubscriptionFailed {
+        shape_id: String,
+    },
 
-    #[error("[{code}] shape subscription failed for '{shape_id}': {detail}",
-            code = ErrorCode::SHAPE_SUBSCRIPTION_FAILED)]
-    ShapeSubscriptionFailed { shape_id: String, detail: String },
+    // Storage (opaque infrastructure)
+    Storage,
+    SegmentCorrupted,
+    ColdStorage,
+    Wal,
 
-    // ── Storage ─────────────────────────────────────────────────────────
-    #[error("[{code}] storage error: {detail}", code = ErrorCode::STORAGE)]
-    Storage { detail: String },
+    // Serialization
+    Serialization {
+        format: String,
+    },
+    Codec,
 
-    #[error("[{code}] segment corrupted: {detail}", code = ErrorCode::SEGMENT_CORRUPTED)]
-    SegmentCorrupted { detail: String },
+    // Config
+    Config,
+    BadRequest,
 
-    #[error("[{code}] cold storage error: {detail}", code = ErrorCode::COLD_STORAGE)]
-    ColdStorage { detail: String },
+    // Cluster
+    NoLeader,
+    NotLeader {
+        leader_addr: String,
+    },
+    MigrationInProgress,
+    NodeUnreachable,
+    Cluster,
 
-    // ── WAL ─────────────────────────────────────────────────────────────
-    #[error("[{code}] WAL error: {detail}", code = ErrorCode::WAL)]
-    Wal { detail: String },
+    // Memory
+    MemoryExhausted {
+        engine: String,
+    },
 
-    // ── Serialization ───────────────────────────────────────────────────
-    #[error("[{code}] serialization error ({format}): {detail}",
-            code = ErrorCode::SERIALIZATION)]
-    Serialization { format: String, detail: String },
+    // Encryption
+    Encryption,
 
-    #[error("[{code}] codec error: {detail}", code = ErrorCode::CODEC)]
-    Codec { detail: String },
-
-    // ── Config ──────────────────────────────────────────────────────────
-    #[error("[{code}] configuration error: {detail}", code = ErrorCode::CONFIG)]
-    Config { detail: String },
-
-    // ── Cluster ─────────────────────────────────────────────────────────
-    #[error("[{code}] no serving leader for the requested partition",
-            code = ErrorCode::NO_LEADER)]
-    NoLeader { detail: String },
-
-    #[error("[{code}] not leader; redirect to leader at {leader_addr}",
-            code = ErrorCode::NOT_LEADER)]
-    NotLeader { leader_addr: String },
-
-    #[error("[{code}] migration in progress", code = ErrorCode::MIGRATION_IN_PROGRESS)]
-    MigrationInProgress { detail: String },
-
-    #[error("[{code}] node unreachable: {detail}", code = ErrorCode::NODE_UNREACHABLE)]
-    NodeUnreachable { detail: String },
-
-    #[error("[{code}] cluster error: {detail}", code = ErrorCode::CLUSTER)]
-    Cluster { detail: String },
-
-    // ── Memory ──────────────────────────────────────────────────────────
-    #[error("[{code}] memory budget exhausted for engine {engine}",
-            code = ErrorCode::MEMORY_EXHAUSTED)]
-    MemoryExhausted { engine: String },
-
-    // ── Encryption ──────────────────────────────────────────────────────
-    #[error("[{code}] encryption error: {detail}", code = ErrorCode::ENCRYPTION)]
-    Encryption { detail: String },
-
-    // ── Bridge / Dispatch ───────────────────────────────────────────────
-    #[error("[{code}] bridge error: {detail}", code = ErrorCode::BRIDGE)]
-    Bridge { detail: String },
-
-    #[error("[{code}] dispatch error: {detail}", code = ErrorCode::DISPATCH)]
-    Dispatch { detail: String },
-
-    // ── Internal ────────────────────────────────────────────────────────
-    #[error("[{code}] internal error: {detail}", code = ErrorCode::INTERNAL)]
-    Internal { detail: String },
-
-    // ── Client input ────────────────────────────────────────────────────
-    #[error("[{code}] bad request: {detail}", code = ErrorCode::CONFIG)]
-    BadRequest { detail: String },
+    // Bridge / Dispatch / Internal
+    Bridge,
+    Dispatch,
+    Internal,
 }
 
+// ---------------------------------------------------------------------------
+// NodeDbError — the public error struct
+// ---------------------------------------------------------------------------
+
+/// Public error type returned by all `NodeDb` trait methods.
+///
+/// Separates machine-readable data ([`ErrorCode`] + [`ErrorDetails`]) from
+/// the human-readable `message`. Optional `cause` preserves the error chain.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeDbError {
+    code: ErrorCode,
+    message: String,
+    details: ErrorDetails,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cause: Option<Box<NodeDbError>>,
+}
+
+impl fmt::Display for NodeDbError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "[{}] {}", self.code, self.message)
+    }
+}
+
+impl std::error::Error for NodeDbError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.cause.as_deref().map(|e| e as &dyn std::error::Error)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Accessors
+// ---------------------------------------------------------------------------
+
 impl NodeDbError {
-    /// The stable numeric error code for this error.
-    pub fn error_code(&self) -> ErrorCode {
-        match self {
-            // Write path
-            Self::ConstraintViolation { .. } => ErrorCode::CONSTRAINT_VIOLATION,
-            Self::WriteConflict { .. } => ErrorCode::WRITE_CONFLICT,
-            Self::DeadlineExceeded => ErrorCode::DEADLINE_EXCEEDED,
-            Self::PrevalidationRejected { .. } => ErrorCode::PREVALIDATION_REJECTED,
+    /// The stable numeric error code.
+    pub fn code(&self) -> ErrorCode {
+        self.code
+    }
 
-            // Read path
-            Self::CollectionNotFound { .. } => ErrorCode::COLLECTION_NOT_FOUND,
-            Self::DocumentNotFound { .. } => ErrorCode::DOCUMENT_NOT_FOUND,
+    /// Human-readable error message.
+    pub fn message(&self) -> &str {
+        &self.message
+    }
 
-            // Query
-            Self::PlanError { .. } => ErrorCode::PLAN_ERROR,
-            Self::FanOutExceeded { .. } => ErrorCode::FAN_OUT_EXCEEDED,
-            Self::SqlNotEnabled => ErrorCode::SQL_NOT_ENABLED,
+    /// Machine-matchable error details.
+    pub fn details(&self) -> &ErrorDetails {
+        &self.details
+    }
 
-            // Auth
-            Self::AuthorizationDenied { .. } => ErrorCode::AUTHORIZATION_DENIED,
-            Self::AuthExpired { .. } => ErrorCode::AUTH_EXPIRED,
+    /// The chained cause, if any.
+    pub fn cause(&self) -> Option<&NodeDbError> {
+        self.cause.as_deref()
+    }
 
-            // Sync
-            Self::SyncConnectionFailed { .. } => ErrorCode::SYNC_CONNECTION_FAILED,
-            Self::SyncDeltaRejected { .. } => ErrorCode::SYNC_DELTA_REJECTED,
-            Self::ShapeSubscriptionFailed { .. } => ErrorCode::SHAPE_SUBSCRIPTION_FAILED,
-
-            // Storage
-            Self::Storage { .. } => ErrorCode::STORAGE,
-            Self::SegmentCorrupted { .. } => ErrorCode::SEGMENT_CORRUPTED,
-            Self::ColdStorage { .. } => ErrorCode::COLD_STORAGE,
-
-            // WAL
-            Self::Wal { .. } => ErrorCode::WAL,
-
-            // Serialization
-            Self::Serialization { .. } => ErrorCode::SERIALIZATION,
-            Self::Codec { .. } => ErrorCode::CODEC,
-
-            // Config
-            Self::Config { .. } => ErrorCode::CONFIG,
-
-            // Cluster
-            Self::NoLeader { .. } => ErrorCode::NO_LEADER,
-            Self::NotLeader { .. } => ErrorCode::NOT_LEADER,
-            Self::MigrationInProgress { .. } => ErrorCode::MIGRATION_IN_PROGRESS,
-            Self::NodeUnreachable { .. } => ErrorCode::NODE_UNREACHABLE,
-            Self::Cluster { .. } => ErrorCode::CLUSTER,
-
-            // Memory
-            Self::MemoryExhausted { .. } => ErrorCode::MEMORY_EXHAUSTED,
-
-            // Encryption
-            Self::Encryption { .. } => ErrorCode::ENCRYPTION,
-
-            // Bridge / Dispatch
-            Self::Bridge { .. } => ErrorCode::BRIDGE,
-            Self::Dispatch { .. } => ErrorCode::DISPATCH,
-
-            // Internal
-            Self::Internal { .. } => ErrorCode::INTERNAL,
-
-            // Client input
-            Self::BadRequest { .. } => ErrorCode::CONFIG,
-        }
+    /// Attach a cause to this error.
+    pub fn with_cause(mut self, cause: NodeDbError) -> Self {
+        self.cause = Some(Box::new(cause));
+        self
     }
 
     /// Whether this error is retriable by the client.
     pub fn is_retriable(&self) -> bool {
         matches!(
-            self,
-            Self::WriteConflict { .. }
-                | Self::DeadlineExceeded
-                | Self::NoLeader { .. }
-                | Self::NotLeader { .. }
-                | Self::MigrationInProgress { .. }
-                | Self::NodeUnreachable { .. }
-                | Self::SyncConnectionFailed { .. }
-                | Self::Bridge { .. }
-                | Self::MemoryExhausted { .. }
+            self.details,
+            ErrorDetails::WriteConflict { .. }
+                | ErrorDetails::DeadlineExceeded
+                | ErrorDetails::NoLeader
+                | ErrorDetails::NotLeader { .. }
+                | ErrorDetails::MigrationInProgress
+                | ErrorDetails::NodeUnreachable
+                | ErrorDetails::SyncConnectionFailed
+                | ErrorDetails::Bridge
+                | ErrorDetails::MemoryExhausted { .. }
         )
     }
 
     /// Whether this error indicates the client sent invalid input.
     pub fn is_client_error(&self) -> bool {
         matches!(
-            self,
-            Self::BadRequest { .. }
-                | Self::ConstraintViolation { .. }
-                | Self::CollectionNotFound { .. }
-                | Self::DocumentNotFound { .. }
-                | Self::AuthorizationDenied { .. }
-                | Self::AuthExpired { .. }
-                | Self::Config { .. }
-                | Self::SqlNotEnabled
+            self.details,
+            ErrorDetails::BadRequest
+                | ErrorDetails::ConstraintViolation { .. }
+                | ErrorDetails::CollectionNotFound { .. }
+                | ErrorDetails::DocumentNotFound { .. }
+                | ErrorDetails::AuthorizationDenied { .. }
+                | ErrorDetails::AuthExpired
+                | ErrorDetails::Config
+                | ErrorDetails::SqlNotEnabled
         )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Category checks
+// ---------------------------------------------------------------------------
+
+impl NodeDbError {
+    pub fn is_constraint_violation(&self) -> bool {
+        matches!(self.details, ErrorDetails::ConstraintViolation { .. })
+    }
+    pub fn is_not_found(&self) -> bool {
+        matches!(
+            self.details,
+            ErrorDetails::CollectionNotFound { .. } | ErrorDetails::DocumentNotFound { .. }
+        )
+    }
+    pub fn is_auth_denied(&self) -> bool {
+        matches!(self.details, ErrorDetails::AuthorizationDenied { .. })
+    }
+    pub fn is_storage(&self) -> bool {
+        matches!(
+            self.details,
+            ErrorDetails::Storage
+                | ErrorDetails::SegmentCorrupted
+                | ErrorDetails::ColdStorage
+                | ErrorDetails::Wal
+        )
+    }
+    pub fn is_internal(&self) -> bool {
+        matches!(self.details, ErrorDetails::Internal)
+    }
+    pub fn is_cluster(&self) -> bool {
+        matches!(
+            self.details,
+            ErrorDetails::NoLeader
+                | ErrorDetails::NotLeader { .. }
+                | ErrorDetails::MigrationInProgress
+                | ErrorDetails::NodeUnreachable
+                | ErrorDetails::Cluster
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Constructors
+// ---------------------------------------------------------------------------
+
+impl NodeDbError {
+    // ── Write path ──
+
+    pub fn constraint_violation(collection: impl Into<String>, detail: impl fmt::Display) -> Self {
+        let collection = collection.into();
+        Self {
+            code: ErrorCode::CONSTRAINT_VIOLATION,
+            message: format!("constraint violation on {collection}: {detail}"),
+            details: ErrorDetails::ConstraintViolation { collection },
+            cause: None,
+        }
+    }
+
+    pub fn write_conflict(collection: impl Into<String>, document_id: impl Into<String>) -> Self {
+        let collection = collection.into();
+        let document_id = document_id.into();
+        Self {
+            code: ErrorCode::WRITE_CONFLICT,
+            message: format!(
+                "write conflict on {collection}/{document_id}, retry with idempotency key"
+            ),
+            details: ErrorDetails::WriteConflict {
+                collection,
+                document_id,
+            },
+            cause: None,
+        }
+    }
+
+    pub fn deadline_exceeded() -> Self {
+        Self {
+            code: ErrorCode::DEADLINE_EXCEEDED,
+            message: "request exceeded deadline".into(),
+            details: ErrorDetails::DeadlineExceeded,
+            cause: None,
+        }
+    }
+
+    pub fn prevalidation_rejected(
+        constraint: impl Into<String>,
+        reason: impl fmt::Display,
+    ) -> Self {
+        let constraint = constraint.into();
+        Self {
+            code: ErrorCode::PREVALIDATION_REJECTED,
+            message: format!("pre-validation rejected: {constraint} — {reason}"),
+            details: ErrorDetails::PrevalidationRejected { constraint },
+            cause: None,
+        }
+    }
+
+    // ── Read path ──
+
+    pub fn collection_not_found(collection: impl Into<String>) -> Self {
+        let collection = collection.into();
+        Self {
+            code: ErrorCode::COLLECTION_NOT_FOUND,
+            message: format!("collection '{collection}' not found"),
+            details: ErrorDetails::CollectionNotFound { collection },
+            cause: None,
+        }
+    }
+
+    pub fn document_not_found(
+        collection: impl Into<String>,
+        document_id: impl Into<String>,
+    ) -> Self {
+        let collection = collection.into();
+        let document_id = document_id.into();
+        Self {
+            code: ErrorCode::DOCUMENT_NOT_FOUND,
+            message: format!("document '{document_id}' not found in '{collection}'"),
+            details: ErrorDetails::DocumentNotFound {
+                collection,
+                document_id,
+            },
+            cause: None,
+        }
+    }
+
+    // ── Query ──
+
+    pub fn plan_error(detail: impl fmt::Display) -> Self {
+        Self {
+            code: ErrorCode::PLAN_ERROR,
+            message: format!("query plan error: {detail}"),
+            details: ErrorDetails::PlanError,
+            cause: None,
+        }
+    }
+
+    pub fn fan_out_exceeded(shards_touched: u16, limit: u16) -> Self {
+        Self {
+            code: ErrorCode::FAN_OUT_EXCEEDED,
+            message: format!("query fan-out exceeded: {shards_touched} shards > limit {limit}"),
+            details: ErrorDetails::FanOutExceeded {
+                shards_touched,
+                limit,
+            },
+            cause: None,
+        }
+    }
+
+    pub fn sql_not_enabled() -> Self {
+        Self {
+            code: ErrorCode::SQL_NOT_ENABLED,
+            message: "SQL not enabled (compile with 'sql' feature)".into(),
+            details: ErrorDetails::SqlNotEnabled,
+            cause: None,
+        }
+    }
+
+    // ── Auth ──
+
+    pub fn authorization_denied(resource: impl Into<String>) -> Self {
+        let resource = resource.into();
+        Self {
+            code: ErrorCode::AUTHORIZATION_DENIED,
+            message: format!("authorization denied on {resource}"),
+            details: ErrorDetails::AuthorizationDenied { resource },
+            cause: None,
+        }
+    }
+
+    pub fn auth_expired(detail: impl fmt::Display) -> Self {
+        Self {
+            code: ErrorCode::AUTH_EXPIRED,
+            message: format!("auth expired: {detail}"),
+            details: ErrorDetails::AuthExpired,
+            cause: None,
+        }
+    }
+
+    // ── Sync ──
+
+    pub fn sync_connection_failed(detail: impl fmt::Display) -> Self {
+        Self {
+            code: ErrorCode::SYNC_CONNECTION_FAILED,
+            message: format!("sync connection failed: {detail}"),
+            details: ErrorDetails::SyncConnectionFailed,
+            cause: None,
+        }
+    }
+
+    pub fn sync_delta_rejected(
+        reason: impl fmt::Display,
+        compensation: Option<crate::sync::compensation::CompensationHint>,
+    ) -> Self {
+        Self {
+            code: ErrorCode::SYNC_DELTA_REJECTED,
+            message: format!("sync delta rejected: {reason}"),
+            details: ErrorDetails::SyncDeltaRejected { compensation },
+            cause: None,
+        }
+    }
+
+    pub fn shape_subscription_failed(
+        shape_id: impl Into<String>,
+        detail: impl fmt::Display,
+    ) -> Self {
+        let shape_id = shape_id.into();
+        Self {
+            code: ErrorCode::SHAPE_SUBSCRIPTION_FAILED,
+            message: format!("shape subscription failed for '{shape_id}': {detail}"),
+            details: ErrorDetails::ShapeSubscriptionFailed { shape_id },
+            cause: None,
+        }
+    }
+
+    // ── Storage ──
+
+    pub fn storage(detail: impl fmt::Display) -> Self {
+        Self {
+            code: ErrorCode::STORAGE,
+            message: format!("storage error: {detail}"),
+            details: ErrorDetails::Storage,
+            cause: None,
+        }
+    }
+
+    pub fn segment_corrupted(detail: impl fmt::Display) -> Self {
+        Self {
+            code: ErrorCode::SEGMENT_CORRUPTED,
+            message: format!("segment corrupted: {detail}"),
+            details: ErrorDetails::SegmentCorrupted,
+            cause: None,
+        }
+    }
+
+    pub fn cold_storage(detail: impl fmt::Display) -> Self {
+        Self {
+            code: ErrorCode::COLD_STORAGE,
+            message: format!("cold storage error: {detail}"),
+            details: ErrorDetails::ColdStorage,
+            cause: None,
+        }
+    }
+
+    pub fn wal(detail: impl fmt::Display) -> Self {
+        Self {
+            code: ErrorCode::WAL,
+            message: format!("WAL error: {detail}"),
+            details: ErrorDetails::Wal,
+            cause: None,
+        }
+    }
+
+    // ── Serialization ──
+
+    pub fn serialization(format: impl Into<String>, detail: impl fmt::Display) -> Self {
+        let format = format.into();
+        Self {
+            code: ErrorCode::SERIALIZATION,
+            message: format!("serialization error ({format}): {detail}"),
+            details: ErrorDetails::Serialization { format },
+            cause: None,
+        }
+    }
+
+    pub fn codec(detail: impl fmt::Display) -> Self {
+        Self {
+            code: ErrorCode::CODEC,
+            message: format!("codec error: {detail}"),
+            details: ErrorDetails::Codec,
+            cause: None,
+        }
+    }
+
+    // ── Config ──
+
+    pub fn config(detail: impl fmt::Display) -> Self {
+        Self {
+            code: ErrorCode::CONFIG,
+            message: format!("configuration error: {detail}"),
+            details: ErrorDetails::Config,
+            cause: None,
+        }
+    }
+
+    pub fn bad_request(detail: impl fmt::Display) -> Self {
+        Self {
+            code: ErrorCode::BAD_REQUEST,
+            message: format!("bad request: {detail}"),
+            details: ErrorDetails::BadRequest,
+            cause: None,
+        }
+    }
+
+    // ── Cluster ──
+
+    pub fn no_leader(detail: impl fmt::Display) -> Self {
+        Self {
+            code: ErrorCode::NO_LEADER,
+            message: format!("no serving leader: {detail}"),
+            details: ErrorDetails::NoLeader,
+            cause: None,
+        }
+    }
+
+    pub fn not_leader(leader_addr: impl Into<String>) -> Self {
+        let leader_addr = leader_addr.into();
+        Self {
+            code: ErrorCode::NOT_LEADER,
+            message: format!("not leader; redirect to leader at {leader_addr}"),
+            details: ErrorDetails::NotLeader { leader_addr },
+            cause: None,
+        }
+    }
+
+    pub fn migration_in_progress(detail: impl fmt::Display) -> Self {
+        Self {
+            code: ErrorCode::MIGRATION_IN_PROGRESS,
+            message: format!("migration in progress: {detail}"),
+            details: ErrorDetails::MigrationInProgress,
+            cause: None,
+        }
+    }
+
+    pub fn node_unreachable(detail: impl fmt::Display) -> Self {
+        Self {
+            code: ErrorCode::NODE_UNREACHABLE,
+            message: format!("node unreachable: {detail}"),
+            details: ErrorDetails::NodeUnreachable,
+            cause: None,
+        }
+    }
+
+    pub fn cluster(detail: impl fmt::Display) -> Self {
+        Self {
+            code: ErrorCode::CLUSTER,
+            message: format!("cluster error: {detail}"),
+            details: ErrorDetails::Cluster,
+            cause: None,
+        }
+    }
+
+    // ── Memory ──
+
+    pub fn memory_exhausted(engine: impl Into<String>) -> Self {
+        let engine = engine.into();
+        Self {
+            code: ErrorCode::MEMORY_EXHAUSTED,
+            message: format!("memory budget exhausted for engine {engine}"),
+            details: ErrorDetails::MemoryExhausted { engine },
+            cause: None,
+        }
+    }
+
+    // ── Encryption ──
+
+    pub fn encryption(detail: impl fmt::Display) -> Self {
+        Self {
+            code: ErrorCode::ENCRYPTION,
+            message: format!("encryption error: {detail}"),
+            details: ErrorDetails::Encryption,
+            cause: None,
+        }
+    }
+
+    // ── Bridge / Dispatch / Internal ──
+
+    pub fn bridge(detail: impl fmt::Display) -> Self {
+        Self {
+            code: ErrorCode::BRIDGE,
+            message: format!("bridge error: {detail}"),
+            details: ErrorDetails::Bridge,
+            cause: None,
+        }
+    }
+
+    pub fn dispatch(detail: impl fmt::Display) -> Self {
+        Self {
+            code: ErrorCode::DISPATCH,
+            message: format!("dispatch error: {detail}"),
+            details: ErrorDetails::Dispatch,
+            cause: None,
+        }
+    }
+
+    pub fn internal(detail: impl fmt::Display) -> Self {
+        Self {
+            code: ErrorCode::INTERNAL,
+            message: format!("internal error: {detail}"),
+            details: ErrorDetails::Internal,
+            cause: None,
+        }
     }
 }
 
@@ -362,9 +700,7 @@ pub type NodeDbResult<T> = std::result::Result<T, NodeDbError>;
 
 impl From<std::io::Error> for NodeDbError {
     fn from(e: std::io::Error) -> Self {
-        Self::Storage {
-            detail: e.to_string(),
-        }
+        Self::storage(e)
     }
 }
 
@@ -381,10 +717,7 @@ mod tests {
 
     #[test]
     fn error_display_includes_code() {
-        let e = NodeDbError::ConstraintViolation {
-            collection: "users".into(),
-            detail: "duplicate email".into(),
-        };
+        let e = NodeDbError::constraint_violation("users", "duplicate email");
         let msg = e.to_string();
         assert!(msg.contains("NDB-1000"));
         assert!(msg.contains("constraint violation"));
@@ -392,76 +725,81 @@ mod tests {
     }
 
     #[test]
-    fn error_code_method() {
-        let e = NodeDbError::WriteConflict {
-            collection: "orders".into(),
-            document_id: "abc".into(),
-        };
-        assert_eq!(e.error_code(), ErrorCode::WRITE_CONFLICT);
-        assert_eq!(e.error_code().0, 1001);
+    fn error_code_accessor() {
+        let e = NodeDbError::write_conflict("orders", "abc");
+        assert_eq!(e.code(), ErrorCode::WRITE_CONFLICT);
+        assert_eq!(e.code().0, 1001);
     }
 
     #[test]
-    fn error_display_sync_rejected() {
-        let e = NodeDbError::SyncDeltaRejected {
-            reason: "unique violation".into(),
-            compensation: Some(
+    fn details_matching() {
+        let e = NodeDbError::collection_not_found("users");
+        assert!(matches!(
+            e.details(),
+            ErrorDetails::CollectionNotFound { collection } if collection == "users"
+        ));
+        assert!(e.is_not_found());
+    }
+
+    #[test]
+    fn error_cause_chaining() {
+        let inner = NodeDbError::storage("disk full");
+        let outer = NodeDbError::internal("write failed").with_cause(inner);
+        assert!(outer.cause().is_some());
+        assert!(outer.cause().unwrap().is_storage());
+        assert!(outer.cause().unwrap().message().contains("disk full"));
+    }
+
+    #[test]
+    fn sync_delta_rejected() {
+        let e = NodeDbError::sync_delta_rejected(
+            "unique violation",
+            Some(
                 crate::sync::compensation::CompensationHint::UniqueViolation {
                     field: "email".into(),
                     conflicting_value: "a@b.com".into(),
                 },
             ),
-        };
+        );
         assert!(e.to_string().contains("NDB-3001"));
         assert!(e.to_string().contains("sync delta rejected"));
     }
 
     #[test]
-    fn error_display_sql_not_enabled() {
-        let e = NodeDbError::SqlNotEnabled;
+    fn sql_not_enabled() {
+        let e = NodeDbError::sql_not_enabled();
         assert!(e.to_string().contains("SQL not enabled"));
-        assert_eq!(e.error_code(), ErrorCode::SQL_NOT_ENABLED);
+        assert_eq!(e.code(), ErrorCode::SQL_NOT_ENABLED);
     }
 
     #[test]
     fn io_error_converts() {
         let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file missing");
         let e: NodeDbError = io_err.into();
-        assert!(matches!(e, NodeDbError::Storage { .. }));
-        assert_eq!(e.error_code(), ErrorCode::STORAGE);
+        assert!(e.is_storage());
+        assert_eq!(e.code(), ErrorCode::STORAGE);
     }
 
     #[test]
     fn retriable_errors() {
-        assert!(
-            NodeDbError::WriteConflict {
-                collection: "x".into(),
-                document_id: "y".into(),
-            }
-            .is_retriable()
-        );
-        assert!(NodeDbError::DeadlineExceeded.is_retriable());
-        assert!(
-            !NodeDbError::BadRequest {
-                detail: "bad".into()
-            }
-            .is_retriable()
-        );
+        assert!(NodeDbError::write_conflict("x", "y").is_retriable());
+        assert!(NodeDbError::deadline_exceeded().is_retriable());
+        assert!(!NodeDbError::bad_request("bad").is_retriable());
     }
 
     #[test]
     fn client_errors() {
-        assert!(
-            NodeDbError::BadRequest {
-                detail: "bad".into()
-            }
-            .is_client_error()
-        );
-        assert!(
-            !NodeDbError::Internal {
-                detail: "oops".into()
-            }
-            .is_client_error()
-        );
+        assert!(NodeDbError::bad_request("bad").is_client_error());
+        assert!(!NodeDbError::internal("oops").is_client_error());
+    }
+
+    #[test]
+    fn json_serialization() {
+        let e = NodeDbError::collection_not_found("users");
+        let json = serde_json::to_value(&e).unwrap();
+        assert_eq!(json["code"], 1100);
+        assert!(json["message"].as_str().unwrap().contains("users"));
+        assert_eq!(json["details"]["kind"], "collection_not_found");
+        assert_eq!(json["details"]["collection"], "users");
     }
 }

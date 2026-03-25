@@ -89,12 +89,9 @@ pub struct NativeConnection {
 impl NativeConnection {
     /// Connect to a NodeDB server at the given address (plain TCP).
     pub async fn connect(addr: &str) -> NodeDbResult<Self> {
-        let stream =
-            TcpStream::connect(addr)
-                .await
-                .map_err(|e| NodeDbError::SyncConnectionFailed {
-                    detail: format!("connect to {addr}: {e}"),
-                })?;
+        let stream = TcpStream::connect(addr)
+            .await
+            .map_err(|e| NodeDbError::sync_connection_failed(format!("connect to {addr}: {e}")))?;
         Ok(Self {
             stream: ConnStream::Plain(stream),
             seq: AtomicU64::new(1),
@@ -104,12 +101,9 @@ impl NativeConnection {
 
     /// Connect to a NodeDB server with TLS.
     pub async fn connect_tls(addr: &str, tls: &TlsConfig) -> NodeDbResult<Self> {
-        let tcp =
-            TcpStream::connect(addr)
-                .await
-                .map_err(|e| NodeDbError::SyncConnectionFailed {
-                    detail: format!("connect to {addr}: {e}"),
-                })?;
+        let tcp = TcpStream::connect(addr)
+            .await
+            .map_err(|e| NodeDbError::sync_connection_failed(format!("connect to {addr}: {e}")))?;
 
         let config = build_tls_client_config(tls)?;
         let connector = tokio_rustls::TlsConnector::from(std::sync::Arc::new(config));
@@ -121,17 +115,15 @@ impl NativeConnection {
             .unwrap_or_else(|| addr.split(':').next().unwrap_or("localhost"));
 
         let sni = tokio_rustls::rustls::pki_types::ServerName::try_from(server_name.to_string())
-            .map_err(|e| NodeDbError::SyncConnectionFailed {
-                detail: format!("invalid server name '{server_name}': {e}"),
+            .map_err(|e| {
+                NodeDbError::sync_connection_failed(format!(
+                    "invalid server name '{server_name}': {e}"
+                ))
             })?;
 
-        let tls_stream =
-            connector
-                .connect(sni, tcp)
-                .await
-                .map_err(|e| NodeDbError::SyncConnectionFailed {
-                    detail: format!("TLS handshake failed: {e}"),
-                })?;
+        let tls_stream = connector.connect(sni, tcp).await.map_err(|e| {
+            NodeDbError::sync_connection_failed(format!("TLS handshake failed: {e}"))
+        })?;
 
         Ok(Self {
             stream: ConnStream::Tls(Box::new(tls_stream)),
@@ -157,7 +149,7 @@ impl NativeConnection {
                 .error
                 .map(|e| e.message)
                 .unwrap_or_else(|| "auth failed".into());
-            return Err(NodeDbError::AuthorizationDenied { resource: msg });
+            return Err(NodeDbError::authorization_denied(msg));
         }
 
         self.authenticated = true;
@@ -168,9 +160,7 @@ impl NativeConnection {
     pub async fn ping(&mut self) -> NodeDbResult<()> {
         let resp = self.send(OpCode::Ping, TextFields::default()).await?;
         if resp.status == ResponseStatus::Error {
-            return Err(NodeDbError::Internal {
-                detail: "ping failed".into(),
-            });
+            return Err(NodeDbError::internal("ping failed"));
         }
         Ok(())
     }
@@ -257,7 +247,7 @@ impl NativeConnection {
                 .error
                 .map(|e| e.message)
                 .unwrap_or_else(|| "show failed".into());
-            return Err(NodeDbError::Internal { detail: msg });
+            return Err(NodeDbError::internal(msg));
         }
         let value = resp
             .rows
@@ -287,10 +277,8 @@ impl NativeConnection {
         };
 
         // Encode request as MessagePack.
-        let payload = rmp_serde::to_vec_named(&req).map_err(|e| NodeDbError::Serialization {
-            format: "msgpack".into(),
-            detail: format!("request encode: {e}"),
-        })?;
+        let payload = rmp_serde::to_vec_named(&req)
+            .map_err(|e| NodeDbError::serialization("msgpack", format!("request encode: {e}")))?;
 
         // Write length-prefixed frame.
         let len = payload.len() as u32;
@@ -306,9 +294,9 @@ impl NativeConnection {
         self.stream.read_exact(&mut len_buf).await.map_err(io_err)?;
         let resp_len = u32::from_be_bytes(len_buf);
         if resp_len > MAX_FRAME_SIZE {
-            return Err(NodeDbError::Internal {
-                detail: format!("response frame too large: {resp_len}"),
-            });
+            return Err(NodeDbError::internal(format!(
+                "response frame too large: {resp_len}"
+            )));
         }
 
         let mut resp_buf = vec![0u8; resp_len as usize];
@@ -318,10 +306,8 @@ impl NativeConnection {
             .map_err(io_err)?;
 
         // Decode response.
-        rmp_serde::from_slice(&resp_buf).map_err(|e| NodeDbError::Serialization {
-            format: "msgpack".into(),
-            detail: format!("response decode: {e}"),
-        })
+        rmp_serde::from_slice(&resp_buf)
+            .map_err(|e| NodeDbError::serialization("msgpack", format!("response decode: {e}")))
     }
 }
 
@@ -343,24 +329,21 @@ fn build_tls_client_config(tls: &TlsConfig) -> NodeDbResult<tokio_rustls::rustls
     if let Some(ref ca_path) = tls.ca_cert_path {
         // Custom CA certificate.
         let mut root_store = rustls::RootCertStore::empty();
-        let cert_file =
-            std::fs::File::open(ca_path).map_err(|e| NodeDbError::SyncConnectionFailed {
-                detail: format!("open CA cert {}: {e}", ca_path.display()),
-            })?;
+        let cert_file = std::fs::File::open(ca_path).map_err(|e| {
+            NodeDbError::sync_connection_failed(format!("open CA cert {}: {e}", ca_path.display()))
+        })?;
         let mut reader = std::io::BufReader::new(cert_file);
         for cert in rustls_pemfile::certs(&mut reader) {
             match cert {
                 Ok(c) => {
-                    root_store
-                        .add(c)
-                        .map_err(|e| NodeDbError::SyncConnectionFailed {
-                            detail: format!("add CA cert: {e}"),
-                        })?;
+                    root_store.add(c).map_err(|e| {
+                        NodeDbError::sync_connection_failed(format!("add CA cert: {e}"))
+                    })?;
                 }
                 Err(e) => {
-                    return Err(NodeDbError::SyncConnectionFailed {
-                        detail: format!("parse CA cert: {e}"),
-                    });
+                    return Err(NodeDbError::sync_connection_failed(format!(
+                        "parse CA cert: {e}"
+                    )));
                 }
             }
         }
@@ -427,9 +410,7 @@ impl tokio_rustls::rustls::client::danger::ServerCertVerifier for NoCertVerifier
 }
 
 fn io_err(e: std::io::Error) -> NodeDbError {
-    NodeDbError::SyncConnectionFailed {
-        detail: format!("I/O: {e}"),
-    }
+    NodeDbError::sync_connection_failed(format!("I/O: {e}"))
 }
 
 fn check_error(resp: NativeResponse) -> NodeDbResult<()> {
@@ -438,7 +419,7 @@ fn check_error(resp: NativeResponse) -> NodeDbResult<()> {
             .error
             .map(|e| e.message)
             .unwrap_or_else(|| "unknown error".into());
-        return Err(NodeDbError::Internal { detail: msg });
+        return Err(NodeDbError::internal(msg));
     }
     Ok(())
 }
@@ -449,7 +430,7 @@ fn response_to_query_result(resp: NativeResponse) -> NodeDbResult<QueryResult> {
             .error
             .map(|e| e.message)
             .unwrap_or_else(|| "query failed".into());
-        return Err(NodeDbError::Internal { detail: msg });
+        return Err(NodeDbError::internal(msg));
     }
     Ok(QueryResult {
         columns: resp.columns.unwrap_or_default(),

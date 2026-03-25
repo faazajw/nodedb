@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use async_trait::async_trait;
 
 use nodedb_types::document::Document;
-use nodedb_types::error::{NodeDbError, NodeDbResult};
+use nodedb_types::error::{ErrorDetails, NodeDbError, NodeDbResult};
 use nodedb_types::filter::{EdgeFilter, MetadataFilter};
 use nodedb_types::id::{EdgeId, NodeId};
 use nodedb_types::protocol::{OpCode, TextFields};
@@ -226,17 +226,16 @@ impl NodeDb for NativeClient {
     async fn graph_delete_edge(&self, edge_id: &EdgeId) -> NodeDbResult<()> {
         let parts: Vec<&str> = edge_id.as_str().splitn(3, "--").collect();
         if parts.len() < 3 {
-            return Err(NodeDbError::BadRequest {
-                detail: format!("invalid edge ID format: {}", edge_id.as_str()),
-            });
+            return Err(NodeDbError::bad_request(format!(
+                "invalid edge ID format: {}",
+                edge_id.as_str()
+            )));
         }
         let src = parts[0];
         let rest = parts[1];
         let (label, dst) = rest
             .split_once("-->")
-            .ok_or_else(|| NodeDbError::BadRequest {
-                detail: "invalid edge ID".into(),
-            })?;
+            .ok_or_else(|| NodeDbError::bad_request("invalid edge ID"))?;
 
         let mut conn = self.pool.acquire().await?;
         conn.send(
@@ -281,10 +280,8 @@ impl NodeDb for NativeClient {
     }
 
     async fn document_put(&self, collection: &str, doc: Document) -> NodeDbResult<()> {
-        let data = serde_json::to_vec(&doc.fields).map_err(|e| NodeDbError::Serialization {
-            format: "json".into(),
-            detail: format!("doc serialize: {e}"),
-        })?;
+        let data = serde_json::to_vec(&doc.fields)
+            .map_err(|e| NodeDbError::serialization("json", format!("doc serialize: {e}")))?;
         let mut conn = self.pool.acquire().await?;
         conn.send(
             OpCode::PointPut,
@@ -328,8 +325,8 @@ fn format_f32_array(arr: &[f32]) -> String {
 /// Check if an error is a connection-level failure (worth retrying).
 fn is_connection_error(e: &NodeDbError) -> bool {
     matches!(
-        e,
-        NodeDbError::SyncConnectionFailed { .. } | NodeDbError::Storage { .. }
+        e.details(),
+        ErrorDetails::SyncConnectionFailed | ErrorDetails::Storage
     )
 }
 

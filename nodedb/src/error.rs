@@ -186,73 +186,56 @@ impl From<Error> for NodeDbError {
             // Write path
             Error::RejectedConstraint {
                 collection, detail, ..
-            } => NodeDbError::ConstraintViolation { collection, detail },
-            Error::RejectedAuthz { resource, .. } => NodeDbError::AuthorizationDenied { resource },
-            Error::DeadlineExceeded { .. } => NodeDbError::DeadlineExceeded,
+            } => NodeDbError::constraint_violation(collection, detail),
+            Error::RejectedAuthz { resource, .. } => NodeDbError::authorization_denied(resource),
+            Error::DeadlineExceeded { .. } => NodeDbError::deadline_exceeded(),
             Error::ConflictRetry {
                 collection,
                 document_id,
-            } => NodeDbError::WriteConflict {
-                collection,
-                document_id,
-            },
+            } => NodeDbError::write_conflict(collection, document_id),
             Error::RejectedPrevalidation { constraint, reason } => {
-                NodeDbError::PrevalidationRejected { constraint, reason }
+                NodeDbError::prevalidation_rejected(constraint, reason)
             }
 
             // Read path
             Error::CollectionNotFound { collection, .. } => {
-                NodeDbError::CollectionNotFound { collection }
+                NodeDbError::collection_not_found(collection)
             }
             Error::DocumentNotFound {
                 collection,
                 document_id,
-            } => NodeDbError::DocumentNotFound {
-                collection,
-                document_id,
-            },
+            } => NodeDbError::document_not_found(collection, document_id),
 
             // Routing / Cluster
-            Error::NoLeader { vshard_id } => NodeDbError::NoLeader {
-                detail: format!("vshard {vshard_id} has no serving leader"),
-            },
-            Error::NotLeader { leader_addr, .. } => NodeDbError::NotLeader { leader_addr },
+            Error::NoLeader { vshard_id } => {
+                NodeDbError::no_leader(format!("vshard {vshard_id} has no serving leader"))
+            }
+            Error::NotLeader { leader_addr, .. } => NodeDbError::not_leader(leader_addr),
             Error::FanOutExceeded {
                 shards_touched,
                 limit,
-            } => NodeDbError::FanOutExceeded {
-                shards_touched,
-                limit,
-            },
+            } => NodeDbError::fan_out_exceeded(shards_touched, limit),
 
             // Client input
-            Error::BadRequest { detail } => NodeDbError::BadRequest { detail },
-            Error::PlanError { detail } => NodeDbError::PlanError { detail },
+            Error::BadRequest { detail } => NodeDbError::bad_request(detail),
+            Error::PlanError { detail } => NodeDbError::plan_error(detail),
 
             // Infrastructure — flatten to opaque public variants
-            Error::Wal(wal_err) => NodeDbError::Wal {
-                detail: wal_err.to_string(),
-            },
-            Error::Dispatch { detail } => NodeDbError::Dispatch { detail },
-            Error::Storage { detail, .. } => NodeDbError::Storage { detail },
-            Error::ColdStorage { detail } => NodeDbError::ColdStorage { detail },
-            Error::Serialization { format, detail } => {
-                NodeDbError::Serialization { format, detail }
-            }
-            Error::Codec { detail } => NodeDbError::Codec { detail },
-            Error::SegmentCorrupted { detail } => NodeDbError::SegmentCorrupted { detail },
-            Error::MemoryExhausted { engine } => NodeDbError::MemoryExhausted { engine },
-            Error::Crdt(crdt_err) => NodeDbError::Internal {
-                detail: crdt_err.to_string(),
-            },
-            Error::Io(io_err) => NodeDbError::Storage {
-                detail: io_err.to_string(),
-            },
-            Error::Config { detail } => NodeDbError::Config { detail },
-            Error::Encryption { detail } => NodeDbError::Encryption { detail },
-            Error::Bridge { detail } => NodeDbError::Bridge { detail },
-            Error::VersionCompat { detail } => NodeDbError::Cluster { detail },
-            Error::Internal { detail } => NodeDbError::Internal { detail },
+            Error::Wal(wal_err) => NodeDbError::wal(wal_err),
+            Error::Dispatch { detail } => NodeDbError::dispatch(detail),
+            Error::Storage { detail, .. } => NodeDbError::storage(detail),
+            Error::ColdStorage { detail } => NodeDbError::cold_storage(detail),
+            Error::Serialization { format, detail } => NodeDbError::serialization(format, detail),
+            Error::Codec { detail } => NodeDbError::codec(detail),
+            Error::SegmentCorrupted { detail } => NodeDbError::segment_corrupted(detail),
+            Error::MemoryExhausted { engine } => NodeDbError::memory_exhausted(engine),
+            Error::Crdt(crdt_err) => NodeDbError::internal(crdt_err),
+            Error::Io(io_err) => NodeDbError::storage(io_err),
+            Error::Config { detail } => NodeDbError::config(detail),
+            Error::Encryption { detail } => NodeDbError::encryption(detail),
+            Error::Bridge { detail } => NodeDbError::bridge(detail),
+            Error::VersionCompat { detail } => NodeDbError::cluster(detail),
+            Error::Internal { detail } => NodeDbError::internal(detail),
         }
     }
 }
@@ -306,7 +289,7 @@ mod tests {
     fn internal_error_to_nodedb_error() {
         let e = Error::Wal(nodedb_wal::WalError::Sealed);
         let public: NodeDbError = e.into();
-        assert!(matches!(public, NodeDbError::Wal { .. }));
+        assert!(public.is_storage());
         assert!(public.to_string().contains("NDB-4100"));
     }
 
@@ -318,13 +301,13 @@ mod tests {
             detail: "dup".into(),
         };
         let public: NodeDbError = e.into();
-        assert!(matches!(public, NodeDbError::ConstraintViolation { .. }));
+        assert!(public.is_constraint_violation());
     }
 
     #[test]
     fn io_error_to_nodedb_error() {
         let e = Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "gone"));
         let public: NodeDbError = e.into();
-        assert!(matches!(public, NodeDbError::Storage { .. }));
+        assert!(public.is_storage());
     }
 }
