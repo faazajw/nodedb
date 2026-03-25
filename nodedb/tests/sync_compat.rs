@@ -22,6 +22,8 @@ fn lite_handshake_frame_roundtrips() {
         },
         subscribed_shapes: vec!["shape-1".into(), "shape-2".into()],
         client_version: "0.1.0-lite".into(),
+        lite_id: String::new(),
+        epoch: 0,
     };
 
     let frame = SyncFrame::new_msgpack(SyncMessageType::Handshake, &msg).unwrap();

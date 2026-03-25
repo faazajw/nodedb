@@ -113,6 +113,8 @@ async fn run_client(
         vector_clock: std::collections::HashMap::new(),
         subscribed_shapes: Vec::new(),
         client_version: format!("load-test-{id}"),
+        lite_id: String::new(),
+        epoch: 0,
     };
     if ws
         .send(Message::Binary(

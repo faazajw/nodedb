@@ -25,6 +25,8 @@ async fn connect_and_handshake()
         vector_clock: std::collections::HashMap::new(),
         subscribed_shapes: Vec::new(),
         client_version: "live-test".into(),
+        lite_id: String::new(),
+        epoch: 0,
     };
     ws.send(Message::Binary(
         SyncFrame::encode_or_empty(SyncMessageType::Handshake, &hs)
@@ -104,6 +106,8 @@ async fn test_handshake() -> Result<(), String> {
         vector_clock: std::collections::HashMap::new(),
         subscribed_shapes: Vec::new(),
         client_version: "test-handshake".into(),
+        lite_id: String::new(),
+        epoch: 0,
     };
     ws.send(Message::Binary(
         SyncFrame::encode_or_empty(SyncMessageType::Handshake, &hs)
