@@ -15,8 +15,10 @@ pub mod o3_buffer;
 pub mod partition_registry;
 pub mod query;
 pub mod reader;
+pub mod s3_archive;
 pub mod schema_evolution;
 pub mod segment_index;
+pub mod simd_agg;
 pub mod time_bucket;
 pub mod ts_detect;
 #[cfg(test)]

@@ -1,12 +1,11 @@
 //! Columnar aggregation functions for timeseries data.
 //!
 //! Operates on contiguous column slices (`&[f64]`, `&[i64]`) for
-//! cache-friendly, SIMD-optimizable aggregation. These functions are
-//! building blocks for `time_bucket` GROUP BY queries.
-//!
-//! When numr SIMD is available, the hot inner loops can be replaced
-//! with vectorized equivalents. The current implementation is scalar
-//! but structured for easy SIMD drop-in.
+//! cache-friendly aggregation. Hot paths (sum/min/max/range filter)
+//! dispatch to SIMD kernels via `simd_agg::ts_runtime()` which
+//! auto-detects AVX-512 / AVX2 / NEON at startup.
+
+use super::simd_agg::ts_runtime;
 
 /// Aggregation result for a group of rows.
 #[derive(Debug, Clone, Default)]
@@ -33,7 +32,8 @@ impl AggResult {
 
 /// Compute all standard aggregates over an f64 column slice.
 ///
-/// Uses Kahan compensated summation for numerical accuracy.
+/// Dispatches sum/min/max to SIMD kernels (AVX-512/AVX2/NEON) via
+/// `ts_runtime()`. Falls back to scalar with Kahan compensation.
 pub fn aggregate_f64(values: &[f64]) -> AggResult {
     if values.is_empty() {
         return AggResult {
@@ -45,31 +45,41 @@ pub fn aggregate_f64(values: &[f64]) -> AggResult {
         };
     }
 
-    let mut sum = 0.0f64;
-    let mut compensation = 0.0f64; // Kahan compensator
-    let mut min = f64::INFINITY;
-    let mut max = f64::NEG_INFINITY;
-    let mut count = 0u64;
+    // Filter out NaN values for SIMD paths (SIMD min/max don't handle NaN correctly).
+    let has_nan = values.iter().any(|v| v.is_nan());
 
-    for &v in values {
-        if v.is_nan() {
-            continue;
+    let (sum, min, max, count) = if has_nan {
+        // Slow path: skip NaN values.
+        let mut s = 0.0f64;
+        let mut comp = 0.0f64;
+        let mut mn = f64::INFINITY;
+        let mut mx = f64::NEG_INFINITY;
+        let mut c = 0u64;
+        for &v in values {
+            if v.is_nan() {
+                continue;
+            }
+            c += 1;
+            let y = v - comp;
+            let t = s + y;
+            comp = (t - s) - y;
+            s = t;
+            if v < mn {
+                mn = v;
+            }
+            if v > mx {
+                mx = v;
+            }
         }
-        count += 1;
-
-        // Kahan summation.
-        let y = v - compensation;
-        let t = sum + y;
-        compensation = (t - sum) - y;
-        sum = t;
-
-        if v < min {
-            min = v;
-        }
-        if v > max {
-            max = v;
-        }
-    }
+        (s, mn, mx, c)
+    } else {
+        // Fast path: SIMD dispatch for clean data.
+        let rt = ts_runtime();
+        let s = (rt.sum_f64)(values);
+        let mn = (rt.min_f64)(values);
+        let mx = (rt.max_f64)(values);
+        (s, mn, mx, values.len() as u64)
+    };
 
     AggResult {
         count,
@@ -139,14 +149,8 @@ impl AggResultI64 {
 /// Returns indices of rows where `timestamps[i]` is within `[min_ts, max_ts]`.
 /// The result can be used as a selection vector for column scans.
 pub fn timestamp_range_filter(timestamps: &[i64], min_ts: i64, max_ts: i64) -> Vec<u32> {
-    // Scalar loop — replace with SIMD comparison when numr provides it.
-    let mut indices = Vec::new();
-    for (i, &ts) in timestamps.iter().enumerate() {
-        if ts >= min_ts && ts <= max_ts {
-            indices.push(i as u32);
-        }
-    }
-    indices
+    let rt = ts_runtime();
+    (rt.range_filter_i64)(timestamps, min_ts, max_ts)
 }
 
 /// Aggregate f64 values at selected row indices.
