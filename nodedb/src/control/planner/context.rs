@@ -66,7 +66,7 @@ impl QueryContext {
 
         Self {
             session,
-            converter: PlanConverter::new(),
+            converter: PlanConverter::with_credentials(credentials),
         }
     }
 

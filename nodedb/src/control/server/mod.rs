@@ -3,6 +3,7 @@ pub mod conn_stream;
 pub mod dispatch_utils;
 pub mod graph_dispatch;
 pub mod http;
+pub mod ilp_listener;
 pub mod listener;
 pub mod native;
 pub mod pgwire;

@@ -58,6 +58,12 @@ pub struct ServerConfig {
     #[serde(default)]
     pub checkpoint: CheckpointSettings,
 
+    /// Address to bind the ILP (InfluxDB Line Protocol) TCP listener.
+    /// Disabled by default (None). Enable for timeseries ingest.
+    /// Standard InfluxDB port: 8086.
+    #[serde(default)]
+    pub ilp_listen: Option<SocketAddr>,
+
     /// Cluster mode settings. When present, the node participates in a
     /// distributed cluster via Multi-Raft consensus over QUIC transport.
     /// When absent, runs in single-node mode (default).
@@ -289,6 +295,7 @@ impl Default for ServerConfig {
             encryption: None,
             log_format: "text".into(),
             checkpoint: CheckpointSettings::default(),
+            ilp_listen: None,
             cluster: None,
         }
     }

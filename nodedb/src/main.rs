@@ -250,10 +250,15 @@ async fn main() -> anyhow::Result<()> {
         "connection limit configured"
     );
 
-    // Bind both listeners before starting accept loops.
+    // Bind all listeners before starting accept loops.
     let listener = nodedb::control::server::listener::Listener::bind(config.listen).await?;
     let pg_listener =
         nodedb::control::server::pgwire::listener::PgListener::bind(config.pg_listen).await?;
+    let ilp_listener = if let Some(ilp_addr) = config.ilp_listen {
+        Some(nodedb::control::server::ilp_listener::IlpListener::bind(ilp_addr).await?)
+    } else {
+        None
+    };
 
     // Startup banner.
     eprintln!();
@@ -262,6 +267,9 @@ async fn main() -> anyhow::Result<()> {
     eprintln!("  Native protocol : {}", config.listen);
     eprintln!("  PostgreSQL wire : {}", config.pg_listen);
     eprintln!("  HTTP API        : {}", config.http_listen);
+    if let Some(addr) = config.ilp_listen {
+        eprintln!("  ILP ingest      : {addr}");
+    }
     eprintln!("  Data Plane cores: {}", config.data_plane_cores);
     eprintln!("  Data directory  : {}", config.data_dir.display());
     eprintln!("  Auth mode       : {:?}", config.auth.mode);
@@ -360,6 +368,18 @@ async fn main() -> anyhow::Result<()> {
             tracing::error!(error = %e, "HTTP API server failed");
         }
     });
+
+    // Run ILP TCP listener for timeseries ingest (if configured).
+    if let Some(ilp) = ilp_listener {
+        let shared_ilp = Arc::clone(&shared);
+        let conn_sem_ilp = Arc::clone(&conn_semaphore);
+        let shutdown_rx_ilp = shutdown_rx.clone();
+        tokio::spawn(async move {
+            if let Err(e) = ilp.run(shared_ilp, conn_sem_ilp, shutdown_rx_ilp).await {
+                tracing::error!(error = %e, "ILP listener failed");
+            }
+        });
+    }
 
     // Start sync WebSocket listener for NodeDB-Lite clients.
     let sync_config = nodedb::control::server::sync::listener::SyncListenerConfig::default();
