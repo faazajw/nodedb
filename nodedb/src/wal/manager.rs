@@ -332,6 +332,11 @@ impl WalManager {
         let wal = self.wal.lock().unwrap_or_else(|p| p.into_inner());
         wal.list_segments().map_err(crate::Error::Wal)
     }
+
+    /// Get the WAL directory path.
+    pub fn wal_dir(&self) -> &std::path::Path {
+        &self.wal_dir
+    }
 }
 
 #[cfg(test)]
