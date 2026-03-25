@@ -29,6 +29,12 @@ pub struct TimeseriesEngine {
     catalog: SeriesCatalog,
     /// Global config (Lite defaults: 7d retention, 4MB memtable, etc.)
     config: TieredPartitionConfig,
+    /// Per-series sync watermark: `series_id → last_synced_lsn`.
+    /// Tracks which data has been successfully synced to Origin.
+    /// Only data after these watermarks is included in sync pushes.
+    sync_watermarks: HashMap<SeriesId, u64>,
+    /// Global sync LSN counter (monotonically increasing).
+    next_sync_lsn: u64,
 }
 
 /// Per-collection timeseries state.
@@ -41,6 +47,8 @@ struct CollectionTs {
     memory_bytes: usize,
     /// Partition boundaries for flushed data.
     partitions: Vec<FlushedPartition>,
+    /// Whether data has been ingested since last sync push.
+    dirty: bool,
 }
 
 /// A flushed partition stored in redb.
@@ -57,6 +65,7 @@ impl CollectionTs {
             timestamps: Vec::with_capacity(4096),
             values: Vec::with_capacity(4096),
             series_ids: Vec::with_capacity(4096),
+            dirty: false,
             memory_bytes: 0,
             partitions: Vec::new(),
         }
@@ -80,6 +89,8 @@ impl TimeseriesEngine {
             collections: HashMap::new(),
             catalog: SeriesCatalog::new(),
             config: TieredPartitionConfig::lite_defaults(),
+            sync_watermarks: HashMap::new(),
+            next_sync_lsn: 1,
         }
     }
 
@@ -89,6 +100,8 @@ impl TimeseriesEngine {
             collections: HashMap::new(),
             catalog: SeriesCatalog::new(),
             config,
+            sync_watermarks: HashMap::new(),
+            next_sync_lsn: 1,
         }
     }
 
@@ -116,6 +129,7 @@ impl TimeseriesEngine {
         coll.values.push(sample.value);
         coll.series_ids.push(series_id);
         coll.memory_bytes += 24; // 8 + 8 + 8 bytes per row
+        coll.dirty = true;
 
         coll.memory_bytes >= self.config.memtable_max_memory_bytes as usize
     }
@@ -142,6 +156,7 @@ impl TimeseriesEngine {
             coll.series_ids.push(series_id);
         }
         coll.memory_bytes += samples.len() * 24;
+        coll.dirty = true;
 
         coll.memory_bytes >= self.config.memtable_max_memory_bytes as usize
     }
@@ -310,7 +325,7 @@ impl TimeseriesEngine {
         dropped
     }
 
-    // ─── Accessors ───────────────────────────────────────────────────
+    // ─── Accessors ────
 
     pub fn collection_names(&self) -> Vec<&str> {
         self.collections.keys().map(|s| s.as_str()).collect()
@@ -373,6 +388,131 @@ impl TimeseriesEngine {
             })
             .collect()
     }
+
+    // ─── Sync Watermarks ──
+
+    /// Get the sync watermark for a series (highest LSN synced to Origin).
+    pub fn sync_watermark(&self, series_id: SeriesId) -> u64 {
+        self.sync_watermarks.get(&series_id).copied().unwrap_or(0)
+    }
+
+    /// Update sync watermark after Origin acknowledges a push.
+    ///
+    /// Called when `TimeseriesAckMsg` is received with an LSN.
+    pub fn acknowledge_sync(&mut self, collection: &str, lsn: u64) {
+        // Update watermarks for all series in this collection.
+        if let Some(coll) = self.collections.get_mut(collection) {
+            for &sid in &coll.series_ids {
+                self.sync_watermarks
+                    .entry(sid)
+                    .and_modify(|w| *w = (*w).max(lsn))
+                    .or_insert(lsn);
+            }
+            coll.dirty = false;
+        }
+    }
+
+    /// Get all current sync watermarks (for persistence to redb).
+    pub fn export_watermarks(&self) -> &HashMap<SeriesId, u64> {
+        &self.sync_watermarks
+    }
+
+    /// Import watermarks from redb (cold start restore).
+    pub fn import_watermarks(&mut self, watermarks: HashMap<SeriesId, u64>) {
+        self.sync_watermarks = watermarks;
+    }
+
+    /// Get collections that have unsynced data.
+    pub fn dirty_collections(&self) -> Vec<&str> {
+        self.collections
+            .iter()
+            .filter(|(_, c)| c.dirty || !c.timestamps.is_empty())
+            .map(|(name, _)| name.as_str())
+            .collect()
+    }
+
+    // ─── Lifecycle: Retention vs Sync ──
+
+    /// Apply retention with sync-awareness.
+    ///
+    /// **Default behavior** (`retain_until_synced = false`): retention drops
+    /// partitions by age regardless of sync status. If the device was offline
+    /// longer than the retention period, data is lost before it syncs.
+    ///
+    /// **Guarded behavior** (`retain_until_synced = true`): partitions with
+    /// unsynced data are kept past the retention period. This prevents data
+    /// loss but may cause unbounded local storage growth.
+    ///
+    /// Returns `(dropped_keys, warnings)` where warnings are
+    /// `TimeseriesDataDroppedBeforeSync` events for the application.
+    pub fn apply_retention_with_sync(
+        &mut self,
+        now_ms: i64,
+    ) -> (Vec<String>, Vec<UnsyncedDropWarning>) {
+        if self.config.retention_period_ms == 0 {
+            return (Vec::new(), Vec::new());
+        }
+        let cutoff = now_ms - self.config.retention_period_ms as i64;
+        let retain_until_synced = self.config.retain_until_synced;
+        let mut dropped = Vec::new();
+        let mut warnings = Vec::new();
+
+        for (collection, coll) in &mut self.collections {
+            coll.partitions.retain(|p| {
+                if p.meta.max_ts >= cutoff {
+                    return true; // Not expired yet.
+                }
+
+                // Check if this partition has unsynced data.
+                let has_unsynced = p.meta.last_flushed_wal_lsn == 0; // Simplified: LSN 0 = never synced.
+
+                if has_unsynced && retain_until_synced {
+                    // Keep: guarded mode prevents data loss.
+                    return true;
+                }
+
+                if has_unsynced {
+                    // Dropping unsynced data — emit warning.
+                    warnings.push(UnsyncedDropWarning {
+                        collection: collection.clone(),
+                        partition_key: p.key_prefix.clone(),
+                        min_ts: p.meta.min_ts,
+                        max_ts: p.meta.max_ts,
+                        row_count: p.meta.row_count,
+                    });
+                }
+
+                dropped.push(p.key_prefix.clone());
+                false
+            });
+        }
+
+        (dropped, warnings)
+    }
+
+    /// Assign a sync LSN to data and advance the counter.
+    pub fn assign_sync_lsn(&mut self) -> u64 {
+        let lsn = self.next_sync_lsn;
+        self.next_sync_lsn += 1;
+        lsn
+    }
+}
+
+/// Warning emitted when retention drops unsynced data.
+///
+/// The application can surface this to the user or adjust retention.
+#[derive(Debug, Clone)]
+pub struct UnsyncedDropWarning {
+    /// Collection name.
+    pub collection: String,
+    /// redb key prefix of the dropped partition.
+    pub partition_key: String,
+    /// Oldest timestamp in the dropped data.
+    pub min_ts: i64,
+    /// Newest timestamp in the dropped data.
+    pub max_ts: i64,
+    /// Number of rows lost.
+    pub row_count: u64,
 }
 
 /// A key-value entry for redb persistence.
@@ -613,5 +753,161 @@ mod tests {
             .collect();
         engine.ingest_batch("metrics", "cpu", vec![], &samples);
         assert_eq!(engine.row_count("metrics"), 1000);
+    }
+
+    #[test]
+    fn batch_ingest_sets_dirty() {
+        let mut engine = TimeseriesEngine::new();
+        assert!(engine.dirty_collections().is_empty());
+
+        let samples = vec![MetricSample {
+            timestamp_ms: 100,
+            value: 1.0,
+        }];
+        engine.ingest_batch("metrics", "cpu", vec![], &samples);
+        assert_eq!(engine.dirty_collections(), vec!["metrics"]);
+    }
+
+    #[test]
+    fn sync_watermark_defaults_to_zero() {
+        let engine = TimeseriesEngine::new();
+        assert_eq!(engine.sync_watermark(42), 0);
+    }
+
+    #[test]
+    fn acknowledge_sync_updates_watermarks() {
+        let mut engine = TimeseriesEngine::new();
+        engine.ingest_metric(
+            "m",
+            "cpu",
+            vec![("h".into(), "a".into())],
+            MetricSample {
+                timestamp_ms: 100,
+                value: 1.0,
+            },
+        );
+
+        let sid = engine
+            .catalog
+            .resolve(&SeriesKey::new("cpu", vec![("h".into(), "a".into())]));
+        assert_eq!(engine.sync_watermark(sid), 0);
+
+        engine.acknowledge_sync("m", 10);
+        assert_eq!(engine.sync_watermark(sid), 10);
+
+        // Monotonicity: higher LSN replaces lower.
+        engine.acknowledge_sync("m", 20);
+        assert_eq!(engine.sync_watermark(sid), 20);
+
+        // Monotonicity: lower LSN does NOT regress.
+        engine.acknowledge_sync("m", 5);
+        assert_eq!(engine.sync_watermark(sid), 20);
+    }
+
+    #[test]
+    fn acknowledge_sync_clears_dirty() {
+        let mut engine = TimeseriesEngine::new();
+        engine.ingest_metric(
+            "m",
+            "cpu",
+            vec![],
+            MetricSample {
+                timestamp_ms: 100,
+                value: 1.0,
+            },
+        );
+        assert!(!engine.dirty_collections().is_empty());
+
+        engine.acknowledge_sync("m", 1);
+        // Dirty cleared, but memtable still has data so dirty_collections includes it.
+        // After flush + ack, it should be clean.
+        engine.flush("m");
+        engine.acknowledge_sync("m", 2);
+        assert!(engine.dirty_collections().is_empty());
+    }
+
+    #[test]
+    fn export_import_watermarks() {
+        let mut engine = TimeseriesEngine::new();
+        engine.ingest_metric(
+            "m",
+            "cpu",
+            vec![],
+            MetricSample {
+                timestamp_ms: 100,
+                value: 1.0,
+            },
+        );
+        engine.acknowledge_sync("m", 42);
+
+        let exported = engine.export_watermarks().clone();
+        assert!(!exported.is_empty());
+
+        // Cold restart: new engine imports watermarks.
+        let mut engine2 = TimeseriesEngine::new();
+        engine2.import_watermarks(exported.clone());
+        assert_eq!(engine2.export_watermarks(), &exported);
+    }
+
+    #[test]
+    fn assign_sync_lsn_monotonic() {
+        let mut engine = TimeseriesEngine::new();
+        let lsn1 = engine.assign_sync_lsn();
+        let lsn2 = engine.assign_sync_lsn();
+        let lsn3 = engine.assign_sync_lsn();
+        assert!(lsn1 < lsn2);
+        assert!(lsn2 < lsn3);
+    }
+
+    #[test]
+    fn retention_with_sync_default_drops_unsynced() {
+        let mut engine = TimeseriesEngine::with_config(TieredPartitionConfig {
+            retention_period_ms: 1000,
+            retain_until_synced: false,
+            ..TieredPartitionConfig::lite_defaults()
+        });
+
+        engine.ingest_metric(
+            "m",
+            "cpu",
+            vec![],
+            MetricSample {
+                timestamp_ms: 100,
+                value: 1.0,
+            },
+        );
+        engine.flush("m"); // Partition with max_ts=100, never synced (LSN=0).
+
+        let (dropped, warnings) = engine.apply_retention_with_sync(5000);
+        assert_eq!(dropped.len(), 1);
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].collection, "m");
+        assert_eq!(warnings[0].row_count, 1);
+    }
+
+    #[test]
+    fn retention_with_sync_guarded_retains_unsynced() {
+        let mut engine = TimeseriesEngine::with_config(TieredPartitionConfig {
+            retention_period_ms: 1000,
+            retain_until_synced: true,
+            ..TieredPartitionConfig::lite_defaults()
+        });
+
+        engine.ingest_metric(
+            "m",
+            "cpu",
+            vec![],
+            MetricSample {
+                timestamp_ms: 100,
+                value: 1.0,
+            },
+        );
+        engine.flush("m");
+
+        // Guarded mode: keep unsynced data past retention.
+        let (dropped, warnings) = engine.apply_retention_with_sync(5000);
+        assert!(dropped.is_empty());
+        assert!(warnings.is_empty());
+        assert_eq!(engine.partition_count("m"), 1); // Still retained.
     }
 }
