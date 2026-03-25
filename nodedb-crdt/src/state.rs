@@ -65,6 +65,15 @@ impl CrdtState {
         coll.get(row_id).is_some()
     }
 
+    /// List all collection names (top-level map keys in the Loro doc).
+    pub fn collection_names(&self) -> Vec<String> {
+        let root = self.doc.get_deep_value();
+        match root {
+            LoroValue::Map(map) => map.keys().map(|k| k.to_string()).collect(),
+            _ => Vec::new(),
+        }
+    }
+
     /// Get all row IDs in a collection.
     pub fn row_ids(&self, collection: &str) -> Vec<String> {
         let coll = self.doc.get_map(collection);

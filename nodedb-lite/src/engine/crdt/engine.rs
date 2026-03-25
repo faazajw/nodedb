@@ -221,6 +221,11 @@ impl CrdtEngine {
         self.state.row_ids(collection)
     }
 
+    /// List all collection names (top-level Loro map keys).
+    pub fn collection_names(&self) -> Vec<String> {
+        self.state.collection_names()
+    }
+
     // ─── Sync: Delta Management ──────────────────────────────────────
 
     /// Get all pending (unsent) deltas.
