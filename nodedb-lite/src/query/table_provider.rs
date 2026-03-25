@@ -70,14 +70,21 @@ impl LiteTableProvider {
         }
     }
 
-    /// Scan all documents from the Loro collection into Arrow RecordBatches.
-    fn scan_to_batches(&self) -> Result<Vec<RecordBatch>, DataFusionError> {
+    /// Scan documents from the Loro collection into Arrow RecordBatches.
+    ///
+    /// `limit` is pushed down from DataFusion — if set, only reads that
+    /// many documents instead of the entire collection.
+    fn scan_to_batches(&self, limit: Option<usize>) -> Result<Vec<RecordBatch>, DataFusionError> {
         let crdt = self
             .crdt
             .lock()
             .map_err(|e| DataFusionError::Execution(format!("crdt lock: {e}")))?;
 
-        let ids = crdt.list_ids(&self.collection);
+        let mut ids = crdt.list_ids(&self.collection);
+        // Apply limit pushdown: don't load more documents than needed.
+        if let Some(n) = limit {
+            ids.truncate(n);
+        }
         if ids.is_empty() {
             let batch = RecordBatch::new_empty(self.schema.clone());
             return Ok(vec![batch]);
@@ -241,12 +248,12 @@ impl TableProvider for LiteTableProvider {
         state: &dyn Session,
         projection: Option<&Vec<usize>>,
         _filters: &[Expr],
-        _limit: Option<usize>,
+        limit: Option<usize>,
     ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
-        let batches = self.scan_to_batches()?;
+        let batches = self.scan_to_batches(limit)?;
         // Use MemTable to create a physical plan from in-memory batches.
         let mem_table =
             datafusion::datasource::MemTable::try_new(self.schema.clone(), vec![batches])?;
-        mem_table.scan(state, projection, &[], _limit).await
+        mem_table.scan(state, projection, &[], limit).await
     }
 }
