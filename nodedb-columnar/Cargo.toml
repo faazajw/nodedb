@@ -1,0 +1,20 @@
+[package]
+name = "nodedb-columnar"
+description = "Columnar segment format and memtable for NodeDB analytical storage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+nodedb-types = { workspace = true }
+nodedb-codec = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+rmp-serde = { workspace = true }
+crc32c = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+rust_decimal = { workspace = true }

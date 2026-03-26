@@ -1,0 +1,44 @@
+//! Error types for columnar segment operations.
+
+/// Errors from columnar segment encoding, decoding, and validation.
+#[derive(Debug, thiserror::Error)]
+pub enum ColumnarError {
+    #[error("codec error: {0}")]
+    Codec(#[from] nodedb_codec::CodecError),
+
+    #[error("segment too short: expected at least {expected} bytes, got {got}")]
+    TruncatedSegment { expected: usize, got: usize },
+
+    #[error("invalid magic bytes: expected NDBS, got {0:?}")]
+    InvalidMagic([u8; 4]),
+
+    #[error(
+        "incompatible segment version: reader {reader_major}.x, segment {segment_major}.{segment_minor}"
+    )]
+    IncompatibleVersion {
+        reader_major: u8,
+        segment_major: u8,
+        segment_minor: u8,
+    },
+
+    #[error("footer CRC32C mismatch: stored {stored:#010x}, computed {computed:#010x}")]
+    FooterCrcMismatch { stored: u32, computed: u32 },
+
+    #[error("column index {index} out of range (segment has {count} columns)")]
+    ColumnOutOfRange { index: usize, count: usize },
+
+    #[error("schema mismatch: expected {expected} columns, memtable has {got}")]
+    SchemaMismatch { expected: usize, got: usize },
+
+    #[error("memtable is empty — nothing to flush")]
+    EmptyMemtable,
+
+    #[error("serialization error: {0}")]
+    Serialization(String),
+
+    #[error("value type mismatch for column '{column}': expected {expected}")]
+    TypeMismatch { column: String, expected: String },
+
+    #[error("null violation: column '{0}' is NOT NULL")]
+    NullViolation(String),
+}

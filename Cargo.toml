@@ -20,6 +20,7 @@ members = [
   "nodedb-vector",
   "nodedb-document",
   "nodedb-strict",
+  "nodedb-columnar",
 ]
 resolver = "2"
 
@@ -47,6 +48,7 @@ nodedb-graph = { path = "nodedb-graph" }
 nodedb-vector = { path = "nodedb-vector" }
 nodedb-document = { path = "nodedb-document" }
 nodedb-strict = { path = "nodedb-strict" }
+nodedb-columnar = { path = "nodedb-columnar" }
 
 # Async runtimes
 tokio = { version = "1", features = ["full"] }
