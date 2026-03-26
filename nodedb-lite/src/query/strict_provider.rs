@@ -19,7 +19,7 @@ use nodedb_strict::arrow_extract::extract_column_to_arrow;
 use nodedb_types::Namespace;
 use nodedb_types::columnar::StrictSchema;
 
-use crate::engine::strict::store::strict_schema_to_arrow;
+use crate::engine::strict::strict_schema_to_arrow;
 use crate::storage::engine::StorageEngine;
 
 /// A DataFusion `TableProvider` that reads from a strict document collection.

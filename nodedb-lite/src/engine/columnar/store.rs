@@ -254,6 +254,77 @@ impl<S: StorageEngine> ColumnarEngine<S> {
         Ok(())
     }
 
+    /// Add a column to an existing columnar collection.
+    ///
+    /// Bumps the schema version. Existing segments are NOT rewritten — the
+    /// reader null-fills columns that were added after the segment was written.
+    pub async fn alter_add_column(
+        &mut self,
+        name: &str,
+        column: nodedb_types::columnar::ColumnDef,
+    ) -> Result<(), LiteError> {
+        let state = self
+            .collections
+            .get_mut(name)
+            .ok_or(LiteError::BadRequest {
+                detail: format!("columnar collection '{name}' does not exist"),
+            })?;
+
+        // Non-nullable columns without a default break existing segments.
+        if !column.nullable && column.default.is_none() {
+            return Err(LiteError::BadRequest {
+                detail: format!(
+                    "ALTER ADD COLUMN '{}': non-nullable column must have a DEFAULT",
+                    column.name
+                ),
+            });
+        }
+
+        // Check for duplicate.
+        if state
+            .mutation
+            .schema()
+            .columns
+            .iter()
+            .any(|c| c.name == column.name)
+        {
+            return Err(LiteError::BadRequest {
+                detail: format!("column '{}' already exists in '{name}'", column.name),
+            });
+        }
+
+        // The MutationEngine owns the schema — we need to rebuild it with the new column.
+        // Extract current schema, append column, bump version, create new engine.
+        let mut schema = state.mutation.schema().clone();
+        schema.columns.push(column);
+        schema.version = schema.version.saturating_add(1);
+
+        // Rebuild the mutation engine with the new schema.
+        // PK index and delete bitmaps are preserved since column addition doesn't change row layout.
+        state.mutation = MutationEngine::new(name.to_string(), schema.clone());
+
+        // Persist updated schema + profile.
+        #[derive(serde::Serialize)]
+        struct StoredSchema<'a> {
+            schema: &'a ColumnarSchema,
+            profile: &'a ColumnarProfile,
+        }
+        let meta_key = format!("{META_COLUMNAR_SCHEMA_PREFIX}{name}");
+        let schema_bytes = rmp_serde::to_vec_named(&StoredSchema {
+            schema: &schema,
+            profile: &state.profile,
+        })
+        .map_err(|e| LiteError::Serialization {
+            detail: e.to_string(),
+        })?;
+
+        self.storage
+            .put(Namespace::Meta, meta_key.as_bytes(), &schema_bytes)
+            .await?;
+
+        Ok(())
+    }
+
     /// Get the schema for a collection.
     pub fn schema(&self, name: &str) -> Option<&ColumnarSchema> {
         self.collections.get(name).map(|s| s.mutation.schema())
