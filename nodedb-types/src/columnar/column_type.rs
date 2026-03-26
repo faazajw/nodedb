@@ -42,7 +42,11 @@ impl ColumnType {
         self.fixed_size().is_none()
     }
 
-    /// Whether a `Value` is compatible with this column type (with coercion).
+    /// Whether a `Value` is compatible with this column type.
+    ///
+    /// Accepts both native Value types (e.g., `Value::DateTime` for Timestamp)
+    /// AND coercion sources from SQL input (e.g., `Value::String` for Timestamp).
+    /// Null is accepted for any type — nullability is enforced at schema level.
     pub fn accepts(&self, value: &Value) -> bool {
         matches!(
             (self, value),
@@ -51,14 +55,17 @@ impl ColumnType {
                 | (Self::String, Value::String(_))
                 | (Self::Bool, Value::Bool(_))
                 | (Self::Bytes, Value::Bytes(_))
-                | (Self::Timestamp, Value::Integer(_) | Value::String(_))
+                | (
+                    Self::Timestamp,
+                    Value::DateTime(_) | Value::Integer(_) | Value::String(_)
+                )
                 | (
                     Self::Decimal,
-                    Value::String(_) | Value::Float(_) | Value::Integer(_)
+                    Value::Decimal(_) | Value::String(_) | Value::Float(_) | Value::Integer(_)
                 )
-                | (Self::Geometry, Value::String(_))
+                | (Self::Geometry, Value::Geometry(_) | Value::String(_))
                 | (Self::Vector(_), Value::Array(_) | Value::Bytes(_))
-                | (Self::Uuid, Value::String(_))
+                | (Self::Uuid, Value::Uuid(_) | Value::String(_))
                 | (_, Value::Null)
         )
     }
@@ -241,11 +248,37 @@ mod tests {
     }
 
     #[test]
-    fn accepts_values() {
+    fn accepts_native_values() {
         assert!(ColumnType::Int64.accepts(&Value::Integer(42)));
         assert!(ColumnType::Float64.accepts(&Value::Float(42.0)));
-        assert!(ColumnType::Float64.accepts(&Value::Integer(42)));
+        assert!(ColumnType::Float64.accepts(&Value::Integer(42))); // coercion
+        assert!(ColumnType::String.accepts(&Value::String("x".into())));
+        assert!(ColumnType::Bool.accepts(&Value::Bool(true)));
+        assert!(ColumnType::Bytes.accepts(&Value::Bytes(vec![1])));
+        assert!(
+            ColumnType::Uuid.accepts(&Value::Uuid("550e8400-e29b-41d4-a716-446655440000".into()))
+        );
+        assert!(ColumnType::Decimal.accepts(&Value::Decimal(rust_decimal::Decimal::ZERO)));
+
+        // Null accepted for any type.
+        assert!(ColumnType::Int64.accepts(&Value::Null));
+
+        // Wrong types rejected.
         assert!(!ColumnType::Int64.accepts(&Value::String("x".into())));
+        assert!(!ColumnType::Bool.accepts(&Value::Integer(1)));
+    }
+
+    #[test]
+    fn accepts_coercion_sources() {
+        // SQL input coercion: strings for Timestamp, Uuid, Geometry, Decimal.
+        assert!(ColumnType::Timestamp.accepts(&Value::String("2024-01-01".into())));
+        assert!(ColumnType::Timestamp.accepts(&Value::Integer(1_700_000_000)));
+        assert!(ColumnType::Uuid.accepts(&Value::String(
+            "550e8400-e29b-41d4-a716-446655440000".into()
+        )));
+        assert!(ColumnType::Decimal.accepts(&Value::String("99.95".into())));
+        assert!(ColumnType::Decimal.accepts(&Value::Float(99.95)));
+        assert!(ColumnType::Geometry.accepts(&Value::String("POINT(0 0)".into())));
     }
 
     #[test]
