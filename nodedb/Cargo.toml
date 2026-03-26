@@ -24,6 +24,9 @@ nodedb-raft = { workspace = true }
 nodedb-wal = { workspace = true }
 nodedb-mem = { workspace = true }
 nodedb-spatial = { workspace = true }
+nodedb-graph = { workspace = true }
+nodedb-vector = { workspace = true }
+nodedb-document = { workspace = true }
 nodedb-query = { workspace = true }
 nodedb-crdt = { workspace = true }
 nodedb-codec = { workspace = true }

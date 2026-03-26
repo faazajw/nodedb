@@ -16,6 +16,9 @@ members = [
   "nodedb-query",
   "nodedb-codec",
   "nodedb-spatial",
+  "nodedb-graph",
+  "nodedb-vector",
+  "nodedb-document",
 ]
 resolver = "2"
 
@@ -39,6 +42,9 @@ nodedb-cluster = { path = "nodedb-cluster" }
 nodedb-query = { path = "nodedb-query" }
 nodedb-codec = { path = "nodedb-codec" }
 nodedb-spatial = { path = "nodedb-spatial" }
+nodedb-graph = { path = "nodedb-graph" }
+nodedb-vector = { path = "nodedb-vector" }
+nodedb-document = { path = "nodedb-document" }
 
 # Async runtimes
 tokio = { version = "1", features = ["full"] }

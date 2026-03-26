@@ -13,37 +13,8 @@
 
 use std::collections::HashMap;
 
-use unicode_normalization::UnicodeNormalization;
-
-// ── Text Analyzer ─────────────────────────────────────────────────────
-
-/// Analyze text into normalized, stemmed tokens.
-///
-/// Pipeline: NFD normalize → lowercase → split → filter → stop words → stem.
-pub fn analyze(text: &str) -> Vec<String> {
-    let stemmer = rust_stemmers::Stemmer::create(rust_stemmers::Algorithm::English);
-    let normalized: String = text.nfd().filter(|c| !c.is_ascii_control()).collect();
-    let lower = normalized.to_lowercase();
-
-    lower
-        .split(|c: char| !c.is_alphanumeric() && c != '-')
-        .filter(|t| t.len() > 1)
-        .filter(|t| !is_stop_word(t))
-        .map(|t| stemmer.stem(t).to_string())
-        .collect()
-}
-
-/// English stop words (sorted for binary search).
-fn is_stop_word(word: &str) -> bool {
-    const STOP_WORDS: &[&str] = &[
-        "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "from", "had", "has",
-        "have", "he", "her", "his", "how", "if", "in", "into", "is", "it", "its", "me", "my", "no",
-        "not", "of", "on", "or", "our", "she", "so", "than", "that", "the", "their", "them",
-        "then", "there", "these", "they", "this", "to", "us", "was", "we", "were", "what", "when",
-        "where", "which", "who", "will", "with", "would", "you", "your",
-    ];
-    STOP_WORDS.binary_search(&word).is_ok()
-}
+// Re-export text analysis from shared nodedb-document crate.
+pub use nodedb_document::text_analyzer::analyze;
 
 // ── Inverted Index ────────────────────────────────────────────────────
 
@@ -261,25 +232,9 @@ impl InvertedIndex {
     }
 }
 
-/// Levenshtein edit distance between two strings.
+// Re-export Levenshtein from shared nodedb-document crate.
 fn levenshtein(a: &str, b: &str) -> usize {
-    let a: Vec<char> = a.chars().collect();
-    let b: Vec<char> = b.chars().collect();
-    let (m, n) = (a.len(), b.len());
-
-    let mut prev = (0..=n).collect::<Vec<_>>();
-    let mut curr = vec![0; n + 1];
-
-    for i in 1..=m {
-        curr[0] = i;
-        for j in 1..=n {
-            let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
-            curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
-        }
-        std::mem::swap(&mut prev, &mut curr);
-    }
-
-    prev[n]
+    nodedb_document::levenshtein(a, b)
 }
 
 #[cfg(test)]

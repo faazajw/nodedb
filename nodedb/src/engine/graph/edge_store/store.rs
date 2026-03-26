@@ -38,13 +38,8 @@ pub(super) fn parse_edge_key(key: &str) -> Option<(&str, &str, &str)> {
     Some((src, label, dst))
 }
 
-/// Traversal direction for graph queries.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Direction {
-    Out,
-    In,
-    Both,
-}
+// Re-export shared Direction from nodedb-types.
+pub use nodedb_types::graph::Direction;
 
 /// A single edge with its properties.
 #[derive(Debug, Clone)]

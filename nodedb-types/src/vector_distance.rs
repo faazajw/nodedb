@@ -4,7 +4,7 @@
 //! `nodedb` (with optional SIMD dispatch) and `nodedb-lite` (scalar only).
 
 /// Distance metric selection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DistanceMetric {
     /// Euclidean (L2) squared distance.
     L2 = 0,

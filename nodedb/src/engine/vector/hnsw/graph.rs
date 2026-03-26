@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use super::super::distance::{DistanceMetric, distance};
+use super::super::distance::distance;
 
 /// Serializable HNSW snapshot for checkpointing.
 #[derive(Serialize, Deserialize)]
@@ -23,30 +23,8 @@ struct NodeSnapshot {
     deleted: bool,
 }
 
-/// HNSW index parameters.
-#[derive(Debug, Clone)]
-pub struct HnswParams {
-    /// Max bidirectional connections per node at layers > 0.
-    pub m: usize,
-    /// Max connections at layer 0 (typically 2*M for denser base layer).
-    pub m0: usize,
-    /// Dynamic candidate list size during construction. Higher = better
-    /// recall at the cost of slower inserts.
-    pub ef_construction: usize,
-    /// Distance metric for similarity computation.
-    pub metric: DistanceMetric,
-}
-
-impl Default for HnswParams {
-    fn default() -> Self {
-        Self {
-            m: 16,
-            m0: 32,
-            ef_construction: 200,
-            metric: DistanceMetric::Cosine,
-        }
-    }
-}
+// Re-export shared params from nodedb-types.
+pub use nodedb_types::hnsw::HnswParams;
 
 /// Result of a k-NN search.
 #[derive(Debug, Clone)]
