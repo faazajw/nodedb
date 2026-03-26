@@ -1,0 +1,15 @@
+[package]
+name = "nodedb-graph"
+description = "Shared graph engine (CSR adjacency index + traversal) for NodeDB Origin and Lite"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+nodedb-types = { workspace = true }
+serde = { workspace = true }
+rmp-serde = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
