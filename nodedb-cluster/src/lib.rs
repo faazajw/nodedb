@@ -6,6 +6,7 @@ pub mod cross_shard_txn;
 pub mod distributed_graph;
 pub mod distributed_join;
 pub mod distributed_timeseries;
+pub mod distributed_vector;
 pub mod error;
 pub mod forward;
 pub mod ghost;

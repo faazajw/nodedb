@@ -83,6 +83,12 @@ pub enum VShardMessageType {
     TsArchiveCommand = 44,
     /// S3 archival acknowledgement.
     TsArchiveAck = 45,
+
+    // ── Distributed Vector Search ──
+    /// Scatter: coordinator sends k-NN query to a shard.
+    VectorScatterRequest = 50,
+    /// Gather: shard responds with local top-K hits.
+    VectorScatterResponse = 51,
 }
 
 /// Current wire protocol version.
@@ -162,6 +168,8 @@ impl VShardEnvelope {
             43 => VShardMessageType::TsRetentionAck,
             44 => VShardMessageType::TsArchiveCommand,
             45 => VShardMessageType::TsArchiveAck,
+            50 => VShardMessageType::VectorScatterRequest,
+            51 => VShardMessageType::VectorScatterResponse,
             _ => return None,
         };
 
@@ -216,6 +224,8 @@ mod tests {
             VShardMessageType::TsRetentionAck,
             VShardMessageType::TsArchiveCommand,
             VShardMessageType::TsArchiveAck,
+            VShardMessageType::VectorScatterRequest,
+            VShardMessageType::VectorScatterResponse,
         ];
 
         for msg_type in types {

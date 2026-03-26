@@ -70,6 +70,10 @@ pub fn dispatch_by_type(envelope: &VShardEnvelope) -> DispatchTarget {
         VShardMessageType::CrossShardForward => DispatchTarget::Forward,
         VShardMessageType::GsiForward => DispatchTarget::Forward,
         VShardMessageType::EdgeValidation => DispatchTarget::GraphValidation,
+
+        // Vector distributed search
+        VShardMessageType::VectorScatterRequest => DispatchTarget::VectorSearch,
+        VShardMessageType::VectorScatterResponse => DispatchTarget::VectorCoordinator,
     }
 }
 
@@ -88,6 +92,10 @@ pub enum DispatchTarget {
     TimeseriesRetention,
     /// Timeseries S3 archive execution on local shard.
     TimeseriesArchive,
+    /// Vector local k-NN search (shard executes search, returns top-K hits).
+    VectorSearch,
+    /// Vector coordinator (receives shard search responses).
+    VectorCoordinator,
     /// Migration infrastructure.
     Migration,
     /// Ghost stub management.
@@ -184,6 +192,8 @@ mod tests {
             VShardMessageType::TsRetentionAck,
             VShardMessageType::TsArchiveCommand,
             VShardMessageType::TsArchiveAck,
+            VShardMessageType::VectorScatterRequest,
+            VShardMessageType::VectorScatterResponse,
         ];
         for msg_type in all_types {
             let env = VShardEnvelope::new(msg_type, 1, 2, 0, vec![]);
