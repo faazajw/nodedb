@@ -240,6 +240,46 @@ pub fn eval_geo_function(name: &str, args: &[serde_json::Value]) -> Option<serde
             serde_json::Value::Bool(nodedb_spatial::is_valid(&geom))
         }
 
+        // ── H3 hexagonal index ──
+        "geo_h3" => {
+            let lng = num_arg(args, 0).unwrap_or(0.0);
+            let lat = num_arg(args, 1).unwrap_or(0.0);
+            let resolution = num_arg(args, 2).unwrap_or(7.0) as u8;
+            match nodedb_spatial::h3::h3_encode_string(lng, lat, resolution) {
+                Some(hex) => serde_json::Value::String(hex),
+                None => serde_json::Value::Null,
+            }
+        }
+        "geo_h3_to_boundary" => {
+            let h3_str = str_arg(args, 0).unwrap_or_default();
+            let h3_idx = u64::from_str_radix(&h3_str, 16).unwrap_or(0);
+            if !nodedb_spatial::h3::h3_is_valid(h3_idx) {
+                return Some(serde_json::Value::Null);
+            }
+            match nodedb_spatial::h3::h3_to_boundary(h3_idx) {
+                Some(geom) => serde_json::to_value(&geom).unwrap_or(serde_json::Value::Null),
+                None => serde_json::Value::Null,
+            }
+        }
+        "geo_h3_resolution" => {
+            let h3_str = str_arg(args, 0).unwrap_or_default();
+            let h3_idx = u64::from_str_radix(&h3_str, 16).unwrap_or(0);
+            if !nodedb_spatial::h3::h3_is_valid(h3_idx) {
+                return Some(serde_json::Value::Null);
+            }
+            match nodedb_spatial::h3::h3_resolution(h3_idx) {
+                Some(r) => serde_json::Value::Number(serde_json::Number::from(r as i64)),
+                None => serde_json::Value::Null,
+            }
+        }
+        "st_intersection" => {
+            let (Some(a), Some(b)) = (geom_arg(args, 0), geom_arg(args, 1)) else {
+                return Some(serde_json::Value::Null);
+            };
+            let result = nodedb_spatial::st_intersection(&a, &b);
+            serde_json::to_value(&result).unwrap_or(serde_json::Value::Null)
+        }
+
         _ => return None,
     };
     Some(result)

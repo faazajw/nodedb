@@ -4,6 +4,7 @@ pub mod doc_exists;
 pub mod doc_get;
 pub(crate) mod nav;
 pub mod rrf_score;
+pub mod spatial;
 pub mod text_match;
 pub mod vector_distance;
 

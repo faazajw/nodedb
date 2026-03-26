@@ -121,6 +121,9 @@ impl Default for QueryContext {
 }
 
 fn register_udfs(session: &SessionContext) {
+    use super::udf::spatial::{
+        GeoDistance, StContains, StDistance, StDwithin, StIntersects, StWithin,
+    };
     use super::udf::{
         Bm25Score, DocArrayContains, DocExists, DocGet, RrfScore, TextMatch, VectorDistance,
     };
@@ -132,6 +135,13 @@ fn register_udfs(session: &SessionContext) {
     session.register_udf(ScalarUDF::new_from_impl(RrfScore::new()));
     session.register_udf(ScalarUDF::new_from_impl(Bm25Score::new()));
     session.register_udf(ScalarUDF::new_from_impl(TextMatch::new()));
+    // Spatial UDFs.
+    session.register_udf(ScalarUDF::new_from_impl(StDwithin::new()));
+    session.register_udf(ScalarUDF::new_from_impl(StContains::new()));
+    session.register_udf(ScalarUDF::new_from_impl(StIntersects::new()));
+    session.register_udf(ScalarUDF::new_from_impl(StWithin::new()));
+    session.register_udf(ScalarUDF::new_from_impl(StDistance::new()));
+    session.register_udf(ScalarUDF::new_from_impl(GeoDistance::new()));
 }
 
 #[cfg(test)]
