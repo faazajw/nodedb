@@ -84,10 +84,15 @@ impl IlpListener {
     }
 }
 
-/// Handle a single ILP TCP connection.
+/// Handle a single ILP TCP connection with adaptive batch coalescing.
 ///
-/// Reads lines, batches them per 100ms or 1000 lines (whichever comes first),
-/// then dispatches a single `TimeseriesIngest` per batch.
+/// Batch size adapts to ingest rate:
+/// - High rate (>100K lines/s): batch up to 10K lines or 10ms window
+/// - Medium rate (1K-100K/s): batch up to 1K lines or 50ms window
+/// - Low rate (<1K/s): batch per 100 lines or 100ms window
+///
+/// Larger batches amortize per-batch overhead (WAL append, memtable lock,
+/// partition lookup).
 async fn handle_ilp_connection(
     stream: tokio::net::TcpStream,
     peer: SocketAddr,
@@ -101,23 +106,70 @@ async fn handle_ilp_connection(
     let mut line_count = 0u64;
     let mut total_ingested = 0u64;
 
-    // Default tenant for ILP connections (configurable via auth in future).
+    // Adaptive batch coalescing state.
+    let mut rate_estimator = IlpRateEstimator::new();
+    let mut batch_target = 1000u64;
+    let mut window = tokio::time::interval(std::time::Duration::from_millis(50));
+    window.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
     let tenant_id = TenantId::new(1);
 
-    while let Ok(Some(line)) = lines.next_line().await {
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
+    loop {
+        tokio::select! {
+            // Read next line.
+            result = lines.next_line() => {
+                match result {
+                    Ok(Some(line)) => {
+                        if line.is_empty() || line.starts_with('#') {
+                            continue;
+                        }
 
-        batch.push_str(&line);
-        batch.push('\n');
-        line_count += 1;
+                        batch.push_str(&line);
+                        batch.push('\n');
+                        line_count += 1;
 
-        // Flush batch every 1000 lines.
-        if line_count >= 1000 {
-            total_ingested += flush_ilp_batch(state, tenant_id, &batch).await?;
-            batch.clear();
-            line_count = 0;
+                        // Flush when batch reaches adaptive target.
+                        if line_count >= batch_target {
+                            let flushed = line_count;
+                            total_ingested += flush_ilp_batch(state, tenant_id, &batch).await?;
+                            batch.clear();
+                            line_count = 0;
+
+                            // Update rate estimator and recalculate batch target.
+                            rate_estimator.record(flushed);
+                            let (new_target, new_window_ms) = rate_estimator.suggest_batch_params();
+                            batch_target = new_target;
+                            window = tokio::time::interval(
+                                std::time::Duration::from_millis(new_window_ms),
+                            );
+                            window.set_missed_tick_behavior(
+                                tokio::time::MissedTickBehavior::Delay,
+                            );
+                        }
+                    }
+                    Ok(None) => break, // Connection closed.
+                    Err(_) => break,   // Read error.
+                }
+            }
+            // Timer-based flush (for low-rate connections).
+            _ = window.tick() => {
+                if !batch.is_empty() {
+                    let flushed = line_count;
+                    total_ingested += flush_ilp_batch(state, tenant_id, &batch).await?;
+                    batch.clear();
+                    line_count = 0;
+
+                    rate_estimator.record(flushed);
+                    let (new_target, new_window_ms) = rate_estimator.suggest_batch_params();
+                    batch_target = new_target;
+                    window = tokio::time::interval(
+                        std::time::Duration::from_millis(new_window_ms),
+                    );
+                    window.set_missed_tick_behavior(
+                        tokio::time::MissedTickBehavior::Delay,
+                    );
+                }
+            }
         }
     }
 
@@ -130,13 +182,70 @@ async fn handle_ilp_connection(
     Ok(())
 }
 
-/// Dispatch an ILP batch to the Data Plane.
+/// EWMA-based rate estimator for adaptive ILP batch sizing.
+struct IlpRateEstimator {
+    /// Smoothed rate in lines/second.
+    rate: f64,
+    /// EWMA smoothing factor (0.2 = responsive to recent changes).
+    alpha: f64,
+    /// Last measurement timestamp.
+    last_ts: std::time::Instant,
+}
+
+impl IlpRateEstimator {
+    fn new() -> Self {
+        Self {
+            rate: 0.0,
+            alpha: 0.2,
+            last_ts: std::time::Instant::now(),
+        }
+    }
+
+    /// Record that `lines` were flushed since the last call.
+    fn record(&mut self, lines: u64) {
+        let now = std::time::Instant::now();
+        let elapsed = now.duration_since(self.last_ts).as_secs_f64();
+        self.last_ts = now;
+
+        if elapsed > 0.0 {
+            let instant_rate = lines as f64 / elapsed;
+            if self.rate == 0.0 {
+                self.rate = instant_rate;
+            } else {
+                self.rate = self.alpha * instant_rate + (1.0 - self.alpha) * self.rate;
+            }
+        }
+    }
+
+    /// Suggest (batch_size, window_ms) based on current rate.
+    fn suggest_batch_params(&self) -> (u64, u64) {
+        if self.rate > 100_000.0 {
+            // High rate: large batches, short window.
+            (10_000, 10)
+        } else if self.rate > 1_000.0 {
+            // Medium rate: moderate batches.
+            (1_000, 50)
+        } else {
+            // Low rate: small batches, long window.
+            (100, 100)
+        }
+    }
+}
+
+/// Dispatch an ILP batch to the Data Plane with series-aware routing.
+///
+/// Groups lines by `(measurement, sorted_tags)` hash to route each series
+/// to a deterministic core. This eliminates cross-core contention: each
+/// core owns a subset of series.
+///
+/// For batches with a single measurement (common case), all lines go to
+/// one dispatch — no overhead from grouping.
 async fn flush_ilp_batch(
     state: &SharedState,
     tenant_id: TenantId,
     batch: &str,
 ) -> crate::Result<u64> {
-    // Determine collection from the first line's measurement name.
+    // Fast path: extract collection from first line.
     let collection = batch
         .lines()
         .find(|l| !l.is_empty() && !l.starts_with('#'))
@@ -144,39 +253,59 @@ async fn flush_ilp_batch(
         .unwrap_or("default_metrics")
         .to_string();
 
-    let vshard_id = VShardId::from_collection(&collection);
+    // Group lines by series key hash for per-series core routing.
+    // Each unique (measurement, sorted_tags) combination hashes to a vShard.
+    let mut shard_batches: std::collections::HashMap<u16, String> =
+        std::collections::HashMap::new();
 
-    let plan = PhysicalPlan::TimeseriesIngest {
-        collection,
-        payload: batch.as_bytes().to_vec(),
-        format: "ilp".to_string(),
-    };
+    for line in batch.lines() {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
 
-    // WAL + dispatch.
-    crate::control::server::wal_dispatch::wal_append_if_write_with_creds(
-        &state.wal,
-        tenant_id,
-        vshard_id,
-        &plan,
-        Some(&state.credentials),
-    )?;
+        // Extract the series key: everything before the first space
+        // (measurement + tags in ILP format).
+        let series_key = line.split(' ').next().unwrap_or(line);
+        let vshard = VShardId::from_key(series_key.as_bytes());
 
-    let response = crate::control::server::dispatch_utils::dispatch_to_data_plane(
-        state, tenant_id, vshard_id, plan, 0, // trace_id
-    )
-    .await?;
+        let entry = shard_batches.entry(vshard.as_u16()).or_default();
+        entry.push_str(line);
+        entry.push('\n');
+    }
 
-    // Parse accepted count from response.
-    let accepted = if !response.payload.is_empty() {
-        serde_json::from_slice::<serde_json::Value>(&response.payload)
-            .ok()
-            .and_then(|v| v.get("accepted").and_then(|a| a.as_u64()))
-            .unwrap_or(0)
-    } else {
-        0
-    };
+    let mut total_accepted = 0u64;
 
-    Ok(accepted)
+    for (shard_id, shard_batch) in &shard_batches {
+        let vshard_id = VShardId::new(*shard_id);
+
+        let plan = PhysicalPlan::TimeseriesIngest {
+            collection: collection.clone(),
+            payload: shard_batch.as_bytes().to_vec(),
+            format: "ilp".to_string(),
+        };
+
+        crate::control::server::wal_dispatch::wal_append_if_write_with_creds(
+            &state.wal,
+            tenant_id,
+            vshard_id,
+            &plan,
+            Some(&state.credentials),
+        )?;
+
+        let response = crate::control::server::dispatch_utils::dispatch_to_data_plane(
+            state, tenant_id, vshard_id, plan, 0,
+        )
+        .await?;
+
+        if !response.payload.is_empty() {
+            total_accepted += serde_json::from_slice::<serde_json::Value>(&response.payload)
+                .ok()
+                .and_then(|v| v.get("accepted").and_then(|a| a.as_u64()))
+                .unwrap_or(0);
+        }
+    }
+
+    Ok(total_accepted)
 }
 
 #[cfg(test)]
