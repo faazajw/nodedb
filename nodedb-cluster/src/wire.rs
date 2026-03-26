@@ -89,6 +89,12 @@ pub enum VShardMessageType {
     VectorScatterRequest = 50,
     /// Gather: shard responds with local top-K hits.
     VectorScatterResponse = 51,
+
+    // ── Distributed Spatial Queries ──
+    /// Scatter: coordinator sends spatial predicate query to a shard.
+    SpatialScatterRequest = 60,
+    /// Gather: shard responds with matching document IDs.
+    SpatialScatterResponse = 61,
 }
 
 /// Current wire protocol version.

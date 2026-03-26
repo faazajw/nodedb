@@ -74,6 +74,10 @@ pub fn dispatch_by_type(envelope: &VShardEnvelope) -> DispatchTarget {
         // Vector distributed search
         VShardMessageType::VectorScatterRequest => DispatchTarget::VectorSearch,
         VShardMessageType::VectorScatterResponse => DispatchTarget::VectorCoordinator,
+
+        // Spatial distributed queries
+        VShardMessageType::SpatialScatterRequest => DispatchTarget::SpatialSearch,
+        VShardMessageType::SpatialScatterResponse => DispatchTarget::SpatialCoordinator,
     }
 }
 
@@ -102,6 +106,10 @@ pub enum DispatchTarget {
     Ghost,
     /// Query/transaction forwarding.
     Forward,
+    /// Spatial local R-tree search (shard executes predicate, returns matching docs).
+    SpatialSearch,
+    /// Spatial coordinator (receives shard search responses).
+    SpatialCoordinator,
 }
 
 /// Build a response envelope for a timeseries scatter response.
@@ -194,6 +202,8 @@ mod tests {
             VShardMessageType::TsArchiveAck,
             VShardMessageType::VectorScatterRequest,
             VShardMessageType::VectorScatterResponse,
+            VShardMessageType::SpatialScatterRequest,
+            VShardMessageType::SpatialScatterResponse,
         ];
         for msg_type in all_types {
             let env = VShardEnvelope::new(msg_type, 1, 2, 0, vec![]);
