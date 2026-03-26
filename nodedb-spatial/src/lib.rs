@@ -1,4 +1,5 @@
 pub mod geohash;
+pub mod geohash_index;
 pub mod hybrid;
 pub mod operations;
 pub mod persist;
@@ -9,6 +10,7 @@ pub mod wkb;
 pub mod wkt;
 
 pub use geohash::{geohash_decode, geohash_encode, geohash_neighbors};
+pub use geohash_index::GeohashIndex;
 pub use hybrid::{SpatialPreFilterResult, bitmap_contains, ids_to_bitmap, spatial_prefilter};
 pub use operations::{st_buffer, st_envelope, st_union};
 pub use persist::{
