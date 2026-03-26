@@ -36,6 +36,8 @@ pub enum Namespace {
     Spatial = 5,
     /// Strict document engine: Binary Tuple rows keyed by PK.
     Strict = 6,
+    /// Columnar engine: compressed segments, delete bitmaps, segment metadata.
+    Columnar = 7,
 }
 
 impl Namespace {
@@ -49,6 +51,7 @@ impl Namespace {
             4 => Some(Self::LoroState),
             5 => Some(Self::Spatial),
             6 => Some(Self::Strict),
+            7 => Some(Self::Columnar),
             _ => None,
         }
     }
@@ -60,10 +63,10 @@ mod tests {
 
     #[test]
     fn namespace_roundtrip() {
-        for v in 0u8..=6 {
+        for v in 0u8..=7 {
             let ns = Namespace::from_u8(v).unwrap();
             assert_eq!(ns as u8, v);
         }
-        assert!(Namespace::from_u8(7).is_none());
+        assert!(Namespace::from_u8(8).is_none());
     }
 }
