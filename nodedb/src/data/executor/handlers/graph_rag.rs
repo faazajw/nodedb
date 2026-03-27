@@ -85,7 +85,8 @@ impl CoreLoop {
 
         let (vector_k, graph_k) = rrf_k;
 
-        let mut graph_ranked: Vec<(&str, usize)> = expanded_nodes
+        // Build graph-ranked list sorted by hop distance.
+        let mut graph_sorted: Vec<(&str, usize)> = expanded_nodes
             .iter()
             .map(|node| {
                 let dist = hop_distances
@@ -95,38 +96,52 @@ impl CoreLoop {
                 (node.as_str(), dist)
             })
             .collect();
-        graph_ranked.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(b.0)));
+        graph_sorted.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(b.0)));
 
-        let mut rrf_scores: HashMap<&str, f64> = HashMap::new();
+        // Use shared RRF fusion with per-source k-constants.
+        use crate::query::fusion::{RankedResult, reciprocal_rank_fusion_weighted};
 
-        for (node_id, (rank, _)) in &vector_scores {
-            let contribution = 1.0 / (vector_k + *rank as f64 + 1.0);
-            *rrf_scores.entry(node_id.as_str()).or_default() += contribution;
-        }
+        let vector_list: Vec<RankedResult> = vector_scores
+            .iter()
+            .map(|(node_id, (rank, dist))| RankedResult {
+                document_id: node_id.clone(),
+                rank: *rank,
+                score: *dist,
+                source: "vector",
+            })
+            .collect();
 
-        for (graph_rank, (node_id, _)) in graph_ranked.iter().enumerate() {
-            let contribution = 1.0 / (graph_k + graph_rank as f64 + 1.0);
-            *rrf_scores.entry(node_id).or_default() += contribution;
-        }
+        let graph_list: Vec<RankedResult> = graph_sorted
+            .iter()
+            .enumerate()
+            .map(|(graph_rank, (node_id, hop_dist))| RankedResult {
+                document_id: node_id.to_string(),
+                rank: graph_rank,
+                score: *hop_dist as f32,
+                source: "graph",
+            })
+            .collect();
 
-        let mut fused: Vec<_> = rrf_scores.into_iter().collect();
-        fused.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        fused.truncate(final_top_k);
+        let fused = reciprocal_rank_fusion_weighted(
+            &[vector_list, graph_list],
+            &[vector_k, graph_k],
+            final_top_k,
+        );
 
         use super::super::response_codec::*;
 
         let results: Vec<GraphRagResult> = fused
             .iter()
-            .map(|(node_id, rrf_score)| {
+            .map(|f| {
                 let (vector_rank, vector_distance) = vector_scores
-                    .get(*node_id)
+                    .get(f.document_id.as_str())
                     .map(|(rank, dist)| (Some(*rank), Some(*dist)))
                     .unwrap_or((None, None));
-                let hop_distance = hop_distances.get(*node_id).copied();
+                let hop_distance = hop_distances.get(f.document_id.as_str()).copied();
 
                 GraphRagResult {
-                    node_id: node_id.to_string(),
-                    rrf_score: *rrf_score,
+                    node_id: f.document_id.clone(),
+                    rrf_score: f.rrf_score,
                     vector_rank,
                     vector_distance,
                     hop_distance,

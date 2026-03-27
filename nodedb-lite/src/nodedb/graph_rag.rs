@@ -75,39 +75,42 @@ impl<S: StorageEngine> NodeDbLite<S> {
         }
 
         // Step 2: Graph expansion from each vector result.
-        // Track RRF scores: node_id → (vector_rrf, graph_rrf).
-        let mut rrf_scores: HashMap<String, (f64, f64)> = HashMap::new();
+        let vector_ranked = search_results_to_ranked(&vector_results, "vector");
 
-        // Vector RRF scores: 1/(k + rank).
-        for (rank, result) in vector_results.iter().enumerate() {
-            let score = 1.0 / (params.rrf_k + rank as f64 + 1.0);
-            rrf_scores.entry(result.id.clone()).or_insert((0.0, 0.0)).0 += score;
-        }
-
-        // Graph expansion and scoring.
+        // Expand graph from vector results and build a graph-ranked list.
+        let mut graph_nodes: Vec<(String, usize)> = Vec::new(); // (node_id, depth)
         for result in &vector_results {
             let start = NodeId::new(result.id.clone());
             if let Ok(subgraph) = self.graph_traverse(&start, params.graph_depth, None).await {
                 for node in &subgraph.nodes {
                     if node.depth == 0 {
-                        continue; // Skip the start node itself.
+                        continue;
                     }
-                    // Graph score: inverse depth. Closer nodes get higher score.
-                    let graph_score = 1.0 / (params.rrf_k + node.depth as f64);
-                    rrf_scores
-                        .entry(node.id.as_str().to_string())
-                        .or_insert((0.0, 0.0))
-                        .1 += graph_score;
+                    graph_nodes.push((node.id.as_str().to_string(), node.depth as usize));
                 }
             }
         }
-
-        // Step 3: Fuse scores and rank.
-        let combined: HashMap<String, f64> = rrf_scores
-            .into_iter()
-            .map(|(id, (v_score, g_score))| (id, v_score + g_score))
+        // Sort by depth (closer = higher rank), deduplicate keeping smallest depth.
+        graph_nodes.sort_by(|a, b| a.1.cmp(&b.1));
+        let mut seen = std::collections::HashSet::new();
+        graph_nodes.retain(|(id, _)| seen.insert(id.clone()));
+        let graph_ranked: Vec<nodedb_query::fusion::RankedResult> = graph_nodes
+            .iter()
+            .enumerate()
+            .map(|(rank, (id, depth))| nodedb_query::fusion::RankedResult {
+                document_id: id.clone(),
+                rank,
+                score: *depth as f32,
+                source: "graph",
+            })
             .collect();
-        let fused = rank_and_truncate(combined, params.top_k);
+
+        // Step 3: Fuse scores via shared weighted RRF.
+        let fused = nodedb_query::fusion::reciprocal_rank_fusion_weighted(
+            &[vector_ranked, graph_ranked],
+            &[params.rrf_k, params.rrf_k],
+            params.top_k,
+        );
 
         // Step 4: Build result set. Reuse metadata from vector results where available.
         let vector_map: HashMap<&str, &SearchResult> =
@@ -115,11 +118,11 @@ impl<S: StorageEngine> NodeDbLite<S> {
 
         let results = fused
             .into_iter()
-            .map(|(id, score)| {
-                if let Some(vr) = vector_map.get(id.as_str()) {
+            .map(|f| {
+                if let Some(vr) = vector_map.get(f.document_id.as_str()) {
                     SearchResult {
-                        id: id.clone(),
-                        node_id: Some(NodeId::new(id)),
+                        id: f.document_id.clone(),
+                        node_id: Some(NodeId::new(f.document_id)),
                         distance: vr.distance,
                         metadata: vr.metadata.clone(),
                     }
@@ -127,17 +130,20 @@ impl<S: StorageEngine> NodeDbLite<S> {
                     // Graph-discovered node: read metadata from CRDT.
                     let metadata = {
                         let crdt = self.crdt.lock_or_recover();
-                        if let Some(val) = crdt.read(params.collection, &id) {
-                            let doc = crate::nodedb::convert::loro_value_to_document(&id, &val);
+                        if let Some(val) = crdt.read(params.collection, &f.document_id) {
+                            let doc = crate::nodedb::convert::loro_value_to_document(
+                                &f.document_id,
+                                &val,
+                            );
                             doc.fields
                         } else {
                             HashMap::new()
                         }
                     };
                     SearchResult {
-                        id: id.clone(),
-                        node_id: Some(NodeId::new(id)),
-                        distance: score as f32, // Use fused score as distance proxy.
+                        id: f.document_id.clone(),
+                        node_id: Some(NodeId::new(f.document_id)),
+                        distance: f.rrf_score as f32,
                         metadata,
                     }
                 }
@@ -166,20 +172,21 @@ pub struct HybridSearchParams<'a> {
     pub filter: Option<&'a MetadataFilter>,
 }
 
-/// Apply RRF scoring to a ranked result list, accumulating into `scores`.
-fn apply_rrf_scores(results: &[SearchResult], rrf_k: f64, scores: &mut HashMap<String, f64>) {
-    for (rank, result) in results.iter().enumerate() {
-        let score = 1.0 / (rrf_k + rank as f64 + 1.0);
-        *scores.entry(result.id.clone()).or_default() += score;
-    }
-}
-
-/// Sort fused scores descending and truncate to `top_k`.
-fn rank_and_truncate(scores: HashMap<String, f64>, top_k: usize) -> Vec<(String, f64)> {
-    let mut fused: Vec<(String, f64)> = scores.into_iter().collect();
-    fused.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    fused.truncate(top_k);
-    fused
+/// Build a ranked list from `SearchResult`s for the shared RRF module.
+fn search_results_to_ranked(
+    results: &[SearchResult],
+    source: &'static str,
+) -> Vec<nodedb_query::fusion::RankedResult> {
+    results
+        .iter()
+        .enumerate()
+        .map(|(rank, r)| nodedb_query::fusion::RankedResult {
+            document_id: r.id.clone(),
+            rank,
+            score: r.distance,
+            source,
+        })
+        .collect()
 }
 
 impl<S: StorageEngine> NodeDbLite<S> {
@@ -195,8 +202,6 @@ impl<S: StorageEngine> NodeDbLite<S> {
         &self,
         params: &HybridSearchParams<'_>,
     ) -> NodeDbResult<Vec<SearchResult>> {
-        let rrf_k = 60.0f64;
-
         let vector_results = self
             .vector_search(
                 params.collection,
@@ -210,13 +215,19 @@ impl<S: StorageEngine> NodeDbLite<S> {
             .text_search(params.collection, params.query_text, params.text_k)
             .await?;
 
-        // RRF fusion.
-        let mut rrf_scores: HashMap<String, f64> = HashMap::new();
+        // RRF fusion via shared module.
+        let vector_ranked = search_results_to_ranked(&vector_results, "vector");
+        let text_ranked = search_results_to_ranked(&text_results, "text");
+        let fused = nodedb_query::fusion::reciprocal_rank_fusion(
+            &[vector_ranked, text_ranked],
+            None,
+            params.top_k,
+        );
+
+        // Build metadata cache for result materialization.
         let mut metadata_cache: HashMap<String, HashMap<String, nodedb_types::Value>> =
             HashMap::new();
-
         for results in [&vector_results, &text_results] {
-            apply_rrf_scores(results, rrf_k, &mut rrf_scores);
             for result in results.iter() {
                 metadata_cache
                     .entry(result.id.clone())
@@ -224,15 +235,13 @@ impl<S: StorageEngine> NodeDbLite<S> {
             }
         }
 
-        let fused = rank_and_truncate(rrf_scores, params.top_k);
-
         Ok(fused
             .into_iter()
-            .map(|(id, score)| SearchResult {
-                id: id.clone(),
+            .map(|f| SearchResult {
+                id: f.document_id.clone(),
                 node_id: None,
-                distance: 1.0 / (1.0 + score as f32),
-                metadata: metadata_cache.remove(&id).unwrap_or_default(),
+                distance: 1.0 / (1.0 + f.rrf_score as f32),
+                metadata: metadata_cache.remove(&f.document_id).unwrap_or_default(),
             })
             .collect())
     }

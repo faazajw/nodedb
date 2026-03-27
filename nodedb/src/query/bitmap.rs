@@ -20,12 +20,15 @@ pub fn union(a: &RoaringBitmap, b: &RoaringBitmap) -> RoaringBitmap {
 }
 
 /// Serialize a bitmap to bytes for cross-plane transport via SPSC.
-pub fn serialize(bitmap: &RoaringBitmap) -> Vec<u8> {
+pub fn serialize(bitmap: &RoaringBitmap) -> crate::Result<Vec<u8>> {
     let mut buf = Vec::with_capacity(bitmap.serialized_size());
     bitmap
         .serialize_into(&mut buf)
-        .expect("bitmap serialization");
-    buf
+        .map_err(|e| crate::Error::Serialization {
+            format: "roaring_bitmap".into(),
+            detail: format!("serialize: {e}"),
+        })?;
+    Ok(buf)
 }
 
 /// Deserialize a bitmap from bytes received via SPSC.
@@ -71,7 +74,7 @@ mod tests {
     #[test]
     fn serialize_roundtrip() {
         let bm = from_ids(0..10000);
-        let bytes = serialize(&bm);
+        let bytes = serialize(&bm).unwrap();
         let bm2 = deserialize(&bytes).unwrap();
         assert_eq!(bm, bm2);
     }
@@ -80,7 +83,7 @@ mod tests {
     fn empty_bitmap() {
         let bm = from_ids(std::iter::empty());
         assert!(bm.is_empty());
-        let bytes = serialize(&bm);
+        let bytes = serialize(&bm).unwrap();
         let bm2 = deserialize(&bytes).unwrap();
         assert!(bm2.is_empty());
     }

@@ -113,9 +113,10 @@ impl CoreLoop {
             .search(collection, query_text, fetch_k, fuzzy)
             .unwrap_or_default();
 
-        // 3. Build ranked lists for RRF with weights applied via k-constant.
+        // 3. Build ranked lists for weighted RRF.
         // Higher weight → lower k → steeper rank discount → more influence.
-        // k_vector = DEFAULT_K / weight, k_text = DEFAULT_K / text_weight.
+        use crate::query::fusion::{RankedResult, reciprocal_rank_fusion_weighted};
+
         let base_k = 60.0_f64;
         let k_vector = if weight > 0.01 {
             base_k / weight as f64
@@ -128,51 +129,46 @@ impl CoreLoop {
             base_k * 100.0
         };
 
-        // (doc_id, rank) for each source.
-        let vector_ranked: Vec<(String, usize)> = vector_results
+        let vector_ranked: Vec<RankedResult> = vector_results
             .iter()
             .enumerate()
-            .map(|(rank, r)| (r.id.to_string(), rank))
+            .map(|(rank, r)| RankedResult {
+                document_id: r.id.to_string(),
+                rank,
+                score: r.distance,
+                source: "vector",
+            })
             .collect();
 
-        let text_ranked: Vec<(String, usize)> = text_results
+        let text_ranked: Vec<RankedResult> = text_results
             .iter()
             .enumerate()
-            .map(|(rank, r)| (r.doc_id.clone(), rank))
+            .map(|(rank, r)| RankedResult {
+                document_id: r.doc_id.clone(),
+                rank,
+                score: r.score,
+                source: "text",
+            })
             .collect();
 
-        // Apply weighted RRF: per-source k constants control influence.
-        let mut scores: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+        let fused = reciprocal_rank_fusion_weighted(
+            &[vector_ranked, text_ranked],
+            &[k_vector, k_text],
+            top_k,
+        );
 
-        for (doc_id, rank) in &vector_ranked {
-            let contribution = 1.0 / (k_vector + *rank as f64 + 1.0);
-            *scores.entry(doc_id.clone()).or_default() += contribution;
-        }
-        for (doc_id, rank) in &text_ranked {
-            let contribution = 1.0 / (k_text + *rank as f64 + 1.0);
-            *scores.entry(doc_id.clone()).or_default() += contribution;
-        }
-
-        let mut fused: Vec<_> = scores.into_iter().collect();
-        fused.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        fused.truncate(top_k);
-
-        // Build response.
+        // Build response with per-engine rank diagnostics.
         let results: Vec<_> = fused
             .iter()
-            .map(|(doc_id, rrf_score)| {
-                let vector_rank = vector_ranked
+            .map(|f| {
+                let vector_rank = vector_results
                     .iter()
-                    .find(|(id, _)| id == doc_id)
-                    .map(|(_, r)| *r);
-                let text_rank = text_ranked
-                    .iter()
-                    .find(|(id, _)| id == doc_id)
-                    .map(|(_, r)| *r);
+                    .position(|r| r.id.to_string() == f.document_id);
+                let text_rank = text_results.iter().position(|r| r.doc_id == f.document_id);
 
                 super::super::response_codec::HybridSearchHit {
-                    doc_id,
-                    rrf_score: *rrf_score,
+                    doc_id: &f.document_id,
+                    rrf_score: f.rrf_score,
                     vector_rank,
                     text_rank,
                 }

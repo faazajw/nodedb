@@ -144,11 +144,9 @@ impl CoreLoop {
             .collect();
 
         if let Some(bitmap_bytes) = filter_bitmap {
-            hits.retain(|h| {
-                let byte_idx = h.id as usize / 8;
-                let bit_idx = h.id as usize % 8;
-                byte_idx < bitmap_bytes.len() && (bitmap_bytes[byte_idx] >> bit_idx) & 1 == 1
-            });
+            if let Ok(bm) = crate::query::bitmap::deserialize(bitmap_bytes) {
+                hits.retain(|h| bm.contains(h.id));
+            }
             hits.truncate(top_k);
         }
 
@@ -208,23 +206,32 @@ impl CoreLoop {
             return encode_hits_response(self, task, &hits);
         }
 
-        // RRF fusion across fields.
-        let rrf_k = 60.0_f64;
-        let mut fused: std::collections::HashMap<u32, f64> = std::collections::HashMap::new();
-        for results in &all_results {
-            for (rank, r) in results.iter().enumerate() {
-                *fused.entry(r.id).or_default() += 1.0 / (rrf_k + rank as f64 + 1.0);
-            }
-        }
+        // RRF fusion across fields using shared fusion module.
+        use crate::query::fusion::{RankedResult, reciprocal_rank_fusion};
 
-        let mut ranked: Vec<(u32, f64)> = fused.into_iter().collect();
-        ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        ranked.truncate(top_k);
+        let ranked_lists: Vec<Vec<RankedResult>> = all_results
+            .iter()
+            .map(|results| {
+                results
+                    .iter()
+                    .enumerate()
+                    .map(|(rank, r)| RankedResult {
+                        document_id: r.id.to_string(),
+                        rank,
+                        score: r.distance,
+                        source: "vector",
+                    })
+                    .collect()
+            })
+            .collect();
+
+        let fused = reciprocal_rank_fusion(&ranked_lists, None, top_k);
 
         // Look up doc_id for each fused result from any matching collection.
-        let hits: Vec<_> = ranked
+        let hits: Vec<_> = fused
             .iter()
-            .map(|&(id, score)| {
+            .filter_map(|f| {
+                let id: u32 = f.document_id.parse().ok()?;
                 let doc_id = self
                     .vector_collections
                     .get(&plain_key)
@@ -235,7 +242,7 @@ impl CoreLoop {
                             .filter(|(k, _)| *k == &plain_key || k.starts_with(&prefix))
                             .find_map(|(_, c)| c.get_doc_id(id))
                     });
-                build_search_hit(id, score as f32, doc_id)
+                Some(build_search_hit(id, f.rrf_score as f32, doc_id))
             })
             .collect();
         encode_hits_response(self, task, &hits)
