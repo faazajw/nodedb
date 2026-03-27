@@ -103,11 +103,11 @@ impl TimeseriesEngine {
             (ts_to_sync, val_to_sync)
         };
 
-        let mut ts_enc = nodedb_types::GorillaEncoder::new();
+        let mut ts_enc = nodedb_codec::GorillaEncoder::new();
         for &t in &final_ts {
             ts_enc.encode(t, 0.0);
         }
-        let mut val_enc = nodedb_types::GorillaEncoder::new();
+        let mut val_enc = nodedb_codec::GorillaEncoder::new();
         for (i, &v) in final_vals.iter().enumerate() {
             val_enc.encode(i as i64, v);
         }

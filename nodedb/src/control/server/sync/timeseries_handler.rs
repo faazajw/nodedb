@@ -48,8 +48,8 @@ impl SyncSession {
         }
 
         // Decode Gorilla blocks to verify integrity.
-        let timestamps = nodedb_types::GorillaDecoder::new(&msg.ts_block).decode_all();
-        let values = nodedb_types::GorillaDecoder::new(&msg.val_block).decode_all();
+        let timestamps = nodedb_codec::GorillaDecoder::new(&msg.ts_block).decode_all();
+        let values = nodedb_codec::GorillaDecoder::new(&msg.val_block).decode_all();
 
         let decoded_count = timestamps.len().min(values.len());
         if decoded_count == 0 {

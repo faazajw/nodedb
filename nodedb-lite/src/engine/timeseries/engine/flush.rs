@@ -1,6 +1,6 @@
 //! Flush memtable to Gorilla-compressed redb entries.
 
-use nodedb_types::gorilla::GorillaEncoder;
+use nodedb_codec::gorilla::GorillaEncoder;
 use nodedb_types::timeseries::{PartitionMeta, PartitionState};
 
 use super::core::{FlushedPartition, TimeseriesEngine};

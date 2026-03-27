@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use nodedb_types::gorilla::GorillaDecoder;
+use nodedb_codec::gorilla::GorillaDecoder;
 use nodedb_types::timeseries::{PartitionMeta, SeriesCatalog, SeriesId, TieredPartitionConfig};
 
 use super::ingest::{DownsampleAccumulator, IngestRateEstimator};
