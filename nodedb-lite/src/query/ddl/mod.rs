@@ -2,6 +2,7 @@
 
 pub mod alter;
 pub mod columnar;
+pub mod convert;
 pub mod htap;
 pub mod parser;
 pub mod strict;
@@ -108,6 +109,19 @@ impl<S: StorageEngine> LiteQueryEngine<S> {
                 if let Some(schema) = schema_clone {
                     return Some(Ok(describe_strict_collection(&name_lower, &schema)));
                 }
+            }
+        }
+
+        // CONVERT COLLECTION <name> TO strict|columnar|document
+        if upper.starts_with("CONVERT COLLECTION ") || upper.starts_with("CONVERT ") {
+            if upper.contains(" TO STRICT") {
+                return Some(self.handle_convert_to_strict(sql).await);
+            }
+            if upper.contains(" TO COLUMNAR") {
+                return Some(self.handle_convert_to_columnar(sql).await);
+            }
+            if upper.contains(" TO DOCUMENT") || upper.contains(" TO DOC") {
+                return Some(self.handle_convert_to_document(sql).await);
             }
         }
 
