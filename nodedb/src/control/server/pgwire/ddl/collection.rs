@@ -52,13 +52,15 @@ pub fn create_collection(
         .unwrap_or_default()
         .as_secs();
 
-    // Detect storage mode: WITH storage = 'strict' | 'columnar'.
+    // Detect storage mode: WITH storage = 'strict' | 'columnar' | 'kv'.
     let upper = sql_upper_from_parts(parts);
     let collection_type = if upper.contains("STORAGE") && upper.contains("STRICT") {
         let schema = parse_typed_schema(sql).map_err(|e| sqlstate_error("42601", &e))?;
         nodedb_types::CollectionType::strict(schema)
     } else if upper.contains("STORAGE") && upper.contains("COLUMNAR") {
         nodedb_types::CollectionType::columnar()
+    } else if super::kv::is_kv_storage_mode(&upper) {
+        super::kv::parse_kv_collection(sql, &upper)?
     } else {
         nodedb_types::CollectionType::document()
     };
@@ -66,12 +68,13 @@ pub fn create_collection(
     // Parse optional FIELDS clause: CREATE COLLECTION name FIELDS (field type, ...)
     let fields = parse_fields_clause(parts);
 
-    // For strict/columnar collections, serialize the schema as JSON in timeseries_config
+    // For strict/columnar/kv collections, serialize the schema as JSON in timeseries_config
     // (reused for schema storage until StoredCollection gets a dedicated schema field).
     let schema_json = match &collection_type {
         nodedb_types::CollectionType::Document(nodedb_types::DocumentMode::Strict(schema)) => {
             serde_json::to_string(schema).ok()
         }
+        nodedb_types::CollectionType::KeyValue(config) => serde_json::to_string(config).ok(),
         _ => None,
     };
 
@@ -426,7 +429,10 @@ pub fn describe_collection(
     }
 
     // Show storage mode info.
-    if coll.collection_type.is_strict() || coll.collection_type.is_columnar() {
+    if coll.collection_type.is_strict()
+        || coll.collection_type.is_columnar()
+        || coll.collection_type.is_kv()
+    {
         encoder
             .encode_field(&"__storage")
             .map_err(|e| sqlstate_error("XX000", &e.to_string()))?;
@@ -469,6 +475,42 @@ pub fn describe_collection(
                     .map_err(|e| sqlstate_error("XX000", &e.to_string()))?;
                 rows.push(Ok(encoder.take_row()));
             }
+        }
+    }
+
+    // KV-specific info: show TTL policy and key type.
+    if let Some(kv_config) = coll.collection_type.kv_config() {
+        if let Some(pk) = kv_config.primary_key_column() {
+            encoder
+                .encode_field(&"__kv_key")
+                .map_err(|e| sqlstate_error("XX000", &e.to_string()))?;
+            encoder
+                .encode_field(&format!("{} ({})", pk.name, pk.column_type))
+                .map_err(|e| sqlstate_error("XX000", &e.to_string()))?;
+            encoder
+                .encode_field(&"false")
+                .map_err(|e| sqlstate_error("XX000", &e.to_string()))?;
+            rows.push(Ok(encoder.take_row()));
+        }
+        if let Some(ttl) = &kv_config.ttl {
+            let ttl_str = match ttl {
+                nodedb_types::KvTtlPolicy::FixedDuration { duration_ms } => {
+                    format!("INTERVAL '{duration_ms}ms'")
+                }
+                nodedb_types::KvTtlPolicy::FieldBased { field, offset_ms } => {
+                    format!("{field} + INTERVAL '{offset_ms}ms'")
+                }
+            };
+            encoder
+                .encode_field(&"__kv_ttl")
+                .map_err(|e| sqlstate_error("XX000", &e.to_string()))?;
+            encoder
+                .encode_field(&ttl_str)
+                .map_err(|e| sqlstate_error("XX000", &e.to_string()))?;
+            encoder
+                .encode_field(&"false")
+                .map_err(|e| sqlstate_error("XX000", &e.to_string()))?;
+            rows.push(Ok(encoder.take_row()));
         }
     }
 
@@ -687,7 +729,9 @@ fn sql_upper_from_parts(parts: &[&str]) -> String {
 ///
 /// Extracts the parenthesized column list: `(id BIGINT NOT NULL PRIMARY KEY, name TEXT, ...)`.
 /// Auto-generates `_rowid` PK if no PK column is declared.
-fn parse_typed_schema(sql: &str) -> Result<nodedb_types::columnar::StrictSchema, String> {
+pub(super) fn parse_typed_schema(
+    sql: &str,
+) -> Result<nodedb_types::columnar::StrictSchema, String> {
     use nodedb_types::columnar::{ColumnDef, ColumnType, StrictSchema};
 
     // Find parenthesized column definitions.

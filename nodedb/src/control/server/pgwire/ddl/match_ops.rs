@@ -7,6 +7,7 @@ use futures::stream;
 use pgwire::api::results::{DataRowEncoder, QueryResponse, Response};
 use pgwire::error::PgWireResult;
 
+use crate::bridge::physical_plan::GraphOp;
 use crate::control::security::identity::AuthenticatedIdentity;
 use crate::control::server::dispatch_utils;
 use crate::control::state::SharedState;
@@ -45,7 +46,7 @@ pub async fn match_query(
 
     let tenant_id = identity.tenant_id;
 
-    let plan = crate::bridge::envelope::PhysicalPlan::GraphMatch { query: query_bytes };
+    let plan = crate::bridge::envelope::PhysicalPlan::Graph(GraphOp::Match { query: query_bytes });
 
     // Broadcast to all cores.
     match dispatch_utils::broadcast_to_all_cores(state, tenant_id, plan, 0).await {

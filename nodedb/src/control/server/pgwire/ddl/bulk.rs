@@ -10,6 +10,7 @@ use pgwire::api::results::{Response, Tag};
 use pgwire::error::PgWireResult;
 
 use crate::bridge::envelope::PhysicalPlan;
+use crate::bridge::physical_plan::DocumentOp;
 use crate::control::security::identity::AuthenticatedIdentity;
 use crate::control::state::SharedState;
 
@@ -85,11 +86,11 @@ pub async fn copy_from(
 
                 let value = serde_json::to_vec(&doc).unwrap_or_default();
 
-                let plan = PhysicalPlan::PointPut {
+                let plan = PhysicalPlan::Document(DocumentOp::PointPut {
                     collection: collection.to_string(),
                     document_id: doc_id,
                     value,
-                };
+                });
 
                 if super::sync_dispatch::dispatch_async(
                     state,
@@ -155,11 +156,11 @@ pub async fn copy_from(
 
                 let value = serde_json::to_vec(&obj).unwrap_or_default();
 
-                let plan = PhysicalPlan::PointPut {
+                let plan = PhysicalPlan::Document(DocumentOp::PointPut {
                     collection: collection.to_string(),
                     document_id: doc_id,
                     value,
-                };
+                });
 
                 if super::sync_dispatch::dispatch_async(
                     state,

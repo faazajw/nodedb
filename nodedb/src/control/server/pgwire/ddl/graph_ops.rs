@@ -8,6 +8,7 @@ use pgwire::api::results::{DataRowEncoder, QueryResponse, Response, Tag};
 use pgwire::error::PgWireResult;
 
 use crate::bridge::envelope::PhysicalPlan;
+use crate::bridge::physical_plan::GraphOp;
 use crate::control::security::identity::AuthenticatedIdentity;
 use crate::control::server::dispatch_utils;
 use crate::control::state::SharedState;
@@ -36,12 +37,12 @@ pub async fn insert_edge(
     let tenant_id = identity.tenant_id;
     let vshard_id = VShardId::from_key(src.as_bytes());
 
-    let plan = PhysicalPlan::EdgePut {
+    let plan = PhysicalPlan::Graph(GraphOp::EdgePut {
         src_id: src,
         label: label.clone(),
         dst_id: dst,
         properties: properties.into_bytes(),
-    };
+    });
 
     dispatch_utils::wal_append_if_write(&state.wal, tenant_id, vshard_id, &plan)
         .map_err(|e| sqlstate_error("XX000", &e.to_string()))?;
@@ -70,11 +71,11 @@ pub async fn delete_edge(
     let tenant_id = identity.tenant_id;
     let vshard_id = VShardId::from_key(src.as_bytes());
 
-    let plan = PhysicalPlan::EdgeDelete {
+    let plan = PhysicalPlan::Graph(GraphOp::EdgeDelete {
         src_id: src,
         label,
         dst_id: dst,
-    };
+    });
 
     dispatch_utils::wal_append_if_write(&state.wal, tenant_id, vshard_id, &plan)
         .map_err(|e| sqlstate_error("XX000", &e.to_string()))?;
@@ -136,11 +137,11 @@ pub async fn neighbors(
 
     let tenant_id = identity.tenant_id;
 
-    let plan = PhysicalPlan::GraphNeighbors {
+    let plan = PhysicalPlan::Graph(GraphOp::Neighbors {
         node_id: node,
         edge_label: label,
         direction: dir,
-    };
+    });
 
     // Broadcast to all cores — edges may be distributed across cores.
     match dispatch_utils::broadcast_to_all_cores(state, tenant_id, plan, 0).await {
@@ -270,7 +271,7 @@ pub async fn algo(
 
     let tenant_id = identity.tenant_id;
 
-    let plan = PhysicalPlan::GraphAlgo { algorithm, params };
+    let plan = PhysicalPlan::Graph(GraphOp::Algo { algorithm, params });
 
     // Broadcast to all cores — the algorithm runs on each core's local CSR.
     // Results from all cores are merged into a single JSON array response.

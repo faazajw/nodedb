@@ -11,6 +11,7 @@ use pgwire::api::results::{DataRowEncoder, QueryResponse, Response};
 use pgwire::error::PgWireResult;
 
 use crate::bridge::envelope::PhysicalPlan;
+use crate::bridge::physical_plan::CrdtOp;
 use crate::control::security::identity::AuthenticatedIdentity;
 use crate::control::state::SharedState;
 
@@ -58,10 +59,10 @@ pub async fn crdt_state(
     let document_id = &args[1];
     let tenant_id = identity.tenant_id;
 
-    let plan = PhysicalPlan::CrdtRead {
+    let plan = PhysicalPlan::Crdt(CrdtOp::Read {
         collection: collection.clone(),
         document_id: document_id.clone(),
-    };
+    });
 
     // Synchronous dispatch via the blocking bridge.
     let result = super::sync_dispatch::dispatch_async(
@@ -121,13 +122,13 @@ pub async fn crdt_apply(
 
     let tenant_id = identity.tenant_id;
 
-    let plan = PhysicalPlan::CrdtApply {
+    let plan = PhysicalPlan::Crdt(CrdtOp::Apply {
         collection: collection.clone(),
         document_id: document_id.clone(),
         delta,
         peer_id: identity.user_id,
         mutation_id: 0,
-    };
+    });
 
     super::sync_dispatch::dispatch_async(
         state,

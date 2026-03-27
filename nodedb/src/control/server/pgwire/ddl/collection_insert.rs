@@ -7,6 +7,7 @@
 use pgwire::api::results::{Response, Tag};
 use pgwire::error::PgWireResult;
 
+use crate::bridge::physical_plan::{DocumentOp, VectorOp};
 use crate::control::security::identity::AuthenticatedIdentity;
 use crate::control::state::SharedState;
 
@@ -187,11 +188,11 @@ pub async fn insert_document(
     let vshard_id = crate::types::VShardId::from_key(parsed.doc_id.as_bytes());
 
     // Store document via PointPut.
-    let plan = crate::bridge::envelope::PhysicalPlan::PointPut {
+    let plan = crate::bridge::envelope::PhysicalPlan::Document(DocumentOp::PointPut {
         collection: parsed.coll_name.clone(),
         document_id: parsed.doc_id.clone(),
         value: parsed.value_bytes,
-    };
+    });
 
     if let Err(e) = crate::control::server::dispatch_utils::wal_append_if_write(
         &state.wal, tenant_id, vshard_id, &plan,
@@ -210,13 +211,13 @@ pub async fn insert_document(
     let vec_vshard = crate::types::VShardId::from_collection(&parsed.coll_name);
     for (_field_name, vector) in &parsed.vector_fields {
         let dim = vector.len();
-        let vec_plan = crate::bridge::envelope::PhysicalPlan::VectorInsert {
+        let vec_plan = crate::bridge::envelope::PhysicalPlan::Vector(VectorOp::Insert {
             collection: parsed.coll_name.clone(),
             vector: vector.clone(),
             dim,
             field_name: String::new(),
             doc_id: Some(parsed.doc_id.clone()),
-        };
+        });
 
         if let Err(e) = crate::control::server::dispatch_utils::wal_append_if_write(
             &state.wal, tenant_id, vec_vshard, &vec_plan,
@@ -256,11 +257,11 @@ pub async fn upsert_document(
     let tenant_id = identity.tenant_id;
     let vshard_id = crate::types::VShardId::from_key(parsed.doc_id.as_bytes());
 
-    let plan = crate::bridge::envelope::PhysicalPlan::Upsert {
+    let plan = crate::bridge::envelope::PhysicalPlan::Document(DocumentOp::Upsert {
         collection: parsed.coll_name.clone(),
         document_id: parsed.doc_id.clone(),
         value: parsed.value_bytes,
-    };
+    });
 
     if let Err(e) = crate::control::server::dispatch_utils::wal_append_if_write(
         &state.wal, tenant_id, vshard_id, &plan,

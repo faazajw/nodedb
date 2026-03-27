@@ -15,6 +15,7 @@ use pgwire::api::results::{DataRowEncoder, QueryResponse, Response, Tag};
 use pgwire::error::PgWireResult;
 
 use crate::bridge::envelope::PhysicalPlan;
+use crate::bridge::physical_plan::{CrdtOp, GraphOp, VectorOp};
 use crate::control::security::identity::AuthenticatedIdentity;
 use crate::control::state::SharedState;
 
@@ -80,14 +81,14 @@ pub async fn search_vector(
     // Future: parse WITH FILTER predicates, evaluate against documents, build Roaring bitmap.
     let filter_bitmap: Option<std::sync::Arc<[u8]>> = None;
 
-    let plan = PhysicalPlan::VectorSearch {
+    let plan = PhysicalPlan::Vector(VectorOp::Search {
         collection: collection.to_string(),
         query_vector: Arc::from(query_vector.as_slice()),
         top_k,
         ef_search: 0,
         filter_bitmap,
         field_name: String::new(),
-    };
+    });
 
     let payload = super::sync_dispatch::dispatch_async(
         state,
@@ -166,7 +167,7 @@ pub async fn search_fusion(
     // Extract edge label if specified.
     let edge_label = extract_string_param(sql, "LABEL");
 
-    let plan = PhysicalPlan::GraphRagFusion {
+    let plan = PhysicalPlan::Graph(GraphOp::RagFusion {
         collection: collection.to_string(),
         query_vector: Arc::from(query_vector.as_slice()),
         vector_top_k,
@@ -176,7 +177,7 @@ pub async fn search_fusion(
         final_top_k,
         rrf_k: (60.0, 60.0),
         options: crate::engine::graph::traversal_options::GraphTraversalOptions::default(),
-    };
+    });
 
     let payload = super::sync_dispatch::dispatch_async(
         state,
@@ -341,10 +342,10 @@ pub async fn crdt_merge(
         .ok_or_else(|| sqlstate_error("42601", "missing target document ID"))?;
 
     // Read source CRDT state.
-    let source_plan = PhysicalPlan::CrdtRead {
+    let source_plan = PhysicalPlan::Crdt(CrdtOp::Read {
         collection: collection.to_string(),
         document_id: source_id.to_string(),
-    };
+    });
 
     let source_bytes = super::sync_dispatch::dispatch_async(
         state,
@@ -363,13 +364,13 @@ pub async fn crdt_merge(
     }
 
     // Apply source state as a delta to target.
-    let apply_plan = PhysicalPlan::CrdtApply {
+    let apply_plan = PhysicalPlan::Crdt(CrdtOp::Apply {
         collection: collection.to_string(),
         document_id: target_id.to_string(),
         delta: source_bytes,
         peer_id: identity.user_id,
         mutation_id: 0,
-    };
+    });
 
     super::sync_dispatch::dispatch_async(
         state,
