@@ -1,6 +1,7 @@
 use pgwire::api::results::Response;
 use pgwire::error::PgWireResult;
 
+use crate::bridge::physical_plan::DocumentOp;
 use crate::control::security::identity::AuthenticatedIdentity;
 use crate::control::state::SharedState;
 
@@ -106,22 +107,18 @@ pub async fn dispatch(
     }
     // Timeseries: CREATE TIMESERIES, SHOW PARTITIONS, ALTER TIMESERIES.
     if upper.starts_with("CREATE TIMESERIES ") {
-        return Some(super::timeseries_ddl::create_timeseries(
+        return Some(super::timeseries::create_timeseries(
             state, identity, &parts,
         ));
     }
     if upper.starts_with("SHOW PARTITIONS ") {
-        return Some(super::timeseries_ddl::show_partitions(
-            state, identity, &parts,
-        ));
+        return Some(super::timeseries::show_partitions(state, identity, &parts));
     }
     if upper.starts_with("ALTER TIMESERIES ") {
-        return Some(super::timeseries_ddl::alter_timeseries(
-            state, identity, &parts,
-        ));
+        return Some(super::timeseries::alter_timeseries(state, identity, &parts));
     }
     if upper.starts_with("REWRITE PARTITIONS ") {
-        return Some(super::timeseries_ddl::rewrite_partitions(
+        return Some(super::timeseries::rewrite_partitions(
             state, identity, &parts,
         ));
     }
@@ -272,7 +269,7 @@ pub async fn dispatch(
         return Some(super::dsl::create_fulltext_index(state, identity, &parts));
     }
     if upper.starts_with("CREATE SPATIAL INDEX ") {
-        return Some(super::spatial_ddl::create_spatial_index(
+        return Some(super::spatial::create_spatial_index(
             state, identity, &parts,
         ));
     }
@@ -475,10 +472,11 @@ pub async fn dispatch(
                 let field = args[1].to_string();
                 let tenant_id = identity.tenant_id;
                 let vshard = crate::types::VShardId::from_collection(&coll);
-                let plan = crate::bridge::envelope::PhysicalPlan::EstimateCount {
-                    collection: coll,
-                    field,
-                };
+                let plan =
+                    crate::bridge::envelope::PhysicalPlan::Document(DocumentOp::EstimateCount {
+                        collection: coll,
+                        field,
+                    });
                 match crate::control::server::dispatch_utils::dispatch_to_data_plane(
                     state, tenant_id, vshard, plan, 0,
                 )
@@ -528,9 +526,9 @@ pub async fn dispatch(
         }
         let tenant_id = identity.tenant_id;
         let vshard = crate::types::VShardId::from_collection(&coll_name);
-        let plan = crate::bridge::envelope::PhysicalPlan::Truncate {
+        let plan = crate::bridge::envelope::PhysicalPlan::Document(DocumentOp::Truncate {
             collection: coll_name,
-        };
+        });
         if let Err(e) = crate::control::server::dispatch_utils::dispatch_to_data_plane(
             state, tenant_id, vshard, plan, 0,
         )

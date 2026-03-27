@@ -1,6 +1,4 @@
 //! Schema parsing and type validation helpers for collection DDL.
-//!
-//! Extracted from `collection.rs` to keep that file under the 500-line limit.
 
 /// Parse FIELDS clause from CREATE COLLECTION parts.
 ///
