@@ -19,8 +19,9 @@ impl<S: StorageEngine> LiteQueryEngine<S> {
         let (name, strict_schema) = parse_strict_create_sql(sql)?;
 
         // Convert StrictSchema → ColumnarSchema (same column defs, different wrapper).
-        let columnar_schema = nodedb_types::columnar::ColumnarSchema::new(strict_schema.columns)
-            .map_err(|e| LiteError::Query(e.to_string()))?;
+        let mut columnar_schema =
+            nodedb_types::columnar::ColumnarSchema::new(strict_schema.columns)
+                .map_err(|e| LiteError::Query(e.to_string()))?;
 
         // Determine profile from SQL (plain by default).
         let upper = sql.to_uppercase();
@@ -32,6 +33,18 @@ impl<S: StorageEngine> LiteQueryEngine<S> {
                 .find(|c| matches!(c.column_type, nodedb_types::columnar::ColumnType::Geometry))
                 .map(|c| c.name.clone())
                 .unwrap_or_default();
+
+            // Auto-add hidden _geohash column for Point proximity queries.
+            let has_geohash = columnar_schema.columns.iter().any(|c| c.name == "_geohash");
+            if !has_geohash {
+                columnar_schema
+                    .columns
+                    .push(nodedb_types::columnar::ColumnDef::nullable(
+                        "_geohash",
+                        nodedb_types::columnar::ColumnType::String,
+                    ));
+            }
+
             nodedb_types::columnar::ColumnarProfile::Spatial {
                 geometry_column: geom_col,
                 auto_rtree: true,
