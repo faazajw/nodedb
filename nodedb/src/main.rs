@@ -153,12 +153,33 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // Create shared state with persistent system catalog.
-    let shared = SharedState::open(
+    let mut shared = SharedState::open(
         dispatcher,
         Arc::clone(&wal),
         &config.catalog_path(),
         &config.auth,
     )?;
+
+    // Initialise cold storage (L2 tiering) if configured.
+    // Arc::get_mut is valid here because no clones of `shared` exist yet.
+    if let Some(ref cold_settings) = config.cold_storage {
+        let cold_config = cold_settings.to_cold_storage_config();
+        match nodedb::storage::cold::ColdStorage::new(cold_config) {
+            Ok(cold) => {
+                if let Some(state) = Arc::get_mut(&mut shared) {
+                    state.cold_storage = Some(Arc::new(cold));
+                    info!("cold storage (L2 tiering) initialised");
+                } else {
+                    tracing::warn!(
+                        "cold storage: Arc::get_mut failed (unexpected clone), skipping"
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "cold storage init failed, tiering disabled");
+            }
+        }
+    }
 
     // Bootstrap credentials.
     let auth_mode = config.auth.mode.clone();
@@ -242,6 +263,21 @@ async fn main() -> anyhow::Result<()> {
         config.checkpoint.to_manager_config(),
         shutdown_rx_ckpt,
     );
+
+    // Cold tier task: upload old L1 segments to L2 cold storage (if configured).
+    if let Some(ref cold_settings) = config.cold_storage {
+        let shared_cold = Arc::clone(&shared);
+        let cold_settings_clone = cold_settings.clone();
+        let data_dir_clone = config.data_dir.clone();
+        let shutdown_rx_cold = shutdown_rx.clone();
+        nodedb::control::cold_tier::spawn_cold_tier_task(
+            shared_cold,
+            cold_settings_clone,
+            data_dir_clone,
+            shutdown_rx_cold,
+        );
+        info!("cold tier task spawned");
+    }
 
     // Create shared connection semaphore — enforced across all listeners.
     let conn_semaphore = Arc::new(tokio::sync::Semaphore::new(config.max_connections));

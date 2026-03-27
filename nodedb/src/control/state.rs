@@ -127,6 +127,9 @@ pub struct SharedState {
             >,
         >,
     >,
+
+    /// L2 cold storage client (None when cold tiering is not configured).
+    pub cold_storage: Option<Arc<crate::storage::cold::ColdStorage>>,
 }
 
 impl SharedState {
@@ -163,6 +166,7 @@ impl SharedState {
             system_metrics: Some(Arc::new(crate::control::metrics::SystemMetrics::new())),
             epoch_tracker: Mutex::new(std::collections::HashMap::new()),
             ts_partition_registries: Some(Mutex::new(std::collections::HashMap::new())),
+            cold_storage: None,
         })
     }
 
@@ -228,6 +232,7 @@ impl SharedState {
             system_metrics: Some(Arc::new(crate::control::metrics::SystemMetrics::new())),
             epoch_tracker: Mutex::new(std::collections::HashMap::new()),
             ts_partition_registries: Some(Mutex::new(std::collections::HashMap::new())),
+            cold_storage: None,
         }))
     }
 

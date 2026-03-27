@@ -3,6 +3,7 @@ pub mod change_stream;
 pub mod checkpoint_manager;
 pub mod cluster;
 pub mod cluster_forwarder;
+pub mod cold_tier;
 pub mod distributed_applier;
 pub mod event_trigger;
 pub mod forward;

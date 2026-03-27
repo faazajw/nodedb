@@ -56,7 +56,8 @@ impl Default for CheckpointManagerConfig {
 }
 
 /// Run one checkpoint cycle: dispatch checkpoint to all cores, collect LSNs,
-/// write checkpoint record, truncate WAL.
+/// write checkpoint record, archive eligible WAL segments to cold storage (if
+/// configured), then truncate the WAL.
 ///
 /// Returns the global checkpoint LSN (min across all cores), or `None` if
 /// the checkpoint could not be completed (e.g., a core didn't respond).
@@ -66,6 +67,7 @@ pub async fn run_checkpoint_cycle(
     wal: &WalManager,
     num_cores: usize,
     timeout: Duration,
+    cold_storage: Option<std::sync::Arc<crate::storage::cold::ColdStorage>>,
 ) -> Option<Lsn> {
     if num_cores == 0 {
         return None;
@@ -195,7 +197,12 @@ pub async fn run_checkpoint_cycle(
         return Some(checkpoint_lsn);
     }
 
-    // 5. Truncate old WAL segments.
+    // 5. Archive eligible WAL segments to cold storage before deletion.
+    if let Some(ref cold) = cold_storage {
+        archive_wal_segments_before_truncation(wal, global_lsn, cold).await;
+    }
+
+    // 6. Truncate old WAL segments.
     match wal.truncate_before(checkpoint_lsn) {
         Ok(result) => {
             if result.segments_deleted > 0 {
@@ -252,6 +259,7 @@ pub fn spawn_checkpoint_task(
                             &shared.wal,
                             num_cores,
                             config.core_timeout,
+                            shared.cold_storage.clone(),
                         ).await;
                         info!("checkpoint manager stopped");
                         return;
@@ -265,8 +273,73 @@ pub fn spawn_checkpoint_task(
                 &shared.wal,
                 num_cores,
                 config.core_timeout,
+                shared.cold_storage.clone(),
             )
             .await;
         }
     })
+}
+
+/// Archive WAL segments that will be deleted by the upcoming `truncate_before(checkpoint_lsn)`.
+///
+/// A segment is eligible for deletion (and therefore archival) when the segment
+/// immediately following it has a `first_lsn <= checkpoint_lsn`. We upload each
+/// eligible segment before `truncate_before` deletes it, preserving a continuous
+/// WAL archive in cold storage for point-in-time recovery.
+///
+/// Failures are logged as warnings; archival is best-effort and never blocks
+/// the checkpoint cycle.
+async fn archive_wal_segments_before_truncation(
+    wal: &WalManager,
+    checkpoint_lsn: u64,
+    cold: &crate::storage::cold::ColdStorage,
+) {
+    let segments = match wal.list_segments() {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(error = %e, "WAL archival: failed to list segments");
+            return;
+        }
+    };
+
+    // Determine which segments are eligible using the same logic as truncate_before:
+    // a segment is deletable when its successor's first_lsn <= checkpoint_lsn.
+    for seg in &segments {
+        let next_first_lsn = segments
+            .iter()
+            .find(|s| s.first_lsn > seg.first_lsn)
+            .map(|s| s.first_lsn)
+            .unwrap_or(u64::MAX);
+
+        if next_first_lsn > checkpoint_lsn {
+            // Not eligible for deletion; skip.
+            continue;
+        }
+
+        let segment_name = match seg.path.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n.to_owned(),
+            None => {
+                warn!(path = %seg.path.display(), "WAL archival: invalid segment path, skipping");
+                continue;
+            }
+        };
+
+        match cold.upload_wal_segment(&seg.path, &segment_name).await {
+            Ok(object_path) => {
+                debug!(
+                    segment = %segment_name,
+                    object_path = %object_path,
+                    first_lsn = seg.first_lsn,
+                    "WAL segment archived before truncation"
+                );
+            }
+            Err(e) => {
+                warn!(
+                    segment = %segment_name,
+                    error = %e,
+                    "WAL archival: upload failed (segment will still be truncated)"
+                );
+            }
+        }
+    }
 }
