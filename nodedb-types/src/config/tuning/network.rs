@@ -144,6 +144,23 @@ pub struct ClusterTransportTuning {
     pub quic_send_window: u32,
     #[serde(default = "default_quic_stream_receive_window")]
     pub quic_stream_receive_window: u32,
+    /// Maximum payload size for broadcast join strategy selection.
+    /// Above this threshold, shuffle join is preferred over broadcast.
+    /// See `nodedb_cluster::distributed_join::select_strategy`.
+    #[serde(default = "default_broadcast_threshold_bytes")]
+    pub broadcast_threshold_bytes: usize,
+    /// How often (in seconds) to sweep for dangling ghost nodes.
+    /// See `nodedb_cluster::ghost_sweeper::DEFAULT_SWEEP_INTERVAL`.
+    #[serde(default = "default_ghost_sweep_interval_secs")]
+    pub ghost_sweep_interval_secs: u64,
+    /// Cluster health check ping interval in seconds.
+    /// See `nodedb_cluster::health::DEFAULT_PING_INTERVAL`.
+    #[serde(default = "default_health_ping_interval_secs")]
+    pub health_ping_interval_secs: u64,
+    /// Consecutive ping failures before marking a node as down.
+    /// See `nodedb_cluster::health::DEFAULT_FAILURE_THRESHOLD`.
+    #[serde(default = "default_health_failure_threshold")]
+    pub health_failure_threshold: u32,
 }
 
 impl Default for ClusterTransportTuning {
@@ -160,6 +177,10 @@ impl Default for ClusterTransportTuning {
             quic_receive_window: default_quic_receive_window(),
             quic_send_window: default_quic_send_window(),
             quic_stream_receive_window: default_quic_stream_receive_window(),
+            broadcast_threshold_bytes: default_broadcast_threshold_bytes(),
+            ghost_sweep_interval_secs: default_ghost_sweep_interval_secs(),
+            health_ping_interval_secs: default_health_ping_interval_secs(),
+            health_failure_threshold: default_health_failure_threshold(),
         }
     }
 }
@@ -196,4 +217,16 @@ fn default_quic_send_window() -> u32 {
 }
 fn default_quic_stream_receive_window() -> u32 {
     4 * 1024 * 1024
+}
+fn default_broadcast_threshold_bytes() -> usize {
+    8 * 1024 * 1024
+}
+fn default_ghost_sweep_interval_secs() -> u64 {
+    1800
+}
+fn default_health_ping_interval_secs() -> u64 {
+    5
+}
+fn default_health_failure_threshold() -> u32 {
+    3
 }

@@ -214,7 +214,9 @@ impl CoreLoop {
             compaction_tombstone_threshold: 0.2,
             index_configs: HashMap::new(),
             ivf_indexes: HashMap::new(),
-            doc_cache: DocCache::new(4096),
+            doc_cache: DocCache::new(
+                nodedb_types::config::tuning::QueryTuning::default().doc_cache_entries,
+            ),
             ts_memtables: HashMap::new(),
             ts_registries: HashMap::new(),
             continuous_agg_mgr:
@@ -265,7 +267,13 @@ impl CoreLoop {
     }
 
     /// Set query execution tuning parameters (called after open, before event loop).
+    ///
+    /// Also resizes the doc cache if `doc_cache_entries` differs from the current size.
+    /// Resizing clears all cached entries.
     pub fn set_query_tuning(&mut self, tuning: nodedb_types::config::tuning::QueryTuning) {
+        if tuning.doc_cache_entries != self.query_tuning.doc_cache_entries {
+            self.doc_cache = DocCache::new(tuning.doc_cache_entries);
+        }
         self.query_tuning = tuning;
     }
 

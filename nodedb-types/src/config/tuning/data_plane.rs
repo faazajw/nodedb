@@ -58,6 +58,18 @@ pub struct QueryTuning {
     pub bfs_memory_budget_bytes: usize,
     #[serde(default = "default_bfs_bytes_per_node")]
     pub bfs_bytes_per_node: usize,
+    /// Per-core LRU document cache size (number of entries).
+    /// See `DocCache::new` in `core_loop.rs`.
+    #[serde(default = "default_doc_cache_entries")]
+    pub doc_cache_entries: usize,
+    /// Columnar memtable flush threshold in rows.
+    /// See `nodedb_columnar::memtable::DEFAULT_FLUSH_THRESHOLD`.
+    #[serde(default = "default_columnar_flush_threshold")]
+    pub columnar_flush_threshold: usize,
+    /// Target segment size in bytes after compaction.
+    /// See `nodedb::storage::compaction::CompactionConfig`.
+    #[serde(default = "default_compaction_target_bytes")]
+    pub compaction_target_bytes: usize,
 }
 
 impl Default for QueryTuning {
@@ -71,6 +83,9 @@ impl Default for QueryTuning {
             bitmap_over_fetch_factor: default_bitmap_over_fetch_factor(),
             bfs_memory_budget_bytes: default_bfs_memory_budget_bytes(),
             bfs_bytes_per_node: default_bfs_bytes_per_node(),
+            doc_cache_entries: default_doc_cache_entries(),
+            columnar_flush_threshold: default_columnar_flush_threshold(),
+            compaction_target_bytes: default_compaction_target_bytes(),
         }
     }
 }
@@ -98,4 +113,13 @@ fn default_bfs_memory_budget_bytes() -> usize {
 }
 fn default_bfs_bytes_per_node() -> usize {
     192
+}
+fn default_doc_cache_entries() -> usize {
+    4096
+}
+fn default_columnar_flush_threshold() -> usize {
+    65_536
+}
+fn default_compaction_target_bytes() -> usize {
+    256 * 1024 * 1024
 }
