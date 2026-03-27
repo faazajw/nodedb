@@ -10,6 +10,7 @@ use tracing_subscriber::EnvFilter;
 
 use nodedb::ServerConfig;
 use nodedb::bridge::dispatch::Dispatcher;
+use nodedb::config::server::apply_env_overrides;
 use nodedb::control::state::SharedState;
 use nodedb::data::runtime::spawn_core;
 use nodedb::wal::WalManager;
@@ -43,11 +44,26 @@ fn build_tls_acceptor(
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Resolve config file path.
+    // Priority: CLI arg (highest) > NODEDB_CONFIG env var > default.
+    let config_path: Option<PathBuf> = std::env::args()
+        .nth(1)
+        .map(PathBuf::from)
+        .or_else(|| std::env::var("NODEDB_CONFIG").ok().map(PathBuf::from));
+
     // Load config first (needed for log format).
-    let config = match std::env::args().nth(1) {
-        Some(path) => ServerConfig::from_file(&PathBuf::from(path))?,
+    // Environment variable overrides are applied after tracing is initialised
+    // (see below) so that info!/warn! messages are actually emitted.
+    let mut config = match config_path {
+        Some(ref path) => ServerConfig::from_file(path)?,
         None => ServerConfig::default(),
     };
+
+    // Apply env overrides once now (before tracing) so that log_format is
+    // correct in case NODEDB_DATA_DIR / NODEDB_MEMORY_LIMIT also affect it.
+    // The overrides are re-applied silently here; the real log messages
+    // will be emitted by the second call after the subscriber is registered.
+    apply_env_overrides(&mut config);
 
     // Initialize tracing with format from config.
     // Default to warn level for clean startup. Use RUST_LOG=info for verbose.
@@ -61,8 +77,21 @@ async fn main() -> anyhow::Result<()> {
         tracing_subscriber::fmt().with_env_filter(filter).init();
     }
 
-    if std::env::args().nth(1).is_none() {
-        info!("no config file provided, using defaults");
+    // Re-apply env overrides now that tracing is initialised so that
+    // info!/warn! messages are actually emitted for operators.
+    apply_env_overrides(&mut config);
+
+    match &config_path {
+        None => info!("no config file provided, using defaults"),
+        Some(path)
+            if std::env::var("NODEDB_CONFIG").is_ok() && std::env::args().nth(1).is_none() =>
+        {
+            info!(
+                path = %path.display(),
+                "config file loaded from NODEDB_CONFIG"
+            );
+        }
+        Some(_) => {}
     }
 
     info!(

@@ -40,6 +40,22 @@ typedef struct NodeDbNodeDbHandle NodeDbNodeDbHandle;
 struct NodeDbNodeDbHandle *nodedb_open(const char *path, uint64_t peer_id);
 
 /**
+ * Open or create a NodeDB-Lite database with an explicit memory budget.
+ *
+ * Identical to `nodedb_open` except that `memory_mb` overrides the default
+ * 100 MiB memory budget. Passing `memory_mb = 0` uses the default (100 MiB).
+ *
+ * Returns an opaque handle on success, NULL on failure.
+ * The caller must call `nodedb_close` to free the handle.
+ *
+ * # Safety
+ * `path` must be a valid null-terminated UTF-8 string.
+ */
+struct NodeDbNodeDbHandle *nodedb_open_with_config(const char *path,
+                                                   uint64_t peer_id,
+                                                   uint64_t memory_mb);
+
+/**
  * Close a NodeDB-Lite database and free the handle.
  *
  * # Safety

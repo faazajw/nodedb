@@ -59,6 +59,9 @@ pub struct MemoryGovernor {
 
 impl MemoryGovernor {
     /// Create a governor with the given total budget in bytes.
+    ///
+    /// Uses the compile-time default percentages:
+    /// HNSW 40% | CSR 15% | Loro 15% | Query 15% | Headroom 15%.
     pub fn new(total_budget: usize) -> Self {
         Self {
             total_budget,
@@ -66,6 +69,26 @@ impl MemoryGovernor {
             csr_budget: total_budget * CSR_PERCENT / 100,
             loro_budget: total_budget * LORO_PERCENT / 100,
             query_budget: total_budget * QUERY_PERCENT / 100,
+            hnsw_used: AtomicUsize::new(0),
+            csr_used: AtomicUsize::new(0),
+            loro_used: AtomicUsize::new(0),
+            query_used: AtomicUsize::new(0),
+        }
+    }
+
+    /// Create a governor from a [`LiteConfig`], using its budget and per-engine
+    /// percentage fields.
+    ///
+    /// This is the preferred constructor when the caller holds a `LiteConfig`.
+    /// [`MemoryGovernor::new`] is retained for callers that only have a budget
+    /// in bytes and want the default percentages.
+    pub fn from_config(cfg: &crate::config::LiteConfig) -> Self {
+        Self {
+            total_budget: cfg.memory_budget,
+            hnsw_budget: cfg.memory_budget * cfg.hnsw_percent / 100,
+            csr_budget: cfg.memory_budget * cfg.csr_percent / 100,
+            loro_budget: cfg.memory_budget * cfg.loro_percent / 100,
+            query_budget: cfg.memory_budget * cfg.query_percent / 100,
             hnsw_used: AtomicUsize::new(0),
             csr_used: AtomicUsize::new(0),
             loro_used: AtomicUsize::new(0),

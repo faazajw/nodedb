@@ -18,7 +18,7 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 
 use nodedb_client::NodeDb;
-use nodedb_lite::{NodeDbLite, RedbStorage};
+use nodedb_lite::{LiteConfig, NodeDbLite, RedbStorage};
 use nodedb_types::document::Document;
 use nodedb_types::id::NodeId;
 use nodedb_types::value::Value;
@@ -32,10 +32,30 @@ pub struct NodeDbLiteWasm {
 #[wasm_bindgen]
 impl NodeDbLiteWasm {
     /// Create a new in-memory NodeDB-Lite database (no persistence).
+    ///
+    /// Memory budget is resolved from `NODEDB_LITE_MEMORY_MB` environment
+    /// variable (not available in browser WASM), falling back to 100 MiB.
     #[wasm_bindgen]
     pub async fn open(peer_id: u64) -> Result<NodeDbLiteWasm, JsError> {
         let storage = RedbStorage::open_in_memory().map_err(|e| JsError::new(&e.to_string()))?;
         let db = NodeDbLite::open(storage, peer_id)
+            .await
+            .map_err(|e| JsError::new(&e.to_string()))?;
+        Ok(Self { db })
+    }
+
+    /// Create a new in-memory NodeDB-Lite database with an explicit memory budget.
+    ///
+    /// `memory_mb` — total memory budget in mebibytes.
+    /// Pass `None` (or `undefined` from JS) to use the default 100 MiB.
+    #[wasm_bindgen(js_name = "openWithConfig")]
+    pub async fn open_with_config(
+        peer_id: u64,
+        memory_mb: Option<u32>,
+    ) -> Result<NodeDbLiteWasm, JsError> {
+        let config = config_from_memory_mb(memory_mb);
+        let storage = RedbStorage::open_in_memory().map_err(|e| JsError::new(&e.to_string()))?;
+        let db = NodeDbLite::open_with_config(storage, peer_id, config)
             .await
             .map_err(|e| JsError::new(&e.to_string()))?;
         Ok(Self { db })
@@ -87,6 +107,64 @@ impl NodeDbLiteWasm {
         // Wrap in RedbStorage.
         let storage = RedbStorage::from_database(db_inner);
         let db = NodeDbLite::open(storage, peer_id)
+            .await
+            .map_err(|e| JsError::new(&e.to_string()))?;
+        Ok(Self { db })
+    }
+
+    /// Create a persistent OPFS-backed NodeDB-Lite database with an explicit memory budget.
+    ///
+    /// **Must run in a Web Worker** — OPFS SyncAccessHandle is not
+    /// available on the main thread.
+    ///
+    /// `memory_mb` — total memory budget in mebibytes.
+    /// Pass `None` (or `undefined` from JS) to use the default 100 MiB.
+    #[wasm_bindgen(js_name = "openPersistentWithConfig")]
+    pub async fn open_persistent_with_config(
+        filename: &str,
+        peer_id: u64,
+        memory_mb: Option<u32>,
+    ) -> Result<NodeDbLiteWasm, JsError> {
+        let config = config_from_memory_mb(memory_mb);
+
+        // Get OPFS root directory.
+        let global: web_sys::WorkerGlobalScope = js_sys::global().dyn_into().map_err(|_| {
+            JsError::new("openPersistentWithConfig must be called from a Web Worker")
+        })?;
+        let storage = global.navigator().storage();
+        let root: web_sys::FileSystemDirectoryHandle = JsFuture::from(storage.get_directory())
+            .await
+            .map_err(|e| JsError::new(&format!("OPFS getDirectory failed: {e:?}")))?
+            .dyn_into()
+            .map_err(|_| JsError::new("expected FileSystemDirectoryHandle"))?;
+
+        // Get or create the database file.
+        let opts = web_sys::FileSystemGetFileOptions::new();
+        opts.set_create(true);
+        let file_handle: web_sys::FileSystemFileHandle =
+            JsFuture::from(root.get_file_handle_with_options(filename, &opts))
+                .await
+                .map_err(|e| JsError::new(&format!("OPFS getFileHandle failed: {e:?}")))?
+                .dyn_into()
+                .map_err(|_| JsError::new("expected FileSystemFileHandle"))?;
+
+        // Create sync access handle.
+        let sync_handle: web_sys::FileSystemSyncAccessHandle =
+            JsFuture::from(file_handle.create_sync_access_handle())
+                .await
+                .map_err(|e| JsError::new(&format!("OPFS createSyncAccessHandle failed: {e:?}")))?
+                .dyn_into()
+                .map_err(|_| JsError::new("expected FileSystemSyncAccessHandle"))?;
+
+        // Create redb with OPFS backend.
+        let backend = opfs_backend::OpfsBackend::new(sync_handle);
+        let db_inner = redb::Database::builder()
+            .create_with_backend(backend)
+            .map_err(|e| JsError::new(&format!("redb create with OPFS failed: {e}")))?;
+
+        // Wrap in RedbStorage.
+        let storage = RedbStorage::from_database(db_inner);
+        let db = NodeDbLite::open_with_config(storage, peer_id, config)
             .await
             .map_err(|e| JsError::new(&e.to_string()))?;
         Ok(Self { db })
@@ -264,5 +342,19 @@ impl NodeDbLiteWasm {
                 "unknown ID type '{id_type}': use uuidv7, uuidv4, ulid, cuid2, or nanoid"
             ))
         })
+    }
+}
+
+/// Build a [`LiteConfig`] from an optional `memory_mb` value.
+///
+/// `None` or `Some(0)` → default config (100 MiB).
+/// `Some(mb)` → default config with `memory_budget` overridden to `mb` MiB.
+fn config_from_memory_mb(memory_mb: Option<u32>) -> LiteConfig {
+    match memory_mb {
+        Some(mb) if mb > 0 => LiteConfig {
+            memory_budget: (mb as usize).saturating_mul(1024 * 1024),
+            ..LiteConfig::default()
+        },
+        _ => LiteConfig::default(),
     }
 }

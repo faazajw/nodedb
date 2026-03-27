@@ -1,3 +1,4 @@
+pub mod config;
 pub mod engine;
 pub mod error;
 pub mod memory;
@@ -8,6 +9,7 @@ pub mod storage;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod sync;
 
+pub use config::LiteConfig;
 pub use error::LiteError;
 pub use memory::MemoryGovernor;
 pub use nodedb::NodeDbLite;

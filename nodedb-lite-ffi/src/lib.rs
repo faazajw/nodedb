@@ -16,7 +16,7 @@ use std::os::raw::c_char;
 use std::sync::Arc;
 
 use nodedb_client::NodeDb;
-use nodedb_lite::{NodeDbLite, RedbStorage};
+use nodedb_lite::{LiteConfig, NodeDbLite, RedbStorage};
 
 /// Error codes returned by FFI functions.
 pub const NODEDB_OK: i32 = 0;
@@ -69,6 +69,65 @@ pub unsafe extern "C" fn nodedb_open(path: *const c_char, peer_id: u64) -> *mut 
     };
 
     let db = match rt.block_on(NodeDbLite::open(storage, peer_id)) {
+        Ok(db) => Arc::new(db),
+        Err(_) => return std::ptr::null_mut(),
+    };
+
+    Box::into_raw(Box::new(NodeDbHandle { db, rt }))
+}
+
+/// Open or create a NodeDB-Lite database with an explicit memory budget.
+///
+/// Identical to `nodedb_open` except that `memory_mb` overrides the default
+/// 100 MiB memory budget. Passing `memory_mb = 0` uses the default (100 MiB).
+///
+/// Returns an opaque handle on success, NULL on failure.
+/// The caller must call `nodedb_close` to free the handle.
+///
+/// # Safety
+/// `path` must be a valid null-terminated UTF-8 string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nodedb_open_with_config(
+    path: *const c_char,
+    peer_id: u64,
+    memory_mb: u64,
+) -> *mut NodeDbHandle {
+    let path = match ptr_to_str(path) {
+        Some(s) => s,
+        None => return std::ptr::null_mut(),
+    };
+
+    let rt = match tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(_) => return std::ptr::null_mut(),
+    };
+
+    let storage = if path == ":memory:" {
+        match RedbStorage::open_in_memory() {
+            Ok(s) => s,
+            Err(_) => return std::ptr::null_mut(),
+        }
+    } else {
+        match RedbStorage::open(path) {
+            Ok(s) => s,
+            Err(_) => return std::ptr::null_mut(),
+        }
+    };
+
+    let config = if memory_mb == 0 {
+        LiteConfig::default()
+    } else {
+        LiteConfig {
+            memory_budget: (memory_mb as usize).saturating_mul(1024 * 1024),
+            ..LiteConfig::default()
+        }
+    };
+
+    let db = match rt.block_on(NodeDbLite::open_with_config(storage, peer_id, config)) {
         Ok(db) => Arc::new(db),
         Err(_) => return std::ptr::null_mut(),
     };

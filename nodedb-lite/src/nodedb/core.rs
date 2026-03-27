@@ -70,15 +70,43 @@ pub struct NodeDbLite<S: StorageEngine> {
 
 impl<S: StorageEngine> NodeDbLite<S> {
     /// Open or create a Lite database backed by the given storage engine.
+    ///
+    /// Memory budget and per-engine percentages are resolved from environment
+    /// variables via [`LiteConfig::from_env()`], falling back to defaults when
+    /// variables are absent or malformed.
     pub async fn open(storage: S, peer_id: u64) -> NodeDbResult<Self> {
-        Self::open_with_budget(storage, peer_id, 100 * 1024 * 1024).await
+        Self::open_with_config(storage, peer_id, crate::config::LiteConfig::from_env()).await
     }
 
-    /// Open with a custom memory budget.
+    /// Open with an explicit [`LiteConfig`].
+    ///
+    /// This is the primary constructor for callers that need fine-grained
+    /// control over memory budgets (e.g. FFI, WASM, tests).
+    pub async fn open_with_config(
+        storage: S,
+        peer_id: u64,
+        config: crate::config::LiteConfig,
+    ) -> NodeDbResult<Self> {
+        let governor = crate::memory::MemoryGovernor::from_config(&config);
+        Self::open_inner(storage, peer_id, governor).await
+    }
+
+    /// Open with a custom memory budget (convenience wrapper using default percentages).
+    ///
+    /// Prefer [`open_with_config`] for new callers.
     pub async fn open_with_budget(
         storage: S,
         peer_id: u64,
         memory_budget: usize,
+    ) -> NodeDbResult<Self> {
+        let governor = crate::memory::MemoryGovernor::new(memory_budget);
+        Self::open_inner(storage, peer_id, governor).await
+    }
+
+    async fn open_inner(
+        storage: S,
+        peer_id: u64,
+        governor: crate::memory::MemoryGovernor,
     ) -> NodeDbResult<Self> {
         let storage = Arc::new(storage);
 
@@ -181,8 +209,6 @@ impl<S: StorageEngine> NodeDbLite<S> {
         let columnar = ColumnarEngine::restore(Arc::clone(&storage))
             .await
             .map_err(NodeDbError::storage)?;
-
-        let governor = MemoryGovernor::new(memory_budget);
 
         let crdt = Arc::new(Mutex::new(crdt));
         let strict = Arc::new(Mutex::new(strict));

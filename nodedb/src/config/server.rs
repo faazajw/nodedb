@@ -412,6 +412,95 @@ impl Default for ServerConfig {
     }
 }
 
+/// Parse a human-readable memory size string into bytes.
+///
+/// Supported formats:
+/// - `"512MiB"` / `"512M"` → mebibytes (base-1024)
+/// - `"8GiB"` / `"8G"` → gibibytes (base-1024)
+/// - `"1073741824"` → raw bytes (no suffix)
+///
+/// Matching is case-insensitive on the suffix.
+pub fn parse_memory_size(s: &str) -> Result<usize, String> {
+    let s = s.trim();
+    if s.is_empty() {
+        return Err("empty string".into());
+    }
+
+    // Find where digits (and optional leading sign) end.
+    let split_pos = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
+
+    let (num_part, suffix) = s.split_at(split_pos);
+    let suffix = suffix.trim();
+
+    let base: u64 = num_part
+        .parse()
+        .map_err(|_| format!("invalid number: {num_part}"))?;
+
+    let bytes: u64 = match suffix.to_ascii_uppercase().as_str() {
+        "" => base,
+        "B" => base,
+        "K" | "KB" | "KIB" => base
+            .checked_mul(1024)
+            .ok_or_else(|| format!("overflow parsing memory size: {s}"))?,
+        "M" | "MB" | "MIB" => base
+            .checked_mul(1024 * 1024)
+            .ok_or_else(|| format!("overflow parsing memory size: {s}"))?,
+        "G" | "GB" | "GIB" => base
+            .checked_mul(1024 * 1024 * 1024)
+            .ok_or_else(|| format!("overflow parsing memory size: {s}"))?,
+        "T" | "TB" | "TIB" => base
+            .checked_mul(1024 * 1024 * 1024 * 1024)
+            .ok_or_else(|| format!("overflow parsing memory size: {s}"))?,
+        other => return Err(format!("unknown memory size suffix: '{other}'")),
+    };
+
+    usize::try_from(bytes).map_err(|_| format!("memory size too large for this platform: {s}"))
+}
+
+/// Apply environment variable overrides to a loaded `ServerConfig`.
+///
+/// Priority order: env var > TOML value > compiled default.
+///
+/// Handled variables:
+/// - `NODEDB_DATA_DIR`    — overrides `config.data_dir`
+/// - `NODEDB_MEMORY_LIMIT` — overrides `config.memory_limit`
+///
+/// `NODEDB_CONFIG` (config file path) is handled upstream in `main.rs`
+/// before this function is called, so it is not processed here.
+pub fn apply_env_overrides(config: &mut ServerConfig) {
+    if let Ok(val) = std::env::var("NODEDB_DATA_DIR") {
+        let path = std::path::PathBuf::from(&val);
+        tracing::info!(
+            env_var = "NODEDB_DATA_DIR",
+            value = %val,
+            "environment variable override applied"
+        );
+        config.data_dir = path;
+    }
+
+    if let Ok(val) = std::env::var("NODEDB_MEMORY_LIMIT") {
+        match parse_memory_size(&val) {
+            Ok(bytes) => {
+                tracing::info!(
+                    env_var = "NODEDB_MEMORY_LIMIT",
+                    value = %val,
+                    bytes,
+                    "environment variable override applied"
+                );
+                config.memory_limit = bytes;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    env_var = "NODEDB_MEMORY_LIMIT",
+                    value = %val,
+                    error = %e,
+                    "ignoring malformed environment variable, using config value"
+                );
+            }
+        }
+    }
+}
+
 impl ServerConfig {
     /// Load configuration from a TOML file, falling back to defaults.
     pub fn from_file(path: &std::path::Path) -> crate::Result<Self> {
@@ -530,5 +619,76 @@ mod tests {
         let parsed: ServerConfig = toml::from_str(&toml_str).unwrap();
         assert_eq!(parsed.listen, cfg.listen);
         assert_eq!(parsed.memory_limit, cfg.memory_limit);
+    }
+
+    // ── parse_memory_size ───────────────────────────────────────────
+
+    #[test]
+    fn parse_raw_bytes() {
+        assert_eq!(parse_memory_size("1073741824").unwrap(), 1_073_741_824);
+        assert_eq!(parse_memory_size("0").unwrap(), 0);
+        assert_eq!(parse_memory_size("1").unwrap(), 1);
+    }
+
+    #[test]
+    fn parse_mib_suffix() {
+        assert_eq!(parse_memory_size("512MiB").unwrap(), 512 * 1024 * 1024);
+        assert_eq!(parse_memory_size("512M").unwrap(), 512 * 1024 * 1024);
+        assert_eq!(parse_memory_size("512MB").unwrap(), 512 * 1024 * 1024);
+        assert_eq!(parse_memory_size("1MiB").unwrap(), 1024 * 1024);
+    }
+
+    #[test]
+    fn parse_gib_suffix() {
+        assert_eq!(parse_memory_size("8GiB").unwrap(), 8 * 1024 * 1024 * 1024);
+        assert_eq!(parse_memory_size("8G").unwrap(), 8 * 1024 * 1024 * 1024);
+        assert_eq!(parse_memory_size("8GB").unwrap(), 8 * 1024 * 1024 * 1024);
+        assert_eq!(parse_memory_size("1GiB").unwrap(), 1024 * 1024 * 1024);
+    }
+
+    #[test]
+    fn parse_kib_suffix() {
+        assert_eq!(parse_memory_size("64KiB").unwrap(), 64 * 1024);
+        assert_eq!(parse_memory_size("64K").unwrap(), 64 * 1024);
+        assert_eq!(parse_memory_size("64KB").unwrap(), 64 * 1024);
+    }
+
+    #[test]
+    fn parse_bytes_suffix() {
+        assert_eq!(parse_memory_size("100B").unwrap(), 100);
+    }
+
+    #[test]
+    fn parse_case_insensitive() {
+        assert_eq!(parse_memory_size("512mib").unwrap(), 512 * 1024 * 1024);
+        assert_eq!(parse_memory_size("8gib").unwrap(), 8 * 1024 * 1024 * 1024);
+        assert_eq!(parse_memory_size("4g").unwrap(), 4 * 1024 * 1024 * 1024);
+    }
+
+    #[test]
+    fn parse_trims_whitespace() {
+        assert_eq!(parse_memory_size("  512MiB  ").unwrap(), 512 * 1024 * 1024);
+        assert_eq!(
+            parse_memory_size("  8GiB  ").unwrap(),
+            8 * 1024 * 1024 * 1024
+        );
+    }
+
+    #[test]
+    fn parse_unknown_suffix_is_error() {
+        assert!(parse_memory_size("512X").is_err());
+        assert!(parse_memory_size("8ZiB").is_err());
+    }
+
+    #[test]
+    fn parse_empty_is_error() {
+        assert!(parse_memory_size("").is_err());
+        assert!(parse_memory_size("   ").is_err());
+    }
+
+    #[test]
+    fn parse_non_numeric_is_error() {
+        assert!(parse_memory_size("abc").is_err());
+        assert!(parse_memory_size("GiB").is_err());
     }
 }
