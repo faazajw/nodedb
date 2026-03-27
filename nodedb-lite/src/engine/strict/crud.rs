@@ -139,6 +139,30 @@ impl<S: StorageEngine> StrictEngine<S> {
         Ok(true)
     }
 
+    /// Update a row by replacing with complete new values (for CRDT adapter).
+    pub async fn update_by_values(
+        &self,
+        collection: &str,
+        pk: &Value,
+        new_values: &[Value],
+    ) -> Result<bool, LiteError> {
+        let state = self.get_state(collection)?;
+        let key = state.storage_key_from_pk(collection, pk);
+
+        if self.storage.get(Namespace::Strict, &key).await?.is_none() {
+            return Ok(false);
+        }
+
+        let new_tuple = state
+            .encoder
+            .encode(new_values)
+            .map_err(strict_err_to_lite)?;
+        self.storage
+            .put(Namespace::Strict, &key, &new_tuple)
+            .await?;
+        Ok(true)
+    }
+
     /// Delete a row by PK. Returns true if the row existed.
     pub async fn delete(&self, collection: &str, pk: &Value) -> Result<bool, LiteError> {
         let state = self.get_state(collection)?;

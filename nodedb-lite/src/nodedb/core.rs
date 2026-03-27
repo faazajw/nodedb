@@ -748,6 +748,68 @@ impl<S: StorageEngine> NodeDbLite<S> {
         Ok(())
     }
 
+    /// Apply a CRDT field-level update to a strict collection row.
+    ///
+    /// Used during sync: a remote delta specifies field changes for a row.
+    /// This reads the current tuple, patches the fields, and writes back.
+    pub async fn strict_crdt_patch(
+        &self,
+        collection: &str,
+        pk: &nodedb_types::value::Value,
+        field_updates: &std::collections::HashMap<String, nodedb_types::value::Value>,
+    ) -> NodeDbResult<()> {
+        let schema = {
+            let strict = self.strict.lock_or_recover();
+            strict
+                .schema(collection)
+                .ok_or_else(|| {
+                    NodeDbError::storage(format!("strict collection '{collection}' not found"))
+                })?
+                .clone()
+        };
+
+        // Read existing tuple.
+        let existing = tokio::task::block_in_place(|| {
+            let strict = self.strict.lock_or_recover();
+            tokio::runtime::Handle::current().block_on(strict.get(collection, pk))
+        })
+        .map_err(NodeDbError::storage)?
+        .ok_or_else(|| NodeDbError::storage("row not found for CRDT patch"))?;
+
+        // Re-encode as tuple bytes for the adapter.
+        let encoder = nodedb_strict::TupleEncoder::new(&schema);
+        let tuple_bytes = encoder
+            .encode(&existing)
+            .map_err(|e| NodeDbError::storage(e.to_string()))?;
+
+        // Apply the CRDT patch.
+        let patched = crate::engine::strict::crdt_adapter::apply_crdt_set(
+            &tuple_bytes,
+            &schema,
+            field_updates,
+        )
+        .map_err(NodeDbError::storage)?;
+
+        // Decode patched tuple back to values and update.
+        let decoder = nodedb_strict::TupleDecoder::new(&schema);
+        let new_values = decoder
+            .extract_all(&patched)
+            .map_err(|e| NodeDbError::storage(e.to_string()))?;
+
+        // Write back via the standard update path.
+        tokio::task::block_in_place(|| {
+            let strict = self.strict.lock_or_recover();
+            tokio::runtime::Handle::current().block_on(strict.update_by_values(
+                collection,
+                pk,
+                &new_values,
+            ))
+        })
+        .map_err(NodeDbError::storage)?;
+
+        Ok(())
+    }
+
     /// Access pending CRDT deltas (for sync client).
     pub fn pending_crdt_deltas(
         &self,

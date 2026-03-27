@@ -180,4 +180,65 @@ impl<S: StorageEngine> StrictEngine<S> {
     pub fn collection_names(&self) -> Vec<&str> {
         self.collections.keys().map(|s| s.as_str()).collect()
     }
+
+    /// Rewrite old-version tuples to the current schema version.
+    ///
+    /// Scans all tuples, finds those with `schema_version < current_version`,
+    /// reads them with the old-version decoder, pads with null for new columns,
+    /// and re-encodes with the current encoder. This eliminates the per-read
+    /// version check overhead.
+    ///
+    /// Returns the number of tuples rewritten.
+    pub async fn compact_tuples(&self, name: &str) -> Result<usize, LiteError> {
+        let state = self.get_state(name)?;
+        let current_version = state.schema.version;
+
+        if current_version <= 1 {
+            return Ok(0); // No schema evolution — nothing to compact.
+        }
+
+        let prefix = format!("{name}:");
+        let entries = self
+            .storage
+            .scan_prefix(nodedb_types::Namespace::Strict, prefix.as_bytes())
+            .await?;
+
+        let mut rewritten = 0usize;
+
+        for (key, tuple_bytes) in &entries {
+            let tuple_version = state
+                .decoder
+                .schema_version(tuple_bytes)
+                .unwrap_or(current_version);
+
+            if tuple_version >= current_version {
+                continue; // Already current version.
+            }
+
+            // Decode with old schema, pad, re-encode with current schema.
+            let old_col_count = state
+                .version_column_counts
+                .get(&tuple_version)
+                .copied()
+                .unwrap_or(state.schema.columns.len());
+
+            let old_schema = nodedb_types::columnar::StrictSchema {
+                columns: state.schema.columns[..old_col_count].to_vec(),
+                version: tuple_version,
+            };
+            let old_decoder = nodedb_strict::TupleDecoder::new(&old_schema);
+
+            if let Ok(mut values) = old_decoder.extract_all(tuple_bytes) {
+                values.resize(state.schema.columns.len(), nodedb_types::value::Value::Null);
+                if let Ok(new_tuple) = state.encoder.encode(&values) {
+                    self.storage
+                        .put(nodedb_types::Namespace::Strict, key, &new_tuple)
+                        .await?;
+                    rewritten += 1;
+                }
+            }
+        }
+
+        Ok(rewritten)
+    }
 }
