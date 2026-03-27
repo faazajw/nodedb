@@ -582,6 +582,11 @@ impl<S: StorageEngine> NodeDbLite<S> {
         &self.columnar
     }
 
+    /// Access the HTAP bridge (for materialized view inspection).
+    pub fn htap_bridge(&self) -> &Arc<Mutex<crate::engine::htap::HtapBridge>> {
+        &self.htap
+    }
+
     // -- Indexed CRUD for strict/columnar collections --
 
     /// Insert a row into a strict collection and update secondary indexes.
