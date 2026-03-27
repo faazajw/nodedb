@@ -5,19 +5,22 @@
 
 use std::collections::{HashMap, HashSet, VecDeque, hash_map::Entry};
 
-use crate::csr::{CsrIndex, Direction};
+pub use nodedb_types::config::tuning::DEFAULT_MAX_VISITED;
 
-/// Default cap on visited nodes during BFS traversals.
-const DEFAULT_MAX_VISITED: usize = 100_000;
+use crate::csr::{CsrIndex, Direction};
 
 impl CsrIndex {
     /// BFS traversal. Returns all reachable node IDs within max_depth hops.
+    ///
+    /// `max_visited` caps the number of nodes visited to prevent supernode fan-out
+    /// explosion. Pass [`DEFAULT_MAX_VISITED`] for the standard limit.
     pub fn traverse_bfs(
         &self,
         start_nodes: &[&str],
         label_filter: Option<&str>,
         direction: Direction,
         max_depth: usize,
+        max_visited: usize,
     ) -> Vec<String> {
         let label_id = label_filter.and_then(|l| self.label_id(l));
         let mut visited: HashSet<u32> = HashSet::new();
@@ -32,14 +35,14 @@ impl CsrIndex {
         }
 
         while let Some((node_id, depth)) = queue.pop_front() {
-            if depth >= max_depth || visited.len() >= DEFAULT_MAX_VISITED {
+            if depth >= max_depth || visited.len() >= max_visited {
                 continue;
             }
 
             if matches!(direction, Direction::Out | Direction::Both) {
                 for (lid, dst) in self.iter_out_edges(node_id) {
                     if label_id.is_none_or(|f| f == lid)
-                        && visited.len() < DEFAULT_MAX_VISITED
+                        && visited.len() < max_visited
                         && visited.insert(dst)
                     {
                         queue.push_back((dst, depth + 1));
@@ -49,7 +52,7 @@ impl CsrIndex {
             if matches!(direction, Direction::In | Direction::Both) {
                 for (lid, src) in self.iter_in_edges(node_id) {
                     if label_id.is_none_or(|f| f == lid)
-                        && visited.len() < DEFAULT_MAX_VISITED
+                        && visited.len() < max_visited
                         && visited.insert(src)
                     {
                         queue.push_back((src, depth + 1));
@@ -65,24 +68,32 @@ impl CsrIndex {
     }
 
     /// BFS traversal returning nodes with depth information.
+    ///
+    /// `max_visited` caps the number of nodes visited to prevent supernode fan-out
+    /// explosion. Pass [`DEFAULT_MAX_VISITED`] for the standard limit.
     pub fn traverse_bfs_with_depth(
         &self,
         start_nodes: &[&str],
         label_filter: Option<&str>,
         direction: Direction,
         max_depth: usize,
+        max_visited: usize,
     ) -> Vec<(String, u8)> {
         let filters: Vec<&str> = label_filter.into_iter().collect();
-        self.traverse_bfs_with_depth_multi(start_nodes, &filters, direction, max_depth)
+        self.traverse_bfs_with_depth_multi(start_nodes, &filters, direction, max_depth, max_visited)
     }
 
     /// BFS traversal with multi-label filter. Empty labels = all edges.
+    ///
+    /// `max_visited` caps the number of nodes visited to prevent supernode fan-out
+    /// explosion. Pass [`DEFAULT_MAX_VISITED`] for the standard limit.
     pub fn traverse_bfs_with_depth_multi(
         &self,
         start_nodes: &[&str],
         label_filters: &[&str],
         direction: Direction,
         max_depth: usize,
+        max_visited: usize,
     ) -> Vec<(String, u8)> {
         let label_ids: Vec<u16> = label_filters
             .iter()
@@ -100,7 +111,7 @@ impl CsrIndex {
         }
 
         while let Some((node_id, depth)) = queue.pop_front() {
-            if depth as usize >= max_depth || visited.len() >= DEFAULT_MAX_VISITED {
+            if depth as usize >= max_depth || visited.len() >= max_visited {
                 continue;
             }
 
@@ -109,7 +120,7 @@ impl CsrIndex {
             if matches!(direction, Direction::Out | Direction::Both) {
                 for (lid, dst) in self.iter_out_edges(node_id) {
                     if match_label(lid)
-                        && visited.len() < DEFAULT_MAX_VISITED
+                        && visited.len() < max_visited
                         && !visited.contains_key(&dst)
                     {
                         visited.insert(dst, next_depth);
@@ -120,7 +131,7 @@ impl CsrIndex {
             if matches!(direction, Direction::In | Direction::Both) {
                 for (lid, src) in self.iter_in_edges(node_id) {
                     if match_label(lid)
-                        && visited.len() < DEFAULT_MAX_VISITED
+                        && visited.len() < max_visited
                         && !visited.contains_key(&src)
                     {
                         visited.insert(src, next_depth);
@@ -137,12 +148,16 @@ impl CsrIndex {
     }
 
     /// Shortest path via bidirectional BFS.
+    ///
+    /// `max_visited` caps the combined forward+backward visited set to prevent
+    /// supernode fan-out explosion. Pass [`DEFAULT_MAX_VISITED`] for the standard limit.
     pub fn shortest_path(
         &self,
         src: &str,
         dst: &str,
         label_filter: Option<&str>,
         max_depth: usize,
+        max_visited: usize,
     ) -> Option<Vec<String>> {
         let src_id = self.node_id(src)?;
         let dst_id = self.node_id(dst)?;
@@ -160,7 +175,7 @@ impl CsrIndex {
         let mut bwd_frontier: Vec<u32> = vec![dst_id];
 
         for _depth in 0..max_depth {
-            if fwd_parent.len() + bwd_parent.len() >= DEFAULT_MAX_VISITED {
+            if fwd_parent.len() + bwd_parent.len() >= max_visited {
                 break;
             }
 
@@ -240,11 +255,15 @@ impl CsrIndex {
     }
 
     /// Materialize a subgraph as edge tuples within max_depth.
+    ///
+    /// `max_visited` caps the number of nodes visited to prevent supernode fan-out
+    /// explosion. Pass [`DEFAULT_MAX_VISITED`] for the standard limit.
     pub fn subgraph(
         &self,
         start_nodes: &[&str],
         label_filter: Option<&str>,
         max_depth: usize,
+        max_visited: usize,
     ) -> Vec<(String, String, String)> {
         let label_id = label_filter.and_then(|l| self.label_id(l));
         let mut visited: HashSet<u32> = HashSet::new();
@@ -260,7 +279,7 @@ impl CsrIndex {
         }
 
         while let Some((node_id, depth)) = queue.pop_front() {
-            if depth >= max_depth || visited.len() >= DEFAULT_MAX_VISITED {
+            if depth >= max_depth || visited.len() >= max_visited {
                 continue;
             }
             for (lid, dst) in self.iter_out_edges(node_id) {
@@ -270,7 +289,7 @@ impl CsrIndex {
                         self.label_name(lid).to_string(),
                         self.node_name(dst).to_string(),
                     ));
-                    if visited.len() < DEFAULT_MAX_VISITED && visited.insert(dst) {
+                    if visited.len() < max_visited && visited.insert(dst) {
                         queue.push_back((dst, depth + 1));
                     }
                 }
@@ -297,7 +316,13 @@ mod tests {
     #[test]
     fn bfs_traversal() {
         let csr = make_csr();
-        let mut result = csr.traverse_bfs(&["a"], Some("KNOWS"), Direction::Out, 2);
+        let mut result = csr.traverse_bfs(
+            &["a"],
+            Some("KNOWS"),
+            Direction::Out,
+            2,
+            DEFAULT_MAX_VISITED,
+        );
         result.sort();
         assert_eq!(result, vec!["a", "b", "c"]);
     }
@@ -305,7 +330,7 @@ mod tests {
     #[test]
     fn bfs_all_labels() {
         let csr = make_csr();
-        let mut result = csr.traverse_bfs(&["a"], None, Direction::Out, 1);
+        let mut result = csr.traverse_bfs(&["a"], None, Direction::Out, 1, DEFAULT_MAX_VISITED);
         result.sort();
         assert_eq!(result, vec!["a", "b", "e"]);
     }
@@ -316,7 +341,7 @@ mod tests {
         csr.add_edge("a", "L", "b");
         csr.add_edge("b", "L", "c");
         csr.add_edge("c", "L", "a");
-        let mut result = csr.traverse_bfs(&["a"], None, Direction::Out, 10);
+        let mut result = csr.traverse_bfs(&["a"], None, Direction::Out, 10, DEFAULT_MAX_VISITED);
         result.sort();
         assert_eq!(result, vec!["a", "b", "c"]);
     }
@@ -324,7 +349,13 @@ mod tests {
     #[test]
     fn bfs_with_depth() {
         let csr = make_csr();
-        let result = csr.traverse_bfs_with_depth(&["a"], Some("KNOWS"), Direction::Out, 3);
+        let result = csr.traverse_bfs_with_depth(
+            &["a"],
+            Some("KNOWS"),
+            Direction::Out,
+            3,
+            DEFAULT_MAX_VISITED,
+        );
         let map: HashMap<String, u8> = result.into_iter().collect();
         assert_eq!(map["a"], 0);
         assert_eq!(map["b"], 1);
@@ -335,35 +366,39 @@ mod tests {
     #[test]
     fn shortest_path_direct() {
         let csr = make_csr();
-        let path = csr.shortest_path("a", "c", Some("KNOWS"), 5).unwrap();
+        let path = csr
+            .shortest_path("a", "c", Some("KNOWS"), 5, DEFAULT_MAX_VISITED)
+            .unwrap();
         assert_eq!(path, vec!["a", "b", "c"]);
     }
 
     #[test]
     fn shortest_path_same_node() {
         let csr = make_csr();
-        let path = csr.shortest_path("a", "a", None, 5).unwrap();
+        let path = csr
+            .shortest_path("a", "a", None, 5, DEFAULT_MAX_VISITED)
+            .unwrap();
         assert_eq!(path, vec!["a"]);
     }
 
     #[test]
     fn shortest_path_unreachable() {
         let csr = make_csr();
-        let path = csr.shortest_path("d", "a", Some("KNOWS"), 5);
+        let path = csr.shortest_path("d", "a", Some("KNOWS"), 5, DEFAULT_MAX_VISITED);
         assert!(path.is_none());
     }
 
     #[test]
     fn shortest_path_depth_limit() {
         let csr = make_csr();
-        let path = csr.shortest_path("a", "d", Some("KNOWS"), 1);
+        let path = csr.shortest_path("a", "d", Some("KNOWS"), 1, DEFAULT_MAX_VISITED);
         assert!(path.is_none());
     }
 
     #[test]
     fn subgraph_materialization() {
         let csr = make_csr();
-        let edges = csr.subgraph(&["a"], None, 2);
+        let edges = csr.subgraph(&["a"], None, 2, DEFAULT_MAX_VISITED);
         assert_eq!(edges.len(), 3);
         assert!(edges.contains(&("a".into(), "KNOWS".into(), "b".into())));
         assert!(edges.contains(&("a".into(), "WORKS".into(), "e".into())));
@@ -379,11 +414,19 @@ mod tests {
         }
         csr.compact();
 
-        let result = csr.traverse_bfs(&["n0"], Some("NEXT"), Direction::Out, 100);
+        let result = csr.traverse_bfs(
+            &["n0"],
+            Some("NEXT"),
+            Direction::Out,
+            100,
+            DEFAULT_MAX_VISITED,
+        );
         // Should find n0..n100 (101 nodes within 100 hops).
         assert_eq!(result.len(), 101);
 
-        let path = csr.shortest_path("n0", "n50", Some("NEXT"), 100).unwrap();
+        let path = csr
+            .shortest_path("n0", "n50", Some("NEXT"), 100, DEFAULT_MAX_VISITED)
+            .unwrap();
         assert_eq!(path.len(), 51); // n0, n1, ..., n50
     }
 }

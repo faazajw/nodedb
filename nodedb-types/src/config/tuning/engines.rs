@@ -88,6 +88,13 @@ fn default_hll_p() -> u32 {
     8
 }
 
+/// Default cap on visited nodes during BFS traversals.
+/// Prevents supernode fan-out explosion from consuming unbounded memory.
+pub const DEFAULT_MAX_VISITED: usize = 100_000;
+
+/// Default maximum BFS traversal depth.
+pub const DEFAULT_MAX_DEPTH: usize = 10;
+
 /// Graph engine tuning (traversal limits, LCC algorithm).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphTuning {
@@ -113,10 +120,10 @@ impl Default for GraphTuning {
 }
 
 fn default_max_visited() -> usize {
-    100_000
+    DEFAULT_MAX_VISITED
 }
 fn default_max_depth() -> usize {
-    10
+    DEFAULT_MAX_DEPTH
 }
 fn default_lcc_high_degree_threshold() -> usize {
     2_000

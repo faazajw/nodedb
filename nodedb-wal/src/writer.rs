@@ -242,7 +242,7 @@ impl WalWriter {
         }
 
         // If the record is larger than the entire buffer, we have a problem.
-        // This shouldn't happen with MAX_PAYLOAD_SIZE checks, but guard anyway.
+        // This shouldn't happen with MAX_WAL_PAYLOAD_SIZE checks, but guard anyway.
         if total_size > self.buffer.capacity() {
             return Err(WalError::PayloadTooLarge {
                 size: record.payload.len(),

@@ -10,11 +10,6 @@ use crate::engine::graph::edge_store::Direction;
 
 use super::index::CsrIndex;
 
-/// Default cap on visited nodes during BFS traversals.
-/// Prevents supernode fan-out explosion from consuming unbounded memory.
-/// Sourced from `GraphTuning::max_visited` at runtime.
-pub const DEFAULT_MAX_VISITED: usize = 100_000;
-
 impl CsrIndex {
     /// BFS traversal. Returns all reachable node IDs within max_depth hops.
     ///
@@ -236,6 +231,7 @@ impl CsrIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nodedb_types::config::tuning::DEFAULT_MAX_VISITED;
 
     fn make_csr() -> CsrIndex {
         let mut csr = CsrIndex::new();

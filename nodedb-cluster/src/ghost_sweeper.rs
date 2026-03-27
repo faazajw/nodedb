@@ -16,6 +16,8 @@ use tracing::{debug, info};
 use crate::ghost::{GhostTable, SweepVerdict};
 
 /// Default sweep interval: 30 minutes.
+///
+/// Corresponds to `ClusterTransportTuning::ghost_sweep_interval_secs`.
 pub const DEFAULT_SWEEP_INTERVAL: Duration = Duration::from_secs(30 * 60);
 
 /// Ghost sweeper configuration.

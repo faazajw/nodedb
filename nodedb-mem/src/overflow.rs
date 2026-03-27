@@ -55,8 +55,15 @@ pub struct OverflowRegion {
 }
 
 impl OverflowRegion {
-    const DEFAULT_INITIAL_CAPACITY: usize = 64 * 1024 * 1024; // 64 MiB
-    const DEFAULT_MAX_CAPACITY: usize = 1024 * 1024 * 1024; // 1 GiB
+    /// Default initial mmap size.
+    ///
+    /// Corresponds to `MemoryTuning::overflow_initial_bytes`.
+    pub const DEFAULT_INITIAL_CAPACITY: usize = 64 * 1024 * 1024; // 64 MiB
+
+    /// Default maximum capacity (prevents unbounded growth).
+    ///
+    /// Corresponds to `MemoryTuning::overflow_max_bytes`.
+    pub const DEFAULT_MAX_CAPACITY: usize = 1024 * 1024 * 1024; // 1 GiB
 
     /// Open or create an overflow region at the given path.
     ///
@@ -64,6 +71,19 @@ impl OverflowRegion {
     /// If the file exists, it's mapped at current size.
     pub fn open(path: &Path) -> Result<Self> {
         Self::open_with_capacity(path, Self::DEFAULT_INITIAL_CAPACITY)
+    }
+
+    /// Open or create an overflow region with explicit initial and maximum capacity.
+    ///
+    /// Use this when applying runtime config from `MemoryTuning`.
+    pub fn open_with_config(
+        path: &Path,
+        initial_capacity: usize,
+        max_capacity: usize,
+    ) -> Result<Self> {
+        let mut region = Self::open_with_capacity(path, initial_capacity)?;
+        region.max_capacity = max_capacity;
+        Ok(region)
     }
 
     /// Open or create an overflow region with a specific initial capacity.

@@ -14,6 +14,8 @@ use nodedb_types::value::Value;
 use crate::error::ColumnarError;
 
 /// Default flush threshold: 64K rows per memtable.
+///
+/// Corresponds to `QueryTuning::columnar_flush_threshold`.
 pub const DEFAULT_FLUSH_THRESHOLD: usize = 65_536;
 
 /// A single column's data in the memtable.

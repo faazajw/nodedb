@@ -19,8 +19,8 @@ pub const WAL_MAGIC: u32 = 0x5359_4E57; // "SYNW" in ASCII
 /// Current WAL format version.
 pub const WAL_FORMAT_VERSION: u16 = 1;
 
-/// Maximum payload size per record (64 MiB).
-pub const MAX_PAYLOAD_SIZE: usize = 64 * 1024 * 1024;
+/// Maximum WAL record payload size (64 MiB). Distinct from cluster RPC's limit.
+pub const MAX_WAL_PAYLOAD_SIZE: usize = 64 * 1024 * 1024;
 
 /// Size of the record header in bytes.
 pub const HEADER_SIZE: usize = 30;
@@ -201,10 +201,10 @@ impl WalRecord {
         payload: Vec<u8>,
         encryption_key: Option<&crate::crypto::WalEncryptionKey>,
     ) -> Result<Self> {
-        if payload.len() > MAX_PAYLOAD_SIZE {
+        if payload.len() > MAX_WAL_PAYLOAD_SIZE {
             return Err(WalError::PayloadTooLarge {
                 size: payload.len(),
-                max: MAX_PAYLOAD_SIZE,
+                max: MAX_WAL_PAYLOAD_SIZE,
             });
         }
 
@@ -403,7 +403,7 @@ mod tests {
 
     #[test]
     fn payload_too_large_rejected() {
-        let big_payload = vec![0u8; MAX_PAYLOAD_SIZE + 1];
+        let big_payload = vec![0u8; MAX_WAL_PAYLOAD_SIZE + 1];
         assert!(matches!(
             WalRecord::new(RecordType::Put as u16, 1, 0, 0, big_payload, None),
             Err(WalError::PayloadTooLarge { .. })

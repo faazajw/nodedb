@@ -28,8 +28,10 @@ use nodedb_raft::message::{
 /// Header size in bytes: version(1) + rpc_type(1) + payload_len(4) + crc32c(4).
 pub const HEADER_SIZE: usize = 10;
 
-/// Maximum payload size (64 MiB) — prevents degenerate allocations from corrupt frames.
-const MAX_PAYLOAD_SIZE: u32 = 64 * 1024 * 1024;
+/// Maximum RPC message payload size (64 MiB). Distinct from WAL's MAX_WAL_PAYLOAD_SIZE.
+///
+/// Prevents degenerate allocations from corrupt frames.
+const MAX_RPC_PAYLOAD_SIZE: u32 = 64 * 1024 * 1024;
 
 /// RPC type discriminants.
 const RPC_APPEND_ENTRIES_REQ: u8 = 1;
@@ -237,9 +239,9 @@ pub fn decode(data: &[u8]) -> Result<RaftRpc> {
     let payload_len = u32::from_le_bytes([data[2], data[3], data[4], data[5]]);
     let expected_crc = u32::from_le_bytes([data[6], data[7], data[8], data[9]]);
 
-    if payload_len > MAX_PAYLOAD_SIZE {
+    if payload_len > MAX_RPC_PAYLOAD_SIZE {
         return Err(ClusterError::Codec {
-            detail: format!("payload length {payload_len} exceeds maximum {MAX_PAYLOAD_SIZE}"),
+            detail: format!("payload length {payload_len} exceeds maximum {MAX_RPC_PAYLOAD_SIZE}"),
         });
     }
 
@@ -271,9 +273,9 @@ pub fn decode(data: &[u8]) -> Result<RaftRpc> {
 /// Useful for stream framing — read the header, then read the remaining payload.
 pub fn frame_size(header: &[u8; HEADER_SIZE]) -> Result<usize> {
     let payload_len = u32::from_le_bytes([header[2], header[3], header[4], header[5]]);
-    if payload_len > MAX_PAYLOAD_SIZE {
+    if payload_len > MAX_RPC_PAYLOAD_SIZE {
         return Err(ClusterError::Codec {
-            detail: format!("payload length {payload_len} exceeds maximum {MAX_PAYLOAD_SIZE}"),
+            detail: format!("payload length {payload_len} exceeds maximum {MAX_RPC_PAYLOAD_SIZE}"),
         });
     }
     Ok(HEADER_SIZE + payload_len as usize)
@@ -723,7 +725,7 @@ mod tests {
         let mut frame = vec![0u8; HEADER_SIZE];
         frame[0] = WIRE_VERSION as u8;
         frame[1] = RPC_APPEND_ENTRIES_REQ;
-        let huge: u32 = MAX_PAYLOAD_SIZE + 1;
+        let huge: u32 = MAX_RPC_PAYLOAD_SIZE + 1;
         frame[2..6].copy_from_slice(&huge.to_le_bytes());
 
         let err = decode(&frame).unwrap_err();

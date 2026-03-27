@@ -4,11 +4,6 @@ use super::store::{
     Direction, EDGES, Edge, EdgeStore, REVERSE_EDGES, edge_key, parse_edge_key, redb_err,
 };
 
-/// Default maximum BFS traversal depth. Sourced from `GraphTuning::max_depth`.
-pub const DEFAULT_MAX_ALLOWED_DEPTH: usize = 10;
-/// Default maximum visited nodes during BFS. Sourced from `GraphTuning::max_visited`.
-pub const DEFAULT_MAX_VISITED: usize = 100_000;
-
 impl EdgeStore {
     /// Get all outbound neighbors of a node, optionally filtered by edge label.
     ///

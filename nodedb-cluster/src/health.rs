@@ -21,10 +21,14 @@ use crate::topology::{ClusterTopology, NodeState};
 use crate::transport::NexarTransport;
 
 /// Default ping interval.
-const DEFAULT_PING_INTERVAL: Duration = Duration::from_secs(5);
+///
+/// Corresponds to `ClusterTransportTuning::health_ping_interval_secs`.
+pub const DEFAULT_PING_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Default number of consecutive failures before marking a node as down.
-const DEFAULT_FAILURE_THRESHOLD: u32 = 3;
+///
+/// Corresponds to `ClusterTransportTuning::health_failure_threshold`.
+pub const DEFAULT_FAILURE_THRESHOLD: u32 = 3;
 
 /// Health monitor configuration.
 #[derive(Debug, Clone)]

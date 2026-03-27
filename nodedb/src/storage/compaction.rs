@@ -20,6 +20,8 @@ pub struct CompactionConfig {
     /// Maximum segments to merge in a single compaction pass.
     pub max_segments_per_pass: usize,
     /// Target segment size in bytes after compaction.
+    ///
+    /// Corresponds to `QueryTuning::compaction_target_bytes`.
     pub target_segment_bytes: usize,
     /// Tombstone ratio threshold: compact if tombstones > this fraction.
     pub tombstone_ratio_threshold: f64,

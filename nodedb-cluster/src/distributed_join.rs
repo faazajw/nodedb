@@ -17,8 +17,11 @@ use tracing::debug;
 
 use crate::routing::RoutingTable;
 
-/// Maximum size for broadcast side (bytes). Above this, use shuffle.
-pub const BROADCAST_THRESHOLD_BYTES: usize = 8 * 1024 * 1024; // 8 MiB
+/// Default maximum payload size for broadcast join strategy selection.
+///
+/// Above this threshold, shuffle join is preferred over broadcast.
+/// Corresponds to `ClusterTransportTuning::broadcast_threshold_bytes`.
+pub const DEFAULT_BROADCAST_THRESHOLD_BYTES: usize = 8 * 1024 * 1024; // 8 MiB
 
 /// A broadcast join request sent to each participating node.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,16 +61,21 @@ pub enum JoinSide {
 
 /// Determine the join strategy based on estimated data sizes.
 ///
-/// Returns `Broadcast` if the smaller side fits within the threshold,
-/// otherwise `Shuffle`.
-pub fn select_strategy(left_estimated_bytes: usize, right_estimated_bytes: usize) -> JoinStrategy {
+/// Returns `Broadcast` if the smaller side fits within `broadcast_threshold_bytes`,
+/// otherwise `Shuffle`. Pass `DEFAULT_BROADCAST_THRESHOLD_BYTES` when no runtime
+/// config is available.
+pub fn select_strategy(
+    left_estimated_bytes: usize,
+    right_estimated_bytes: usize,
+    broadcast_threshold_bytes: usize,
+) -> JoinStrategy {
     let (smaller, _larger) = if left_estimated_bytes <= right_estimated_bytes {
         (left_estimated_bytes, right_estimated_bytes)
     } else {
         (right_estimated_bytes, left_estimated_bytes)
     };
 
-    if smaller <= BROADCAST_THRESHOLD_BYTES {
+    if smaller <= broadcast_threshold_bytes {
         JoinStrategy::Broadcast {
             broadcast_side: if left_estimated_bytes <= right_estimated_bytes {
                 JoinSide::Left
@@ -133,7 +141,7 @@ mod tests {
 
     #[test]
     fn broadcast_selected_for_small_side() {
-        let strategy = select_strategy(1_000, 100_000_000);
+        let strategy = select_strategy(1_000, 100_000_000, DEFAULT_BROADCAST_THRESHOLD_BYTES);
         assert!(matches!(
             strategy,
             JoinStrategy::Broadcast {
@@ -144,7 +152,7 @@ mod tests {
 
     #[test]
     fn shuffle_selected_for_large_sides() {
-        let strategy = select_strategy(100_000_000, 200_000_000);
+        let strategy = select_strategy(100_000_000, 200_000_000, DEFAULT_BROADCAST_THRESHOLD_BYTES);
         assert_eq!(strategy, JoinStrategy::Shuffle);
     }
 
@@ -174,11 +182,19 @@ mod tests {
     #[test]
     fn broadcast_threshold() {
         // Exactly at threshold → broadcast.
-        let strategy = select_strategy(BROADCAST_THRESHOLD_BYTES, 100_000_000);
+        let strategy = select_strategy(
+            DEFAULT_BROADCAST_THRESHOLD_BYTES,
+            100_000_000,
+            DEFAULT_BROADCAST_THRESHOLD_BYTES,
+        );
         assert!(matches!(strategy, JoinStrategy::Broadcast { .. }));
 
         // Over threshold → shuffle.
-        let strategy = select_strategy(BROADCAST_THRESHOLD_BYTES + 1, 100_000_000);
+        let strategy = select_strategy(
+            DEFAULT_BROADCAST_THRESHOLD_BYTES + 1,
+            100_000_000,
+            DEFAULT_BROADCAST_THRESHOLD_BYTES,
+        );
         assert_eq!(strategy, JoinStrategy::Shuffle);
     }
 }
