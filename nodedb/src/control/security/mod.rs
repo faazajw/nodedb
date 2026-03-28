@@ -19,6 +19,7 @@ pub mod jwks;
 pub mod jwt;
 pub mod metering;
 pub mod mtls;
+pub mod observability;
 pub mod org;
 pub mod permission;
 pub mod predicate;

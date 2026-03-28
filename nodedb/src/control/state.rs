@@ -91,6 +91,8 @@ pub struct SharedState {
     pub impersonation: crate::control::security::impersonation::ImpersonationStore,
     /// Emergency lockdown state + break-glass + two-party auth.
     pub emergency: crate::control::security::emergency::EmergencyState,
+    /// Auth observability metrics (Prometheus-compatible).
+    pub auth_metrics: crate::control::security::observability::AuthMetrics,
 
     /// JWKS registry for multi-provider JWT validation (None = JWT disabled).
     pub jwks_registry:
@@ -225,6 +227,7 @@ impl SharedState {
             auth_api_keys: crate::control::security::auth_apikey::AuthApiKeyStore::new(),
             impersonation: crate::control::security::impersonation::ImpersonationStore::default(),
             emergency: crate::control::security::emergency::EmergencyState::default(),
+            auth_metrics: crate::control::security::observability::AuthMetrics::new(),
             jwks_registry: None,
             sync_dlq: Mutex::new(SyncDlq::new(DlqConfig::default())),
             audit_retention_days: 0,
@@ -319,6 +322,7 @@ impl SharedState {
             auth_api_keys: crate::control::security::auth_apikey::AuthApiKeyStore::new(),
             impersonation: crate::control::security::impersonation::ImpersonationStore::default(),
             emergency: crate::control::security::emergency::EmergencyState::default(),
+            auth_metrics: crate::control::security::observability::AuthMetrics::new(),
             jwks_registry: None,
             sync_dlq: Mutex::new(SyncDlq::new(DlqConfig::default())),
             audit_retention_days: auth_config.audit_retention_days,

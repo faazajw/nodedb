@@ -83,6 +83,9 @@ pub async fn metrics(
         output.push_str(&sys_metrics.to_prometheus());
     }
 
+    // Auth observability: method-specific counters, duration histograms, anomaly detection.
+    output.push_str(&state.shared.auth_metrics.to_prometheus());
+
     Ok((
         StatusCode::OK,
         [("content-type", "text/plain; version=0.0.4; charset=utf-8")],

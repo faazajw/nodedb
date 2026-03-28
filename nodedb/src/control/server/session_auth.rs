@@ -42,6 +42,7 @@ pub fn resolve_certificate_identity(
                 peer_addr,
                 &format!("mTLS auth failed: no user for cert CN '{cn}'"),
             );
+            state.auth_metrics.record_auth_failure("certificate");
             crate::Error::RejectedAuthz {
                 tenant_id: TenantId::new(0),
                 resource: format!("no user mapped to certificate CN '{cn}'"),
@@ -54,6 +55,7 @@ pub fn resolve_certificate_identity(
         peer_addr,
         &format!("mTLS cert auth: {cn}"),
     );
+    state.auth_metrics.record_auth_success("certificate");
 
     Ok(identity)
 }
@@ -90,6 +92,7 @@ pub fn verify_api_key_identity(
             identity.username, key_record.key_id
         ),
     );
+    state.auth_metrics.record_auth_success("api_key");
 
     Some(identity)
 }
@@ -147,6 +150,7 @@ pub fn authenticate(
                 peer_addr,
                 &format!("native trust auth: {username}"),
             );
+            state.auth_metrics.record_auth_success("trust");
 
             Ok(identity)
         }
@@ -174,6 +178,7 @@ pub fn authenticate(
                     peer_addr,
                     &format!("native password auth failed: {username}"),
                 );
+                state.auth_metrics.record_auth_failure("password");
                 return Err(crate::Error::RejectedAuthz {
                     tenant_id: TenantId::new(0),
                     resource: format!("authentication failed for user '{username}'"),
@@ -195,6 +200,7 @@ pub fn authenticate(
                 peer_addr,
                 &format!("native password auth: {username}"),
             );
+            state.auth_metrics.record_auth_success("password");
 
             Ok(identity)
         }
@@ -213,6 +219,7 @@ pub fn authenticate(
                     peer_addr,
                     "native api_key auth failed: invalid token or owner not found",
                 );
+                state.auth_metrics.record_auth_failure("api_key");
                 crate::Error::RejectedAuthz {
                     tenant_id: TenantId::new(0),
                     resource: "invalid API key".into(),
