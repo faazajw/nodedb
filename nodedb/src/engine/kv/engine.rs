@@ -6,24 +6,11 @@
 
 use std::collections::HashMap;
 
-use super::engine_helpers::{
-    expiry_key, extract_all_field_values_from_msgpack, parse_expiry_key, table_key,
-};
+use super::engine_helpers::{expiry_key, extract_all_field_values_from_msgpack, table_key};
 use super::entry::NO_EXPIRY;
 use super::expiry_wheel::ExpiryWheel;
 use super::hash_table::KvHashTable;
 use super::index::KvIndexSet;
-
-/// A key that was reaped by the expiry wheel.
-///
-/// Returned by [`KvEngine::tick_expiry`] so the caller can produce WAL
-/// tombstones and CDC/keyspace notification events.
-#[derive(Debug, Clone)]
-pub struct ExpiredKey {
-    pub tenant_id: u32,
-    pub collection: String,
-    pub key: Vec<u8>,
-}
 
 /// Result of a KV SCAN operation: `(entries, next_cursor_bytes)`.
 ///
@@ -41,12 +28,15 @@ pub struct KvEngine {
     /// Per-collection secondary index sets. Key: "{tenant_id}:{collection}".
     pub(super) indexes: HashMap<String, KvIndexSet>,
     /// Shared expiry wheel across all collections on this core.
-    expiry: ExpiryWheel,
+    pub(super) expiry: ExpiryWheel,
     /// Default tuning parameters for new collections.
     default_capacity: usize,
     load_factor_threshold: f32,
     rehash_batch_size: usize,
     inline_threshold: usize,
+    /// Memory budget in bytes (0 = unlimited). When total_mem_usage() exceeds
+    /// this, new PUTs are rejected with a retriable error.
+    memory_budget_bytes: usize,
 }
 
 impl KvEngine {
@@ -68,6 +58,7 @@ impl KvEngine {
             load_factor_threshold,
             rehash_batch_size,
             inline_threshold,
+            memory_budget_bytes: 0, // 0 = unlimited (set via set_memory_budget).
         }
     }
 
@@ -82,6 +73,19 @@ impl KvEngine {
             tuning.expiry_tick_ms,
             tuning.expiry_reap_budget,
         )
+    }
+
+    /// Set the memory budget in bytes. 0 = unlimited.
+    pub fn set_memory_budget(&mut self, budget_bytes: usize) {
+        self.memory_budget_bytes = budget_bytes;
+    }
+
+    /// Check if the memory budget is exceeded.
+    ///
+    /// Returns `true` if the budget is set and current usage exceeds it.
+    /// Used by PUT handlers to reject new writes with a retriable error.
+    pub fn is_over_budget(&self) -> bool {
+        self.memory_budget_bytes > 0 && self.total_mem_usage() > self.memory_budget_bytes
     }
 
     /// Get or create the hash table for a collection.
@@ -348,30 +352,39 @@ impl KvEngine {
             None => return (Vec::new(), Vec::new()),
         };
 
-        // Index-accelerated path: if we have a filter and an index, use it.
+        // Index-accelerated path: if we have an equality filter and an index, use it.
+        // Also checks composite indexes for prefix matches.
         if let Some(field) = filter_field
             && let Some(value) = filter_value
             && let Some(idx_set) = self.indexes.get(&tkey)
-            && idx_set.get_index(field).is_some()
         {
-            let candidate_keys = idx_set.lookup_eq(field, value);
-            let mut results = Vec::with_capacity(count.min(candidate_keys.len()));
+            // Try single-field index first.
+            let candidate_keys = if idx_set.get_index(field).is_some() {
+                idx_set.lookup_eq(field, value)
+            } else if let Some(ci) = idx_set.find_composite_with_prefix(field) {
+                // Composite index prefix match: use leading field.
+                ci.lookup_prefix(&[value])
+            } else {
+                Vec::new() // No index available — will fall through to full scan.
+            };
 
-            for pk in candidate_keys {
-                if results.len() >= count {
-                    break;
+            if !candidate_keys.is_empty() {
+                let mut results = Vec::with_capacity(count.min(candidate_keys.len()));
+
+                for pk in candidate_keys {
+                    if results.len() >= count {
+                        break;
+                    }
+                    if let Some(val) = table.get(pk, now_ms)
+                        && (match_pattern.is_none()
+                            || super::scan::matches_pattern_pub(pk, match_pattern))
+                    {
+                        results.push((pk.to_vec(), val.to_vec()));
+                    }
                 }
-                if let Some(val) = table.get(pk, now_ms)
-                    && (match_pattern.is_none()
-                        || super::scan::matches_pattern_pub(pk, match_pattern))
-                {
-                    results.push((pk.to_vec(), val.to_vec()));
-                }
+
+                return (results, Vec::new());
             }
-
-            // Index scan is always complete (no cursor-based pagination needed —
-            // the index already narrowed to matching keys).
-            return (results, Vec::new());
         }
 
         // Full scan fallback: iterate hash table slots.
@@ -396,148 +409,6 @@ impl KvEngine {
 
         (owned, next_cursor)
     }
-
-    // -----------------------------------------------------------------------
-    // Expiry wheel tick — called from the TPC event loop
-    // -----------------------------------------------------------------------
-
-    /// Advance the expiry wheel and reap expired keys.
-    ///
-    /// Call this from the TPC core's event loop at the configured tick interval.
-    /// Returns a list of `(tenant_id, collection, key)` for each reaped key,
-    /// enabling the caller to produce WAL tombstones and CDC/keyspace events.
-    pub fn tick_expiry(&mut self, now_ms: u64) -> Vec<ExpiredKey> {
-        let batch = self.expiry.tick(now_ms);
-        let mut reaped = Vec::new();
-
-        for (composite_key, expire_at_ms) in &batch.expired {
-            if let Some((tid, collection, key)) = parse_expiry_key(composite_key)
-                && let Some(table) = self.tables.get_mut(&table_key(tid, &collection))
-                && table.reap_expired(&key, *expire_at_ms)
-            {
-                reaped.push(ExpiredKey {
-                    tenant_id: tid,
-                    collection,
-                    key,
-                });
-            }
-        }
-
-        reaped
-    }
-
-    /// Number of entries tracked in the expiry wheel.
-    pub fn expiry_queue_depth(&self) -> usize {
-        self.expiry.len()
-    }
-
-    /// Number of deferred expirations (backlog gauge).
-    pub fn expiry_backlog(&self) -> usize {
-        self.expiry.backlog()
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-    // Truncate
-    // -----------------------------------------------------------------------
-
-    /// Truncate: delete all entries in a KV collection. Returns count deleted.
-    pub fn truncate(&mut self, tenant_id: u32, collection: &str) -> usize {
-        let tkey = table_key(tenant_id, collection);
-        let count = self.tables.get(&tkey).map(|t| t.len()).unwrap_or(0);
-
-        // Remove the hash table entirely.
-        self.tables.remove(&tkey);
-        // Remove all indexes.
-        self.indexes.remove(&tkey);
-        // Note: expiry wheel entries for this collection will be no-ops
-        // when they fire (key won't be found in the hash table).
-
-        count
-    }
-
-    // -----------------------------------------------------------------------
-    // Stats
-    // -----------------------------------------------------------------------
-
-    /// Total number of entries across all collections.
-    pub fn total_entries(&self) -> usize {
-        self.tables.values().map(|t| t.len()).sum()
-    }
-
-    /// Total approximate memory usage across all collections.
-    pub fn total_mem_usage(&self) -> usize {
-        self.tables.values().map(|t| t.mem_usage()).sum()
-    }
-
-    /// Entry count for a specific collection.
-    pub fn collection_len(&self, tenant_id: u32, collection: &str) -> usize {
-        let tkey = table_key(tenant_id, collection);
-        self.tables.get(&tkey).map(|t| t.len()).unwrap_or(0)
-    }
-
-    /// Comprehensive observability snapshot for this KV engine.
-    pub fn stats(&self) -> KvStats {
-        let mut total_entries = 0usize;
-        let mut total_mem = 0usize;
-        let mut total_index_entries = 0usize;
-        let mut is_rehashing = false;
-        let mut max_load_factor: f32 = 0.0;
-
-        for table in self.tables.values() {
-            total_entries += table.len();
-            total_mem += table.mem_usage();
-            if table.load_factor() > max_load_factor {
-                max_load_factor = table.load_factor();
-            }
-            if table.is_rehashing() {
-                is_rehashing = true;
-            }
-        }
-
-        for idx_set in self.indexes.values() {
-            for field in idx_set.indexed_fields() {
-                if let Some(idx) = idx_set.get_index(field) {
-                    total_index_entries += idx.entry_count();
-                }
-            }
-        }
-
-        KvStats {
-            total_entries,
-            total_mem_bytes: total_mem,
-            collection_count: self.tables.len(),
-            max_load_factor,
-            is_rehashing,
-            total_index_entries,
-            expiry_queue_depth: self.expiry.len(),
-            expiry_backlog: self.expiry.backlog(),
-        }
-    }
-}
-
-/// Observability snapshot for the KV engine on a single TPC core.
-///
-/// Produced by [`KvEngine::stats`]. Written to the telemetry ring
-/// for the Control Plane to expose via HTTP metrics endpoint.
-#[derive(Debug, Clone, Default)]
-pub struct KvStats {
-    /// Total key count across all collections.
-    pub total_entries: usize,
-    /// Approximate total memory usage in bytes.
-    pub total_mem_bytes: usize,
-    /// Number of active KV collections on this core.
-    pub collection_count: usize,
-    /// Highest load factor across all hash tables (triggers rehash at threshold).
-    pub max_load_factor: f32,
-    /// Whether any hash table is currently in incremental rehash.
-    pub is_rehashing: bool,
-    /// Total secondary index entries across all collections.
-    pub total_index_entries: usize,
-    /// Number of entries in the expiry wheel.
-    pub expiry_queue_depth: usize,
-    /// Number of deferred expirations (reap budget exceeded).
-    pub expiry_backlog: usize,
 }
 
 #[cfg(test)]

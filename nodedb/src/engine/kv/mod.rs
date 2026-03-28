@@ -1,6 +1,7 @@
 pub mod engine;
 mod engine_helpers;
 mod engine_index;
+mod engine_stats;
 pub mod entry;
 pub mod expiry_wheel;
 mod hash_helpers;
@@ -9,6 +10,7 @@ pub mod index;
 pub mod scan;
 
 pub use engine::KvEngine;
+pub use engine_stats::{ExpiredKey, KvStats};
 
 /// Get current wall-clock time in milliseconds since Unix epoch.
 ///

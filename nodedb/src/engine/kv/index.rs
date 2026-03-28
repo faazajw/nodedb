@@ -113,13 +113,128 @@ impl KvFieldIndex {
     }
 }
 
+/// A composite secondary index on multiple value fields.
+///
+/// Maps concatenated field values → set of primary keys. The composite key
+/// is built by joining individual field value bytes with a null separator.
+/// Supports prefix-based lookups (e.g., `WHERE a = X` on a `(a, b)` index).
+#[derive(Debug)]
+pub struct KvCompositeIndex {
+    /// Field names in index order.
+    fields: Vec<String>,
+    /// Field positions in the schema column list.
+    field_positions: Vec<usize>,
+    /// composite_key_bytes → set of primary_key_bytes.
+    tree: BTreeMap<Vec<u8>, BTreeSet<Vec<u8>>>,
+}
+
+impl KvCompositeIndex {
+    pub fn new(fields: Vec<String>, field_positions: Vec<usize>) -> Self {
+        Self {
+            fields,
+            field_positions,
+            tree: BTreeMap::new(),
+        }
+    }
+
+    pub fn fields(&self) -> &[String] {
+        &self.fields
+    }
+
+    pub fn field_positions(&self) -> &[usize] {
+        &self.field_positions
+    }
+
+    /// Build a composite key from individual field values.
+    ///
+    /// Values are concatenated with `\0` separator. This preserves
+    /// lexicographic ordering for prefix scans on leading fields.
+    ///
+    /// **Limitation:** field values must not contain null bytes (`\0`), as they
+    /// are used as separators. This holds for typical KV keys (strings, UUIDs,
+    /// integers encoded as big-endian bytes).
+    fn build_key(values: &[&[u8]]) -> Vec<u8> {
+        let mut key = Vec::new();
+        for (i, v) in values.iter().enumerate() {
+            if i > 0 {
+                key.push(0); // Null separator.
+            }
+            key.extend_from_slice(v);
+        }
+        key
+    }
+
+    /// Insert a composite entry.
+    pub fn insert(&mut self, field_values: &[&[u8]], primary_key: Vec<u8>) {
+        let key = Self::build_key(field_values);
+        self.tree.entry(key).or_default().insert(primary_key);
+    }
+
+    /// Remove a composite entry.
+    pub fn remove(&mut self, field_values: &[&[u8]], primary_key: &[u8]) -> bool {
+        let key = Self::build_key(field_values);
+        if let Some(keys) = self.tree.get_mut(&key) {
+            let removed = keys.remove(primary_key);
+            if keys.is_empty() {
+                self.tree.remove(&key);
+            }
+            removed
+        } else {
+            false
+        }
+    }
+
+    /// Exact-match lookup on all fields.
+    pub fn lookup_eq(&self, field_values: &[&[u8]]) -> Vec<&[u8]> {
+        let key = Self::build_key(field_values);
+        self.tree
+            .get(&key)
+            .map(|keys| keys.iter().map(|k| k.as_slice()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Prefix lookup: match on leading fields only.
+    ///
+    /// E.g., on a `(region, status)` index, `lookup_prefix(&[b"us-east"])`
+    /// returns all keys where `region = "us-east"` regardless of status.
+    ///
+    /// Uses `starts_with()` on the B-Tree range to avoid false matches from
+    /// the `0xFF` upper-bound trick, which breaks if field values contain
+    /// bytes >= `0xFF`.
+    pub fn lookup_prefix(&self, prefix_values: &[&[u8]]) -> Vec<&[u8]> {
+        let prefix = Self::build_key(prefix_values);
+        let mut results = Vec::new();
+        for (composite_key, primary_keys) in self.tree.range(prefix.clone()..) {
+            if !composite_key.starts_with(&prefix) {
+                break;
+            }
+            for pk in primary_keys {
+                results.push(pk.as_slice());
+            }
+        }
+        results
+    }
+
+    /// Total number of index entries.
+    pub fn entry_count(&self) -> usize {
+        self.tree.values().map(|s| s.len()).sum()
+    }
+
+    /// Clear all entries.
+    pub fn clear(&mut self) {
+        self.tree.clear();
+    }
+}
+
 /// Manages all secondary indexes for a single KV collection.
 ///
 /// Tracks write amplification and provides the zero-index fast path check.
 #[derive(Debug)]
 pub struct KvIndexSet {
-    /// Active indexes, keyed by field name.
+    /// Single-field indexes.
     indexes: Vec<KvFieldIndex>,
+    /// Composite (multi-field) indexes.
+    composite_indexes: Vec<KvCompositeIndex>,
     /// Total PUT operations on this collection (denominator for write-amp ratio).
     total_puts: u64,
     /// Total index write operations (numerator for write-amp ratio).
@@ -130,6 +245,7 @@ impl KvIndexSet {
     pub fn new() -> Self {
         Self {
             indexes: Vec::new(),
+            composite_indexes: Vec::new(),
             total_puts: 0,
             total_index_writes: 0,
         }
@@ -137,12 +253,12 @@ impl KvIndexSet {
 
     /// Whether this collection has zero secondary indexes (fast path eligible).
     pub fn is_empty(&self) -> bool {
-        self.indexes.is_empty()
+        self.indexes.is_empty() && self.composite_indexes.is_empty()
     }
 
-    /// Number of active indexes.
+    /// Number of active indexes (single + composite).
     pub fn index_count(&self) -> usize {
-        self.indexes.len()
+        self.indexes.len() + self.composite_indexes.len()
     }
 
     /// Add a new index on a field. Returns false if already indexed.
@@ -168,6 +284,45 @@ impl KvIndexSet {
         self.indexes.iter().find(|i| i.field == field)
     }
 
+    /// Add a composite index on multiple fields. Returns false if already exists.
+    pub fn add_composite_index(
+        &mut self,
+        fields: Vec<String>,
+        field_positions: Vec<usize>,
+    ) -> bool {
+        if self.composite_indexes.iter().any(|ci| ci.fields == fields) {
+            return false;
+        }
+        self.composite_indexes
+            .push(KvCompositeIndex::new(fields, field_positions));
+        true
+    }
+
+    /// Remove a composite index. Returns the removed index, or None.
+    pub fn remove_composite_index(&mut self, fields: &[String]) -> Option<KvCompositeIndex> {
+        if let Some(pos) = self
+            .composite_indexes
+            .iter()
+            .position(|ci| ci.fields == fields)
+        {
+            Some(self.composite_indexes.remove(pos))
+        } else {
+            None
+        }
+    }
+
+    /// Get a composite index by its field list.
+    pub fn get_composite_index(&self, fields: &[String]) -> Option<&KvCompositeIndex> {
+        self.composite_indexes.iter().find(|ci| ci.fields == fields)
+    }
+
+    /// Find a composite index that has the given field as a leading prefix.
+    pub fn find_composite_with_prefix(&self, field: &str) -> Option<&KvCompositeIndex> {
+        self.composite_indexes
+            .iter()
+            .find(|ci| ci.fields.first().is_some_and(|f| f == field))
+    }
+
     /// Record a PUT and update all indexes with the new field values.
     ///
     /// `field_values` is an iterator of `(field_name, field_value_bytes)` extracted
@@ -182,13 +337,13 @@ impl KvIndexSet {
     ) -> usize {
         self.total_puts += 1;
 
-        if self.indexes.is_empty() {
+        if self.is_empty() {
             return 0;
         }
 
         let mut writes = 0;
 
-        // Remove old index entries (if this is an update, not a fresh insert).
+        // Remove old single-field index entries (if this is an update).
         if let Some(old_values) = old_field_values {
             for idx in &mut self.indexes {
                 for &(field, value) in old_values {
@@ -200,13 +355,50 @@ impl KvIndexSet {
             }
         }
 
-        // Insert new index entries.
+        // Insert new single-field index entries.
         for idx in &mut self.indexes {
             for &(field, value) in field_values {
                 if field == idx.field {
                     idx.insert(value.to_vec(), primary_key.to_vec());
                     writes += 1;
                 }
+            }
+        }
+
+        // Maintain composite indexes.
+        for ci in &mut self.composite_indexes {
+            // Remove old composite entry.
+            if let Some(old_values) = old_field_values {
+                let old_vals: Vec<&[u8]> = ci
+                    .fields
+                    .iter()
+                    .filter_map(|f| {
+                        old_values
+                            .iter()
+                            .find(|(name, _)| *name == f.as_str())
+                            .map(|(_, v)| *v)
+                    })
+                    .collect();
+                if old_vals.len() == ci.fields.len() {
+                    ci.remove(&old_vals, primary_key);
+                    writes += 1;
+                }
+            }
+
+            // Insert new composite entry.
+            let new_vals: Vec<&[u8]> = ci
+                .fields
+                .iter()
+                .filter_map(|f| {
+                    field_values
+                        .iter()
+                        .find(|(name, _)| *name == f.as_str())
+                        .map(|(_, v)| *v)
+                })
+                .collect();
+            if new_vals.len() == ci.fields.len() {
+                ci.insert(&new_vals, primary_key.to_vec());
+                writes += 1;
             }
         }
 
@@ -224,6 +416,24 @@ impl KvIndexSet {
                     idx.remove(value, primary_key);
                     self.total_index_writes += 1;
                 }
+            }
+        }
+
+        // Maintain composite indexes on delete.
+        for ci in &mut self.composite_indexes {
+            let vals: Vec<&[u8]> = ci
+                .fields
+                .iter()
+                .filter_map(|f| {
+                    field_values
+                        .iter()
+                        .find(|(name, _)| *name == f.as_str())
+                        .map(|(_, v)| *v)
+                })
+                .collect();
+            if vals.len() == ci.fields.len() {
+                ci.remove(&vals, primary_key);
+                self.total_index_writes += 1;
             }
         }
     }
@@ -414,5 +624,78 @@ mod tests {
         // PUT with a field that isn't indexed — should be ignored.
         let writes = set.on_put(b"k1", &[("name", b"alice")], None);
         assert_eq!(writes, 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Composite index tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn composite_index_insert_and_exact_lookup() {
+        let mut ci = KvCompositeIndex::new(vec!["region".into(), "status".into()], vec![0, 1]);
+        ci.insert(&[b"us-east", b"active"], b"k1".to_vec());
+        ci.insert(&[b"us-east", b"inactive"], b"k2".to_vec());
+        ci.insert(&[b"eu-west", b"active"], b"k3".to_vec());
+
+        let results = ci.lookup_eq(&[b"us-east", b"active"]);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], b"k1");
+
+        let results = ci.lookup_eq(&[b"eu-west", b"active"]);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], b"k3");
+
+        // Non-matching returns empty.
+        assert!(ci.lookup_eq(&[b"ap-south", b"active"]).is_empty());
+    }
+
+    #[test]
+    fn composite_index_prefix_lookup() {
+        let mut ci = KvCompositeIndex::new(vec!["region".into(), "status".into()], vec![0, 1]);
+        ci.insert(&[b"us-east", b"active"], b"k1".to_vec());
+        ci.insert(&[b"us-east", b"inactive"], b"k2".to_vec());
+        ci.insert(&[b"eu-west", b"active"], b"k3".to_vec());
+
+        // Prefix lookup on leading field only.
+        let results = ci.lookup_prefix(&[b"us-east"]);
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn composite_index_remove() {
+        let mut ci = KvCompositeIndex::new(vec!["a".into(), "b".into()], vec![0, 1]);
+        ci.insert(&[b"x", b"y"], b"k1".to_vec());
+        assert_eq!(ci.entry_count(), 1);
+
+        assert!(ci.remove(&[b"x", b"y"], b"k1"));
+        assert_eq!(ci.entry_count(), 0);
+    }
+
+    #[test]
+    fn index_set_composite_on_put() {
+        let mut set = KvIndexSet::new();
+        set.add_composite_index(vec!["region".into(), "status".into()], vec![0, 1]);
+
+        let writes = set.on_put(b"k1", &[("region", b"us"), ("status", b"active")], None);
+        assert!(writes > 0);
+
+        // Lookup via composite index.
+        let ci = set
+            .get_composite_index(&["region".into(), "status".into()])
+            .unwrap();
+        let results = ci.lookup_eq(&[b"us", b"active"]);
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn index_set_composite_on_delete() {
+        let mut set = KvIndexSet::new();
+        set.add_composite_index(vec!["a".into(), "b".into()], vec![0, 1]);
+
+        set.on_put(b"k1", &[("a", b"x"), ("b", b"y")], None);
+        set.on_delete(b"k1", &[("a", b"x"), ("b", b"y")]);
+
+        let ci = set.get_composite_index(&["a".into(), "b".into()]).unwrap();
+        assert!(ci.lookup_eq(&[b"x", b"y"]).is_empty());
     }
 }
