@@ -141,8 +141,26 @@ impl PlanConverter {
                     let collection = scan.table_name.to_string().to_lowercase();
                     let vshard = VShardId::from_collection(&collection);
 
-                    // KV routing: emit KvScan with filters for KV collections.
+                    // KV routing: try PK point-get first, then fall back to scan.
+                    // Note: is_kv() requires catalog access. If the catalog is
+                    // unavailable, this returns false and the query falls through
+                    // to document scan instead of KV scan.
                     if self.is_kv(tenant_id, &collection) {
+                        // Try O(1) hash lookup: WHERE <any_column> = <literal>.
+                        if let Some(key_bytes) =
+                            extract_equality_key(&filter.predicate)
+                        {
+                            return Ok(vec![PhysicalTask {
+                                tenant_id,
+                                vshard_id: vshard,
+                                plan: PhysicalPlan::Kv(KvOp::Get {
+                                    collection,
+                                    key: key_bytes,
+                                }),
+                            }]);
+                        }
+
+                        // Fall back to KV scan with filters.
                         let filters = expr_to_scan_filters(&filter.predicate);
                         let filter_bytes =
                             rmp_serde::to_vec_named(&filters).map_err(|e| {
@@ -439,6 +457,44 @@ impl PlanConverter {
             }),
         }
     }
+}
+
+/// Extract a key value from a simple equality predicate: `col = literal`.
+///
+/// Used for KV PK point-get optimization. Returns the literal value as bytes
+/// if the predicate is a single `column = literal` equality. Returns None
+/// for complex predicates (AND, OR, range, etc.) — those fall through to scan.
+fn extract_equality_key(expr: &Expr) -> Option<Vec<u8>> {
+    use datafusion::logical_expr::Operator;
+
+    if let Expr::BinaryExpr(binary) = expr
+        && binary.op == Operator::Eq
+    {
+        let lit_value = match (&*binary.left, &*binary.right) {
+            (Expr::Column(_), Expr::Literal(lit, _)) => Some(lit),
+            (Expr::Literal(lit, _), Expr::Column(_)) => Some(lit),
+            _ => None,
+        }?;
+
+        // Convert the scalar value to key bytes.
+        let key = match lit_value {
+            datafusion::common::ScalarValue::Utf8(Some(s))
+            | datafusion::common::ScalarValue::LargeUtf8(Some(s)) => s.as_bytes().to_vec(),
+            datafusion::common::ScalarValue::Int64(Some(i)) => i.to_be_bytes().to_vec(),
+            datafusion::common::ScalarValue::Int32(Some(i)) => (*i as i64).to_be_bytes().to_vec(),
+            datafusion::common::ScalarValue::Binary(Some(b))
+            | datafusion::common::ScalarValue::LargeBinary(Some(b)) => b.clone(),
+            _ => {
+                // Other types: serialize as string representation.
+                let s = lit_value.to_string().trim_matches('\'').to_string();
+                s.into_bytes()
+            }
+        };
+
+        return Some(key);
+    }
+
+    None
 }
 
 #[cfg(test)]

@@ -1,6 +1,5 @@
 //! Converter helpers: sort, aggregate, and timeseries plan conversion.
 //!
-//! Extracted from `converter.rs` to keep per-file code under the 500-line limit.
 
 use datafusion::prelude::*;
 
