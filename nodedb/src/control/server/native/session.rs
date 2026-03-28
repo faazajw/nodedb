@@ -33,6 +33,7 @@ pub struct NativeSession {
     state: Arc<SharedState>,
     auth_mode: AuthMode,
     identity: Option<AuthenticatedIdentity>,
+    auth_context: Option<crate::control::security::auth_context::AuthContext>,
     format: Option<FrameFormat>,
     query_ctx: QueryContext,
     sessions: SessionStore,
@@ -55,6 +56,7 @@ impl NativeSession {
             state,
             auth_mode,
             identity: None,
+            auth_context: None,
             format: None,
             query_ctx,
             sessions: SessionStore::new(),
@@ -153,10 +155,9 @@ impl NativeSession {
         // All other ops require authentication.
         if self.identity.is_none() {
             if self.auth_mode == AuthMode::Trust {
-                self.identity = Some(super::super::session_auth::trust_identity(
-                    &self.state,
-                    "anonymous",
-                ));
+                let trust_id = super::super::session_auth::trust_identity(&self.state, "anonymous");
+                self.auth_context = Some(super::super::session_auth::build_auth_context(&trust_id));
+                self.identity = Some(trust_id);
             } else {
                 return NativeResponse::error(
                     seq,
@@ -173,9 +174,20 @@ impl NativeSession {
             }
         };
 
+        // Build a default AuthContext if not yet set (shouldn't happen but be safe).
+        let default_auth_ctx;
+        let auth_ctx = match self.auth_context.as_ref() {
+            Some(ctx) => ctx,
+            None => {
+                default_auth_ctx = super::super::session_auth::build_auth_context(identity);
+                &default_auth_ctx
+            }
+        };
+
         let ctx = DispatchCtx {
             state: &self.state,
             identity,
+            auth_context: auth_ctx,
             query_ctx: &self.query_ctx,
             sessions: &self.sessions,
             peer_addr: &self.peer_addr,
@@ -305,6 +317,7 @@ impl NativeSession {
                     identity.username.clone(),
                     identity.tenant_id.as_u32(),
                 );
+                self.auth_context = Some(super::super::session_auth::build_auth_context(&identity));
                 self.identity = Some(identity);
                 resp
             }

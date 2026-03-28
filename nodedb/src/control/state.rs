@@ -73,6 +73,10 @@ pub struct SharedState {
     /// Rate limiter (token bucket, per-user/org hierarchy).
     pub rate_limiter: crate::control::security::ratelimit::limiter::RateLimiter,
 
+    /// JWKS registry for multi-provider JWT validation (None = JWT disabled).
+    pub jwks_registry:
+        Option<std::sync::Arc<crate::control::security::jwks::registry::JwksRegistry>>,
+
     /// Dead-Letter Queue for sync-rejected deltas.
     pub sync_dlq: Mutex<SyncDlq>,
 
@@ -188,6 +192,7 @@ impl SharedState {
             scope_defs: crate::control::security::scope::store::ScopeStore::new(),
             scope_grants: crate::control::security::scope::grant::ScopeGrantStore::new(),
             rate_limiter: crate::control::security::ratelimit::limiter::RateLimiter::default(),
+            jwks_registry: None,
             sync_dlq: Mutex::new(SyncDlq::new(DlqConfig::default())),
             audit_retention_days: 0,
             idle_timeout_secs: 0,
@@ -265,6 +270,7 @@ impl SharedState {
             scope_defs: crate::control::security::scope::store::ScopeStore::new(),
             scope_grants: crate::control::security::scope::grant::ScopeGrantStore::new(),
             rate_limiter: crate::control::security::ratelimit::limiter::RateLimiter::default(),
+            jwks_registry: None,
             sync_dlq: Mutex::new(SyncDlq::new(DlqConfig::default())),
             audit_retention_days: auth_config.audit_retention_days,
             idle_timeout_secs: auth_config.idle_timeout_secs,

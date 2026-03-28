@@ -200,6 +200,21 @@ async fn main() -> anyhow::Result<()> {
         config.tuning.clone(),
     )?;
 
+    // Initialise JWKS registry if JWT providers are configured.
+    if let Some(ref jwt_config) = config.auth.jwt
+        && !jwt_config.providers.is_empty()
+        && let Some(state) = Arc::get_mut(&mut shared)
+    {
+        let registry = tokio::runtime::Handle::current().block_on(
+            nodedb::control::security::jwks::registry::JwksRegistry::init(jwt_config.clone()),
+        );
+        state.jwks_registry = Some(std::sync::Arc::new(registry));
+        info!(
+            "JWKS registry initialised with {} providers",
+            jwt_config.providers.len()
+        );
+    }
+
     // Initialise cold storage (L2 tiering) if configured.
     // Arc::get_mut is valid here because no clones of `shared` exist yet.
     if let Some(ref cold_settings) = config.cold_storage {

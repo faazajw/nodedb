@@ -67,6 +67,21 @@ pub struct JwtAuthConfig {
     /// Updates email, roles, groups, etc. when they change in the JWT.
     #[serde(default = "default_true")]
     pub jit_sync_claims: bool,
+
+    /// Claim mapping: maps provider-specific claim names to NodeDB fields.
+    /// Different providers use different names (Auth0 uses `sub`, Clerk uses
+    /// `user_id`, etc.). Keys = NodeDB field, values = JWT claim name.
+    ///
+    /// ```toml
+    /// [auth.jwt.claims]
+    /// user_id = "sub"
+    /// email = "email"
+    /// roles = "realm_access.roles"   # Keycloak
+    /// org_id = "org_id"
+    /// groups = "groups"
+    /// ```
+    #[serde(default)]
+    pub claims: std::collections::HashMap<String, String>,
 }
 
 /// Configuration for a single JWT identity provider.
@@ -114,6 +129,7 @@ impl Default for JwtAuthConfig {
             providers: Vec::new(),
             jit_provisioning: false,
             jit_sync_claims: true,
+            claims: std::collections::HashMap::new(),
         }
     }
 }

@@ -97,6 +97,9 @@ pub struct AuthContext {
     pub auth_time: Option<u64>,
     /// Opaque session identifier for audit correlation.
     pub session_id: String,
+    /// Per-request ON DENY override: `None` = use policy default.
+    /// Set via `SET LOCAL nodedb.on_deny = 'error'` (pgwire) or `X-On-Deny: error` (HTTP).
+    pub on_deny_override: Option<super::deny::DenyMode>,
 }
 
 impl AuthContext {
@@ -167,6 +170,7 @@ impl AuthContext {
                 None
             },
             session_id,
+            on_deny_override: None,
         }
     }
 
@@ -192,6 +196,7 @@ impl AuthContext {
             auth_method: identity.auth_method.clone(),
             auth_time: None,
             session_id,
+            on_deny_override: None,
         }
     }
 
