@@ -39,6 +39,14 @@ pub(super) const COLLECTIONS: TableDefinition<&str, &[u8]> =
 /// Table: metadata key -> value bytes (counters, config).
 pub(super) const METADATA: TableDefinition<&str, &[u8]> = TableDefinition::new("_system.metadata");
 
+/// Table: blacklist key (user_id or IP) -> MessagePack-serialized blacklist entry.
+pub(super) const BLACKLIST: TableDefinition<&str, &[u8]> =
+    TableDefinition::new("_system.blacklist");
+
+/// Table: auth_user_id -> MessagePack-serialized auth user record (JIT-provisioned).
+pub(super) const AUTH_USERS: TableDefinition<&str, &[u8]> =
+    TableDefinition::new("_system.auth_users");
+
 pub fn catalog_err<E: std::fmt::Display>(ctx: &str, e: E) -> crate::Error {
     crate::Error::Storage {
         engine: "catalog".into(),
@@ -239,6 +247,61 @@ pub struct EventDefinition {
     pub then_action: String,
 }
 
+/// Serializable blacklist entry for redb storage.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct StoredBlacklistEntry {
+    /// Blacklist entry key: `"user:{user_id}"` or `"ip:{addr_or_cidr}"`.
+    pub key: String,
+    /// Entry kind: "user" or "ip".
+    pub kind: String,
+    /// Human-readable reason for blacklisting.
+    pub reason: String,
+    /// Who created this entry (admin username).
+    pub created_by: String,
+    /// Unix timestamp (seconds) when blacklisted.
+    pub created_at: u64,
+    /// Unix timestamp (seconds) when this entry expires. 0 = permanent.
+    pub expires_at: u64,
+}
+
+/// Serializable JIT-provisioned auth user record for redb storage.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct StoredAuthUser {
+    /// Unique identifier (from JWT `sub` or `user_id` claim).
+    pub id: String,
+    /// Username (display name).
+    pub username: String,
+    /// Email address (from JWT `email` claim).
+    #[serde(default)]
+    pub email: String,
+    /// Tenant this user belongs to.
+    pub tenant_id: u32,
+    /// Identity provider name that provisioned this user.
+    pub provider: String,
+    /// Unix timestamp (seconds) of first authentication.
+    pub first_seen: u64,
+    /// Unix timestamp (seconds) of most recent authentication.
+    pub last_seen: u64,
+    /// Whether this user is active (can authenticate).
+    pub is_active: bool,
+    /// Account status: active, suspended, banned, restricted, read_only.
+    #[serde(default = "default_status")]
+    pub status: String,
+    /// Whether this user was externally provisioned (no local password).
+    #[serde(default = "default_true")]
+    pub is_external: bool,
+    /// Last synced JWT claims (for claim sync on each request).
+    #[serde(default)]
+    pub synced_claims: std::collections::HashMap<String, String>,
+}
+
+fn default_status() -> String {
+    "active".into()
+}
+fn default_true() -> bool {
+    true
+}
+
 pub struct SystemCatalog {
     pub(super) db: Database,
 }
@@ -282,6 +345,12 @@ impl SystemCatalog {
             let _ = write_txn
                 .open_table(METADATA)
                 .map_err(|e| catalog_err("init metadata table", e))?;
+            let _ = write_txn
+                .open_table(BLACKLIST)
+                .map_err(|e| catalog_err("init blacklist table", e))?;
+            let _ = write_txn
+                .open_table(AUTH_USERS)
+                .map_err(|e| catalog_err("init auth_users table", e))?;
         }
         write_txn
             .commit()
