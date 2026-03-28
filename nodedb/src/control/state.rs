@@ -55,6 +55,12 @@ pub struct SharedState {
     /// Row-Level Security policy store for sync delta enforcement.
     pub rls: RlsPolicyStore,
 
+    /// User + IP blacklist store (O(1) lookup, TTL for temp bans).
+    pub blacklist: crate::control::security::blacklist::store::BlacklistStore,
+
+    /// JIT-provisioned auth user store (from JWT claims).
+    pub auth_users: crate::control::security::jit::auth_user::AuthUserStore,
+
     /// Dead-Letter Queue for sync-rejected deltas.
     pub sync_dlq: Mutex<SyncDlq>,
 
@@ -164,6 +170,8 @@ impl SharedState {
             raft_status_fn: None,
             migration_tracker: None,
             rls: RlsPolicyStore::new(),
+            blacklist: crate::control::security::blacklist::store::BlacklistStore::new(),
+            auth_users: crate::control::security::jit::auth_user::AuthUserStore::new(),
             sync_dlq: Mutex::new(SyncDlq::new(DlqConfig::default())),
             audit_retention_days: 0,
             idle_timeout_secs: 0,
@@ -235,6 +243,8 @@ impl SharedState {
             raft_status_fn: None,
             migration_tracker: None,
             rls: RlsPolicyStore::new(),
+            blacklist: crate::control::security::blacklist::store::BlacklistStore::new(),
+            auth_users: crate::control::security::jit::auth_user::AuthUserStore::new(),
             sync_dlq: Mutex::new(SyncDlq::new(DlqConfig::default())),
             audit_retention_days: auth_config.audit_retention_days,
             idle_timeout_secs: auth_config.idle_timeout_secs,

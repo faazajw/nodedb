@@ -235,3 +235,70 @@ pub fn authenticate(
 pub fn build_auth_context(identity: &AuthenticatedIdentity) -> AuthContext {
     AuthContext::from_identity(identity, generate_session_id())
 }
+
+/// Check if a user is blacklisted. Returns `Err` if blocked.
+///
+/// Called after identity is resolved, before authorization.
+pub fn check_blacklist(
+    state: &SharedState,
+    identity: &AuthenticatedIdentity,
+    peer_addr: &str,
+) -> crate::Result<()> {
+    // Check user blacklist.
+    let user_id = identity.user_id.to_string();
+    if let Some(entry) = state.blacklist.check_user(&user_id) {
+        state.audit_record(
+            AuditEvent::AuthFailure,
+            Some(identity.tenant_id),
+            peer_addr,
+            &format!(
+                "blacklisted user '{}' denied: {}",
+                identity.username, entry.reason
+            ),
+        );
+        return Err(crate::Error::RejectedAuthz {
+            tenant_id: identity.tenant_id,
+            resource: format!("user blacklisted: {}", entry.reason),
+        });
+    }
+
+    // Check IP blacklist.
+    if let Some(entry) = state.blacklist.check_ip(peer_addr) {
+        state.audit_record(
+            AuditEvent::AuthFailure,
+            Some(identity.tenant_id),
+            peer_addr,
+            &format!("blacklisted IP '{peer_addr}' denied: {}", entry.reason),
+        );
+        return Err(crate::Error::RejectedAuthz {
+            tenant_id: identity.tenant_id,
+            resource: format!("IP blacklisted: {}", entry.reason),
+        });
+    }
+
+    // Check auth user status (JIT-provisioned users).
+    if let Some(status) = state.auth_users.get_status(&user_id) {
+        let ctx_status = status;
+        if matches!(
+            ctx_status,
+            crate::control::security::auth_context::AuthStatus::Suspended
+                | crate::control::security::auth_context::AuthStatus::Banned
+        ) {
+            state.audit_record(
+                AuditEvent::AuthFailure,
+                Some(identity.tenant_id),
+                peer_addr,
+                &format!(
+                    "auth user '{}' denied: account {}",
+                    identity.username, ctx_status
+                ),
+            );
+            return Err(crate::Error::RejectedAuthz {
+                tenant_id: identity.tenant_id,
+                resource: format!("account {ctx_status}"),
+            });
+        }
+    }
+
+    Ok(())
+}
