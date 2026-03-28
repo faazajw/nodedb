@@ -105,9 +105,14 @@ pub(crate) async fn handle_sql(ctx: &DispatchCtx<'_>, seq: u64, sql: &str) -> Na
 
 /// Plan SQL via DataFusion and dispatch tasks to the Data Plane.
 async fn execute_planned(ctx: &DispatchCtx<'_>, seq: u64, sql: &str) -> NativeResponse {
+    // Extract per-query ON DENY override (e.g., SELECT ... ON DENY ERROR 'CODE' MESSAGE '...').
+    let mut auth_ctx = ctx.auth_context.clone();
+    let clean_sql =
+        crate::control::server::session_auth::extract_and_apply_on_deny(sql, &mut auth_ctx);
+
     let tasks = match ctx
         .query_ctx
-        .plan_sql_with_rls(sql, ctx.tenant_id(), ctx.auth_context, &ctx.state.rls)
+        .plan_sql_with_rls(&clean_sql, ctx.tenant_id(), &auth_ctx, &ctx.state.rls)
         .await
     {
         Ok(t) => t,

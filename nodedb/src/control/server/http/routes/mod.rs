@@ -1,3 +1,4 @@
+pub mod auth_session;
 pub mod cdc;
 pub mod crdt;
 pub mod document;

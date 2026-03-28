@@ -73,6 +73,9 @@ pub struct SharedState {
     /// Rate limiter (token bucket, per-user/org hierarchy).
     pub rate_limiter: crate::control::security::ratelimit::limiter::RateLimiter,
 
+    /// Opaque session handle store (POST /api/auth/session → UUID).
+    pub session_handles: crate::control::security::session_handle::SessionHandleStore,
+
     /// JWKS registry for multi-provider JWT validation (None = JWT disabled).
     pub jwks_registry:
         Option<std::sync::Arc<crate::control::security::jwks::registry::JwksRegistry>>,
@@ -192,6 +195,8 @@ impl SharedState {
             scope_defs: crate::control::security::scope::store::ScopeStore::new(),
             scope_grants: crate::control::security::scope::grant::ScopeGrantStore::new(),
             rate_limiter: crate::control::security::ratelimit::limiter::RateLimiter::default(),
+            session_handles: crate::control::security::session_handle::SessionHandleStore::default(
+            ),
             jwks_registry: None,
             sync_dlq: Mutex::new(SyncDlq::new(DlqConfig::default())),
             audit_retention_days: 0,
@@ -270,6 +275,8 @@ impl SharedState {
             scope_defs: crate::control::security::scope::store::ScopeStore::new(),
             scope_grants: crate::control::security::scope::grant::ScopeGrantStore::new(),
             rate_limiter: crate::control::security::ratelimit::limiter::RateLimiter::default(),
+            session_handles: crate::control::security::session_handle::SessionHandleStore::default(
+            ),
             jwks_registry: None,
             sync_dlq: Mutex::new(SyncDlq::new(DlqConfig::default())),
             audit_retention_days: auth_config.audit_retention_days,

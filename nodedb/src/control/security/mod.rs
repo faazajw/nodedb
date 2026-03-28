@@ -21,5 +21,6 @@ pub mod ratelimit;
 pub mod rls;
 pub mod role;
 pub mod scope;
+pub mod session_handle;
 pub mod tenant;
 pub mod time;

@@ -25,10 +25,27 @@ impl NodeDbPgHandler {
         tenant_id: TenantId,
         addr: &std::net::SocketAddr,
     ) -> PgWireResult<Vec<Response>> {
-        let auth_ctx = crate::control::server::session_auth::build_auth_context(identity);
+        // Resolve opaque session handle if SET LOCAL nodedb.auth_session is set.
+        let mut auth_ctx = if let Some(handle) =
+            self.sessions.get_parameter(addr, "nodedb.auth_session")
+            && let Some(cached) = self.state.session_handles.resolve(&handle)
+        {
+            cached
+        } else {
+            crate::control::server::session_auth::build_auth_context_with_session(
+                identity,
+                &self.sessions,
+                addr,
+            )
+        };
+
+        // Extract per-query ON DENY override.
+        let clean_sql =
+            crate::control::server::session_auth::extract_and_apply_on_deny(sql, &mut auth_ctx);
+
         let tasks = self
             .query_ctx
-            .plan_sql_with_rls(sql, tenant_id, &auth_ctx, &self.state.rls)
+            .plan_sql_with_rls(&clean_sql, tenant_id, &auth_ctx, &self.state.rls)
             .await
             .map_err(|e| {
                 let (severity, code, message) = error_to_sqlstate(&e);

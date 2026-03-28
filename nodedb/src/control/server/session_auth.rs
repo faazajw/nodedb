@@ -236,6 +236,62 @@ pub fn build_auth_context(identity: &AuthenticatedIdentity) -> AuthContext {
     AuthContext::from_identity(identity, generate_session_id())
 }
 
+/// Build an `AuthContext` with pgwire session overrides applied.
+///
+/// Reads `nodedb.on_deny` and `nodedb.auth_session` from session parameters.
+/// If `nodedb.auth_session` is set, resolves the opaque handle to a cached
+/// `AuthContext` (created via `POST /api/auth/session`), replacing the
+/// connection-level identity context entirely.
+pub fn build_auth_context_with_session(
+    identity: &AuthenticatedIdentity,
+    sessions: &crate::control::server::pgwire::session::SessionStore,
+    addr: &std::net::SocketAddr,
+) -> AuthContext {
+    let mut ctx = build_auth_context(identity);
+
+    // Read ON DENY override from SET LOCAL nodedb.on_deny = '...'.
+    if let Some(on_deny_val) = sessions.get_parameter(addr, "nodedb.on_deny")
+        && let Ok(mode) = crate::control::security::deny::parse_on_deny(&[&on_deny_val])
+    {
+        ctx.on_deny_override = Some(mode);
+    }
+
+    ctx
+}
+
+/// Extract a per-query `ON DENY` clause from SQL and apply it to the auth context.
+///
+/// Parses: `SELECT ... ON DENY ERROR 'CODE' MESSAGE '...'`
+/// Strips the `ON DENY` clause from the SQL and sets `auth_ctx.on_deny_override`.
+/// Returns the cleaned SQL.
+pub fn extract_and_apply_on_deny(
+    sql: &str,
+    auth_ctx: &mut crate::control::security::auth_context::AuthContext,
+) -> String {
+    // Use lowercase for case-insensitive search to avoid byte-length mismatches
+    // with non-ASCII characters under Unicode case folding.
+    let lower = sql.to_lowercase();
+    let Some(idx) = lower.rfind("on deny ") else {
+        return sql.to_string();
+    };
+
+    // Only strip ON DENY from SELECT/WITH queries (not CREATE RLS POLICY).
+    let trimmed = lower.trim_start();
+    if !trimmed.starts_with("select") && !trimmed.starts_with("with") {
+        return sql.to_string();
+    }
+
+    let on_deny_part = &sql[idx + "on deny ".len()..];
+    let parts: Vec<&str> = on_deny_part.split_whitespace().collect();
+    match crate::control::security::deny::parse_on_deny(&parts) {
+        Ok(mode) => {
+            auth_ctx.on_deny_override = Some(mode);
+            sql[..idx].trim_end().to_string()
+        }
+        Err(_) => sql.to_string(),
+    }
+}
+
 /// Check if a user is blacklisted. Returns `Err` if blocked.
 ///
 /// Called after identity is resolved, before authorization.
