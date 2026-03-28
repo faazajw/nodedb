@@ -16,6 +16,7 @@
 
 use crate::config::auth::AuthMode;
 use crate::control::security::audit::AuditEvent;
+use crate::control::security::auth_context::{AuthContext, generate_session_id};
 use crate::control::security::identity::{AuthMethod, AuthenticatedIdentity, Role};
 use crate::control::state::SharedState;
 use crate::types::TenantId;
@@ -224,4 +225,13 @@ pub fn authenticate(
             ),
         }),
     }
+}
+
+/// Build an `AuthContext` from an `AuthenticatedIdentity`.
+///
+/// This is the centralized factory used by all auth flows (password,
+/// API key, certificate, trust). JWT flows can use `AuthContext::from_jwt()`
+/// directly when JWT claims are available for richer context.
+pub fn build_auth_context(identity: &AuthenticatedIdentity) -> AuthContext {
+    AuthContext::from_identity(identity, generate_session_id())
 }

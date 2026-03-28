@@ -58,6 +58,26 @@ pub fn resolve_identity(
     ))
 }
 
+/// Resolve both authenticated identity and auth context from HTTP headers.
+///
+/// This is the primary entry point for HTTP handlers that need RLS support.
+/// Returns `(AuthenticatedIdentity, AuthContext)` on success.
+pub fn resolve_auth(
+    headers: &HeaderMap,
+    state: &AppState,
+    peer_addr: &str,
+) -> Result<
+    (
+        AuthenticatedIdentity,
+        crate::control::security::auth_context::AuthContext,
+    ),
+    ApiError,
+> {
+    let identity = resolve_identity(headers, state, peer_addr)?;
+    let auth_ctx = session_auth::build_auth_context(&identity);
+    Ok((identity, auth_ctx))
+}
+
 /// HTTP API error type.
 #[derive(Debug)]
 pub enum ApiError {
