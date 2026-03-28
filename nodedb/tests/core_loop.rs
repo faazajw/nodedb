@@ -12,6 +12,8 @@ mod test_graph;
 mod test_graph_bounds;
 #[path = "executor_tests/test_kv.rs"]
 mod test_kv;
+#[path = "executor_tests/test_kv_advanced.rs"]
+mod test_kv_advanced;
 #[path = "executor_tests/test_security_and_isolation.rs"]
 mod test_security_and_isolation;
 #[path = "executor_tests/test_transaction.rs"]
