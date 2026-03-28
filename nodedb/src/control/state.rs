@@ -93,6 +93,16 @@ pub struct SharedState {
     pub emergency: crate::control::security::emergency::EmergencyState,
     /// Auth observability metrics (Prometheus-compatible).
     pub auth_metrics: crate::control::security::observability::AuthMetrics,
+    /// Tenant ceilings (hard limits even superusers respect).
+    pub ceilings: crate::control::security::ceiling::CeilingStore,
+    /// Column-level redaction policies.
+    pub redaction: crate::control::security::redaction::RedactionStore,
+    /// Risk scorer for adaptive auth decisions.
+    pub risk_scorer: crate::control::security::risk::RiskScorer,
+    /// TLS enforcement policy.
+    pub tls_policy: crate::control::security::tls_policy::TlsPolicy,
+    /// SIEM export adapter.
+    pub siem: crate::control::security::siem::SiemExporter,
 
     /// JWKS registry for multi-provider JWT validation (None = JWT disabled).
     pub jwks_registry:
@@ -228,6 +238,11 @@ impl SharedState {
             impersonation: crate::control::security::impersonation::ImpersonationStore::default(),
             emergency: crate::control::security::emergency::EmergencyState::default(),
             auth_metrics: crate::control::security::observability::AuthMetrics::new(),
+            ceilings: crate::control::security::ceiling::CeilingStore::new(),
+            redaction: crate::control::security::redaction::RedactionStore::new(),
+            risk_scorer: crate::control::security::risk::RiskScorer::default(),
+            tls_policy: crate::control::security::tls_policy::TlsPolicy::default(),
+            siem: crate::control::security::siem::SiemExporter::default(),
             jwks_registry: None,
             sync_dlq: Mutex::new(SyncDlq::new(DlqConfig::default())),
             audit_retention_days: 0,
@@ -323,6 +338,11 @@ impl SharedState {
             impersonation: crate::control::security::impersonation::ImpersonationStore::default(),
             emergency: crate::control::security::emergency::EmergencyState::default(),
             auth_metrics: crate::control::security::observability::AuthMetrics::new(),
+            ceilings: crate::control::security::ceiling::CeilingStore::new(),
+            redaction: crate::control::security::redaction::RedactionStore::new(),
+            risk_scorer: crate::control::security::risk::RiskScorer::default(),
+            tls_policy: crate::control::security::tls_policy::TlsPolicy::default(),
+            siem: crate::control::security::siem::SiemExporter::default(),
             jwks_registry: None,
             sync_dlq: Mutex::new(SyncDlq::new(DlqConfig::default())),
             audit_retention_days: auth_config.audit_retention_days,
