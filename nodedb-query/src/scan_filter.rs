@@ -129,7 +129,7 @@ impl ScanFilter {
 ///
 /// Supports `%` (zero or more characters) and `_` (exactly one character).
 /// When `case_insensitive` is true, both input and pattern are lowercased (ILIKE).
-fn sql_like_match(input: &str, pattern: &str, case_insensitive: bool) -> bool {
+pub fn sql_like_match(input: &str, pattern: &str, case_insensitive: bool) -> bool {
     let (input, pattern) = if case_insensitive {
         (input.to_lowercase(), pattern.to_lowercase())
     } else {

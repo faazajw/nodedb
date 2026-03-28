@@ -9,6 +9,8 @@ pub mod collection;
 pub mod collection_insert;
 pub mod crdt_ops;
 pub mod dsl;
+pub mod emergency_ddl;
+pub mod explain_ddl;
 pub mod field_def;
 pub mod grant;
 pub mod graph_ops;

@@ -89,6 +89,8 @@ pub struct SharedState {
     pub auth_api_keys: crate::control::security::auth_apikey::AuthApiKeyStore,
     /// Impersonation & delegation store.
     pub impersonation: crate::control::security::impersonation::ImpersonationStore,
+    /// Emergency lockdown state + break-glass + two-party auth.
+    pub emergency: crate::control::security::emergency::EmergencyState,
 
     /// JWKS registry for multi-provider JWT validation (None = JWT disabled).
     pub jwks_registry:
@@ -222,6 +224,7 @@ impl SharedState {
             quota_manager: crate::control::security::metering::quota::QuotaManager::new(),
             auth_api_keys: crate::control::security::auth_apikey::AuthApiKeyStore::new(),
             impersonation: crate::control::security::impersonation::ImpersonationStore::default(),
+            emergency: crate::control::security::emergency::EmergencyState::default(),
             jwks_registry: None,
             sync_dlq: Mutex::new(SyncDlq::new(DlqConfig::default())),
             audit_retention_days: 0,
@@ -315,6 +318,7 @@ impl SharedState {
             quota_manager: crate::control::security::metering::quota::QuotaManager::new(),
             auth_api_keys: crate::control::security::auth_apikey::AuthApiKeyStore::new(),
             impersonation: crate::control::security::impersonation::ImpersonationStore::default(),
+            emergency: crate::control::security::emergency::EmergencyState::default(),
             jwks_registry: None,
             sync_dlq: Mutex::new(SyncDlq::new(DlqConfig::default())),
             audit_retention_days: auth_config.audit_retention_days,

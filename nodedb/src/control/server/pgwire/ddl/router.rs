@@ -249,6 +249,33 @@ pub async fn dispatch(
     if upper.starts_with("RENEW SCOPE ") {
         return Some(super::scope_ddl::renew_scope(state, identity, &parts));
     }
+    // EXPLAIN PERMISSION / EXPLAIN SCOPE.
+    if upper.starts_with("EXPLAIN PERMISSION ") {
+        return Some(super::explain_ddl::explain_permission(
+            state, identity, &parts,
+        ));
+    }
+    if upper.starts_with("EXPLAIN SCOPE ") {
+        return Some(super::explain_ddl::explain_scope(state, identity, &parts));
+    }
+
+    // Emergency response.
+    if upper.starts_with("EMERGENCY LOCKDOWN") {
+        return Some(super::emergency_ddl::emergency_lockdown(
+            state, identity, &parts,
+        ));
+    }
+    if upper.starts_with("EMERGENCY UNLOCK") {
+        return Some(super::emergency_ddl::emergency_unlock(
+            state, identity, &parts,
+        ));
+    }
+    if upper.starts_with("BLACKLIST AUTH USERS WHERE") {
+        return Some(super::emergency_ddl::bulk_blacklist(
+            state, identity, &parts,
+        ));
+    }
+
     // Auth-scoped API keys.
     if upper.starts_with("CREATE AUTH KEY ") {
         return Some(super::auth_key_ddl::create_auth_key(
