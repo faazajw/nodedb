@@ -249,6 +249,24 @@ pub async fn dispatch(
     if upper.starts_with("RENEW SCOPE ") {
         return Some(super::scope_ddl::renew_scope(state, identity, &parts));
     }
+    // Session management.
+    if upper.starts_with("SHOW SESSIONS") {
+        return Some(super::session_ddl::show_sessions(state, identity, &parts));
+    }
+    if upper.starts_with("KILL SESSION ") {
+        return Some(super::session_ddl::kill_session(state, identity, &parts));
+    }
+    if upper.starts_with("KILL USER SESSIONS ") {
+        return Some(super::session_ddl::kill_user_sessions(
+            state, identity, &parts,
+        ));
+    }
+    if upper.starts_with("VERIFY AUDIT CHAIN") {
+        return Some(super::session_ddl::verify_audit_chain(
+            state, identity, &parts,
+        ));
+    }
+
     // Usage metering.
     if upper.starts_with("DEFINE METERING DIMENSION ") {
         return Some(super::metering_ddl::define_dimension(

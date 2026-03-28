@@ -25,6 +25,7 @@ pub mod schema_validation;
 pub mod scope_ddl;
 pub mod scope_query_ddl;
 pub mod service_account;
+pub mod session_ddl;
 pub mod spatial;
 mod sql_parse;
 pub mod sync_dispatch;
