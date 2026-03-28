@@ -8,6 +8,7 @@ mod hash_helpers;
 pub mod hash_table;
 pub mod index;
 pub mod scan;
+pub mod slab;
 
 pub use engine::KvEngine;
 pub use engine_stats::{ExpiredKey, KvStats};

@@ -9,10 +9,11 @@
 //!   migrates entries progressively (a few per PUT) to avoid stalling the reactor.
 //! - Lazy expiry fallback: GET checks expiry and returns None for expired keys.
 
-use super::entry::{KvEntry, NO_EXPIRY, OverflowPool};
+use super::entry::{KvEntry, NO_EXPIRY};
 use super::hash_helpers::{
     extract_value_from, free_value_from, hash_key, read_value_from, store_value_in,
 };
+use super::slab::SlabAllocator;
 
 /// Metadata about a KV entry, returned by [`KvHashTable::get_entry_meta`].
 ///
@@ -49,8 +50,8 @@ pub struct KvHashTable {
     /// Next index to scan in the old table during incremental rehash.
     rehash_cursor: usize,
 
-    /// Overflow pool for large values.
-    overflow: OverflowPool,
+    /// Slab allocator for overflow values (fixed-size tiers, O(1) alloc/free).
+    overflow: SlabAllocator,
 
     /// Inline value threshold in bytes.
     inline_threshold: usize,
@@ -76,7 +77,7 @@ impl KvHashTable {
             rehash_batch_size,
             rehash_source: None,
             rehash_cursor: 0,
-            overflow: OverflowPool::new(),
+            overflow: SlabAllocator::new(),
             inline_threshold,
         }
     }

@@ -100,88 +100,6 @@ pub enum KvValue {
     },
 }
 
-/// Overflow buffer: stores large values that don't fit inline.
-///
-/// Simple append-only buffer with free-list reuse. Values are stored
-/// contiguously and referenced by `(index, len)` from `KvValue::Overflow`.
-///
-/// Not a slab allocator yet — that optimization comes when the KV engine
-/// needs size-class segregation to prevent arena fragmentation with columnar.
-/// For now, a Vec<u8> with explicit free ranges is correct and sufficient.
-#[derive(Debug)]
-pub struct OverflowPool {
-    /// Contiguous backing buffer.
-    buf: Vec<u8>,
-    /// Free ranges available for reuse: `(start, len)`.
-    free: Vec<(u32, u32)>,
-}
-
-impl OverflowPool {
-    pub fn new() -> Self {
-        Self {
-            buf: Vec::new(),
-            free: Vec::new(),
-        }
-    }
-
-    /// Allocate space for a value. Returns the index into the buffer.
-    pub fn alloc(&mut self, data: &[u8]) -> (u32, u32) {
-        let len = data.len() as u32;
-
-        // Try to reuse a free range (first-fit).
-        for i in 0..self.free.len() {
-            let (start, free_len) = self.free[i];
-            if free_len >= len {
-                // Copy data into the reused range.
-                let start_usize = start as usize;
-                self.buf[start_usize..start_usize + data.len()].copy_from_slice(data);
-
-                // Shrink or remove the free range.
-                if free_len == len {
-                    self.free.swap_remove(i);
-                } else {
-                    self.free[i] = (start + len, free_len - len);
-                }
-                return (start, len);
-            }
-        }
-
-        // Append to the end.
-        let start = self.buf.len() as u32;
-        self.buf.extend_from_slice(data);
-        (start, len)
-    }
-
-    /// Read a value by index and length.
-    pub fn get(&self, index: u32, len: u32) -> &[u8] {
-        let start = index as usize;
-        let end = start + len as usize;
-        &self.buf[start..end]
-    }
-
-    /// Free a value, making its range available for reuse.
-    pub fn free(&mut self, index: u32, len: u32) {
-        self.free.push((index, len));
-    }
-
-    /// Total bytes allocated (including free gaps).
-    pub fn capacity(&self) -> usize {
-        self.buf.len()
-    }
-
-    /// Total bytes in active use (capacity minus free ranges).
-    pub fn used_bytes(&self) -> usize {
-        let free_bytes: u32 = self.free.iter().map(|(_, len)| *len).sum();
-        self.buf.len().saturating_sub(free_bytes as usize)
-    }
-}
-
-impl Default for OverflowPool {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -217,44 +135,6 @@ mod tests {
             }
             _ => panic!("expected overflow"),
         }
-    }
-
-    #[test]
-    fn overflow_pool_alloc_and_read() {
-        let mut pool = OverflowPool::new();
-        let (idx1, len1) = pool.alloc(b"hello world");
-        assert_eq!(pool.get(idx1, len1), b"hello world");
-
-        let (idx2, len2) = pool.alloc(b"second value");
-        assert_eq!(pool.get(idx2, len2), b"second value");
-        // First value still readable.
-        assert_eq!(pool.get(idx1, len1), b"hello world");
-    }
-
-    #[test]
-    fn overflow_pool_free_and_reuse() {
-        let mut pool = OverflowPool::new();
-        let (idx, len) = pool.alloc(b"12345678");
-        pool.free(idx, len);
-
-        // Realloc same size should reuse the freed range.
-        let (idx2, len2) = pool.alloc(b"abcdefgh");
-        assert_eq!(idx2, idx);
-        assert_eq!(len2, len);
-        assert_eq!(pool.get(idx2, len2), b"abcdefgh");
-    }
-
-    #[test]
-    fn overflow_pool_partial_reuse() {
-        let mut pool = OverflowPool::new();
-        let (idx, len) = pool.alloc(b"1234567890"); // 10 bytes
-        pool.free(idx, len);
-
-        // Alloc smaller: reuses front of the freed range.
-        let (idx2, len2) = pool.alloc(b"abc"); // 3 bytes
-        assert_eq!(idx2, idx);
-        assert_eq!(len2, 3);
-        assert_eq!(pool.get(idx2, len2), b"abc");
     }
 
     #[test]

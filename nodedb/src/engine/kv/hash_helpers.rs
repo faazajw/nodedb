@@ -2,7 +2,8 @@
 
 use std::hash::{BuildHasher, Hasher};
 
-use super::entry::{KvValue, OverflowPool};
+use super::entry::KvValue;
+use super::slab::SlabAllocator;
 
 // ---------------------------------------------------------------------------
 // FxHash — fast non-cryptographic hasher for KV keys
@@ -53,7 +54,7 @@ pub(super) fn hash_key(key: &[u8]) -> u64 {
 use super::entry::KvEntry;
 
 /// Read value bytes from a KvEntry, resolving overflow from the pool.
-pub(super) fn read_value_from<'a>(entry: &'a KvEntry, overflow: &'a OverflowPool) -> &'a [u8] {
+pub(super) fn read_value_from<'a>(entry: &'a KvEntry, overflow: &'a SlabAllocator) -> &'a [u8] {
     match &entry.value {
         KvValue::Inline(data) => data,
         KvValue::Overflow { index, len } => overflow.get(*index, *len),
@@ -61,7 +62,7 @@ pub(super) fn read_value_from<'a>(entry: &'a KvEntry, overflow: &'a OverflowPool
 }
 
 /// Extract a copy of the value bytes.
-pub(super) fn extract_value_from(value: &KvValue, overflow: &OverflowPool) -> Vec<u8> {
+pub(super) fn extract_value_from(value: &KvValue, overflow: &SlabAllocator) -> Vec<u8> {
     match value {
         KvValue::Inline(data) => data.clone(),
         KvValue::Overflow { index, len } => overflow.get(*index, *len).to_vec(),
@@ -70,7 +71,7 @@ pub(super) fn extract_value_from(value: &KvValue, overflow: &OverflowPool) -> Ve
 
 /// Store a value, choosing inline or overflow based on the threshold.
 pub(super) fn store_value_in(
-    overflow: &mut OverflowPool,
+    overflow: &mut SlabAllocator,
     value: &[u8],
     inline_threshold: usize,
 ) -> KvValue {
@@ -83,7 +84,7 @@ pub(super) fn store_value_in(
 }
 
 /// Free overflow storage if the value is an overflow entry.
-pub(super) fn free_value_from(value: &KvValue, overflow: &mut OverflowPool) {
+pub(super) fn free_value_from(value: &KvValue, overflow: &mut SlabAllocator) {
     if let KvValue::Overflow { index, len } = value {
         overflow.free(*index, *len);
     }
