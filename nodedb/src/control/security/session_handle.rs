@@ -16,7 +16,6 @@ use super::auth_context::AuthContext;
 /// A cached session with expiry.
 struct CachedSession {
     auth_context: AuthContext,
-    #[allow(dead_code)] // Used for diagnostics/metrics in future.
     created_at: u64,
     expires_at: u64,
 }
@@ -88,6 +87,18 @@ impl SessionHandleStore {
         let now = now_secs();
         let sessions = self.sessions.read().unwrap_or_else(|p| p.into_inner());
         sessions.values().filter(|s| now < s.expires_at).count()
+    }
+
+    /// Age of the oldest active session handle in seconds.
+    pub fn oldest_age_secs(&self) -> u64 {
+        let now = now_secs();
+        let sessions = self.sessions.read().unwrap_or_else(|p| p.into_inner());
+        sessions
+            .values()
+            .filter(|s| now < s.expires_at)
+            .map(|s| now.saturating_sub(s.created_at))
+            .max()
+            .unwrap_or(0)
     }
 }
 

@@ -57,6 +57,9 @@ pub fn create_api_key(
             .map_err(|_| sqlstate_error("42601", "EXPIRES must be a number of seconds"))?;
     }
 
+    // Parse optional WITH SCOPES 'scope1', 'scope2'.
+    let key_scopes = parse_key_scopes(parts, state)?;
+
     let catalog = state.credentials.catalog();
     let token = state
         .api_keys
@@ -65,7 +68,7 @@ pub fn create_api_key(
             target_user.user_id,
             target_user.tenant_id,
             expires_secs,
-            vec![], // TODO: parse SCOPE from DDL when implemented
+            key_scopes,
             catalog.as_ref(),
         )
         .map_err(|e| sqlstate_error("XX000", &e.to_string()))?;
@@ -195,4 +198,45 @@ pub fn list_api_keys(
         schema,
         stream::iter(rows),
     ))])
+}
+
+/// Parse `WITH SCOPES 'scope1', 'scope2'` from DDL parts.
+/// Resolves scope names via ScopeStore to (permission, collection) pairs.
+fn parse_key_scopes(
+    parts: &[&str],
+    state: &SharedState,
+) -> PgWireResult<Vec<crate::control::security::apikey::KeyScope>> {
+    let scopes_idx = parts.iter().position(|p| p.to_uppercase() == "SCOPES");
+    let Some(idx) = scopes_idx else {
+        return Ok(vec![]);
+    };
+    // Check preceding word is WITH.
+    if idx == 0 || parts[idx - 1].to_uppercase() != "WITH" {
+        return Ok(vec![]);
+    }
+
+    let scope_names: Vec<&str> = parts[idx + 1..]
+        .iter()
+        .take_while(|p| !p.to_uppercase().starts_with("EXPIRES"))
+        .map(|s| s.trim_matches('\'').trim_end_matches(','))
+        .collect();
+
+    let mut key_scopes = Vec::new();
+    for scope_name in &scope_names {
+        let resolved = state.scope_defs.resolve(scope_name);
+        if resolved.is_empty() {
+            return Err(sqlstate_error(
+                "42704",
+                &format!("scope '{scope_name}' not found or empty"),
+            ));
+        }
+        for (perm, coll) in resolved {
+            key_scopes.push(crate::control::security::apikey::KeyScope {
+                permission: perm,
+                collection: coll,
+            });
+        }
+    }
+
+    Ok(key_scopes)
 }

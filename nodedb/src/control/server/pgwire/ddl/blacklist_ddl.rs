@@ -73,11 +73,23 @@ fn handle_blacklist_user(
         .blacklist_user(user_id, &reason, &identity.username, expires_at)
         .map_err(|e| sqlstate_error("XX000", &e.to_string()))?;
 
+    // WITH KILL SESSIONS — terminate active sessions immediately.
+    let kill_sessions = parts.iter().any(|p| p.to_uppercase() == "KILL");
+    let mut killed = 0;
+    if kill_sessions {
+        killed = state.session_registry.kill_sessions_for_user(user_id);
+    }
+
+    let kill_msg = if killed > 0 {
+        format!(", killed {killed} session(s)")
+    } else {
+        String::new()
+    };
     state.audit_record(
         crate::control::security::audit::AuditEvent::AdminAction,
         Some(identity.tenant_id),
         &identity.username,
-        &format!("blacklisted user '{user_id}': {reason}"),
+        &format!("blacklisted user '{user_id}': {reason}{kill_msg}"),
     );
 
     Ok(vec![Response::Execution(Tag::new("BLACKLIST"))])

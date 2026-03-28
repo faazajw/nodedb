@@ -31,6 +31,8 @@ pub struct RateLimiter {
     config: RateLimitConfig,
     /// Per-identity buckets. Key = identity key (user_id, api_key_id, org_id).
     buckets: RwLock<HashMap<String, TokenBucket>>,
+    /// Total rejection counter for Prometheus metrics.
+    rejections_total: std::sync::atomic::AtomicU64,
 }
 
 impl RateLimiter {
@@ -38,6 +40,7 @@ impl RateLimiter {
         Self {
             config,
             buckets: RwLock::new(HashMap::new()),
+            rejections_total: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -99,6 +102,27 @@ impl RateLimiter {
         }
 
         user_result
+    }
+
+    /// Check with per-API-key limits (independent bucket).
+    pub fn check_api_key(
+        &self,
+        key_id: &str,
+        max_qps: u64,
+        max_burst: u64,
+        operation: &str,
+    ) -> RateLimitResult {
+        if !self.config.enabled || max_qps == 0 {
+            return RateLimitResult {
+                allowed: true,
+                remaining: u64::MAX,
+                limit: u64::MAX,
+                retry_after_secs: 0,
+            };
+        }
+        let cost = self.config.operation_cost(operation);
+        let key = format!("apikey:{key_id}");
+        self.check_bucket(&key, max_qps, max_burst, cost)
     }
 
     /// Check a single bucket, creating it if it doesn't exist.
@@ -169,6 +193,20 @@ impl RateLimiter {
         } else {
             Some(("Retry-After".into(), result.retry_after_secs.to_string()))
         }
+    }
+
+    /// Record a rate limit rejection and return the total count.
+    /// Exposed as `nodedb_rate_limit_rejected_total` in Prometheus metrics.
+    pub fn record_rejection(&self) -> u64 {
+        self.rejections_total
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1
+    }
+
+    /// Get total rejection count for Prometheus export.
+    pub fn rejections_total(&self) -> u64 {
+        self.rejections_total
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Whether rate limiting is enabled.

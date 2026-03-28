@@ -233,9 +233,35 @@ pub async fn dispatch(
     if upper.starts_with("REVOKE SCOPE ") {
         return Some(super::scope_ddl::revoke_scope(state, identity, &parts));
     }
+    if upper.starts_with("ALTER SCOPE ") {
+        return Some(super::scope_query_ddl::alter_scope(state, identity, &parts));
+    }
+    if upper.starts_with("SHOW MY SCOPES") {
+        return Some(super::scope_query_ddl::show_my_scopes(
+            state, identity, &parts,
+        ));
+    }
+    if upper.starts_with("SHOW SCOPES FOR ") {
+        return Some(super::scope_query_ddl::show_scopes_for(
+            state, identity, &parts,
+        ));
+    }
     if upper.starts_with("RENEW SCOPE ") {
         return Some(super::scope_ddl::renew_scope(state, identity, &parts));
     }
+    // Usage metering.
+    if upper.starts_with("DEFINE METERING DIMENSION ") {
+        return Some(super::metering_ddl::define_dimension(
+            state, identity, &parts,
+        ));
+    }
+    if upper.starts_with("SHOW USAGE ") {
+        return Some(super::metering_ddl::show_usage(state, identity, &parts));
+    }
+    if upper.starts_with("SHOW QUOTA ") {
+        return Some(super::metering_ddl::show_quota(state, identity, &parts));
+    }
+
     if upper.starts_with("SHOW SCOPE GRANTS") {
         return Some(super::scope_ddl::show_scope_grants(state, identity, &parts));
     }

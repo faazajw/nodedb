@@ -145,18 +145,39 @@ pub enum ApiError {
     Forbidden(String),
     BadRequest(String),
     Internal(String),
+    /// 429 Too Many Requests with Retry-After header.
+    RateLimited {
+        message: String,
+        retry_after_secs: u64,
+    },
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let (status, message) = match self {
-            ApiError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, msg),
-            ApiError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg),
-            ApiError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
-            ApiError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
-        };
-        let body = serde_json::json!({ "error": message });
-        (status, axum::Json(body)).into_response()
+        match self {
+            ApiError::RateLimited {
+                message,
+                retry_after_secs,
+            } => {
+                let body = serde_json::json!({ "error": message });
+                let mut resp = (StatusCode::TOO_MANY_REQUESTS, axum::Json(body)).into_response();
+                if let Ok(val) = retry_after_secs.to_string().parse() {
+                    resp.headers_mut().insert("Retry-After", val);
+                }
+                resp
+            }
+            other => {
+                let (status, message) = match other {
+                    ApiError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, msg),
+                    ApiError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg),
+                    ApiError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
+                    ApiError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
+                    ApiError::RateLimited { .. } => unreachable!(),
+                };
+                let body = serde_json::json!({ "error": message });
+                (status, axum::Json(body)).into_response()
+            }
+        }
     }
 }
 
