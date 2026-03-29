@@ -254,17 +254,10 @@ fn build_crdt_apply(fields: &TextFields, collection: &str) -> crate::Result<Phys
 
     // Use provided mutation_id, or generate deterministic one from content hash.
     let mutation_id = fields.mutation_id.unwrap_or_else(|| {
-        // FNV-1a hash of (peer_id, delta) for deterministic dedup.
-        let mut hash: u64 = 0xcbf29ce484222325;
-        for b in peer_id.to_le_bytes() {
-            hash ^= b as u64;
-            hash = hash.wrapping_mul(0x100000001b3);
-        }
-        for b in &delta {
-            hash ^= *b as u64;
-            hash = hash.wrapping_mul(0x100000001b3);
-        }
-        hash
+        // Deterministic dedup key from (peer_id, delta).
+        let mut combined = peer_id.to_le_bytes().to_vec();
+        combined.extend_from_slice(&delta);
+        crate::util::fnv1a_hash(&combined)
     });
 
     Ok(PhysicalPlan::Crdt(CrdtOp::Apply {

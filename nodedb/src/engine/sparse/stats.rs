@@ -84,7 +84,7 @@ impl ColumnStats {
                 }
 
                 // Update HyperLogLog for cardinality estimation.
-                let hash = Self::hash_value(&val_str);
+                let hash = crate::util::fnv1a_hash(val_str.as_bytes());
                 let register_idx = (hash as usize) & (DEFAULT_HLL_M - 1);
                 let remaining = hash >> DEFAULT_HLL_P;
                 let leading_zeros = if remaining == 0 {
@@ -125,16 +125,6 @@ impl ColumnStats {
         } else {
             raw as u64
         }
-    }
-
-    /// Simple hash function for HLL (FNV-1a 64-bit).
-    fn hash_value(s: &str) -> u64 {
-        let mut hash: u64 = 0xcbf29ce484222325;
-        for byte in s.as_bytes() {
-            hash ^= *byte as u64;
-            hash = hash.wrapping_mul(0x100000001b3);
-        }
-        hash
     }
 
     /// Selectivity estimate for equality predicate (1 / distinct_count).
