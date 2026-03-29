@@ -38,7 +38,7 @@ impl PlanConverter {
     }
 
     /// Check if a collection is a timeseries collection.
-    fn is_timeseries(&self, tenant_id: TenantId, collection: &str) -> bool {
+    pub(super) fn is_timeseries(&self, tenant_id: TenantId, collection: &str) -> bool {
         if let Some(ref creds) = self.credentials
             && let Some(catalog) = creds.catalog()
             && let Ok(Some(coll)) = catalog.get_collection(tenant_id.as_u32(), collection)
