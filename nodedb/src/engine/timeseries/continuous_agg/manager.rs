@@ -266,7 +266,7 @@ impl Default for ContinuousAggregateManager {
 }
 
 /// Summary info for `SHOW CONTINUOUS AGGREGATES`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AggregateInfo {
     pub name: String,
     pub source: String,

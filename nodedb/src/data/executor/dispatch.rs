@@ -451,6 +451,29 @@ impl CoreLoop {
 
             PhysicalPlan::Meta(MetaOp::Checkpoint) => self.execute_checkpoint(task),
 
+            PhysicalPlan::Meta(MetaOp::RegisterContinuousAggregate { def }) => {
+                self.continuous_agg_mgr.register(def.clone());
+                tracing::info!(
+                    name = def.name,
+                    source = def.source,
+                    interval = def.bucket_interval,
+                    "continuous aggregate registered"
+                );
+                self.response_ok(task)
+            }
+
+            PhysicalPlan::Meta(MetaOp::UnregisterContinuousAggregate { name }) => {
+                self.continuous_agg_mgr.unregister(name);
+                tracing::info!(name, "continuous aggregate unregistered");
+                self.response_ok(task)
+            }
+
+            PhysicalPlan::Meta(MetaOp::ListContinuousAggregates) => {
+                let infos = self.continuous_agg_mgr.list_aggregates();
+                let json = serde_json::to_vec(&infos).unwrap_or_default();
+                self.response_with_payload(task, json)
+            }
+
             PhysicalPlan::Timeseries(TimeseriesOp::Scan {
                 collection,
                 time_range,

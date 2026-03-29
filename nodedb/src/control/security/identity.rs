@@ -229,6 +229,12 @@ pub fn required_permission(plan: &crate::bridge::envelope::PhysicalPlan) -> Perm
 
         PhysicalPlan::Crdt(CrdtOp::SetPolicy { .. }) => Permission::Alter,
 
+        PhysicalPlan::Meta(
+            MetaOp::RegisterContinuousAggregate { .. }
+            | MetaOp::UnregisterContinuousAggregate { .. }
+            | MetaOp::ListContinuousAggregates,
+        ) => Permission::Alter,
+
         PhysicalPlan::Vector(VectorOp::SetParams { .. }) => Permission::Alter,
 
         // Control operations.

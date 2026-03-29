@@ -129,6 +129,23 @@ pub async fn dispatch(
         ));
     }
 
+    // Continuous aggregates.
+    if upper.starts_with("CREATE CONTINUOUS AGGREGATE ") {
+        return Some(
+            super::continuous_agg::create_continuous_aggregate(state, identity, sql).await,
+        );
+    }
+    if upper.starts_with("DROP CONTINUOUS AGGREGATE ") {
+        return Some(
+            super::continuous_agg::drop_continuous_aggregate(state, identity, &parts).await,
+        );
+    }
+    if upper.starts_with("SHOW CONTINUOUS AGGREGATE") {
+        return Some(
+            super::continuous_agg::show_continuous_aggregates(state, identity, &parts).await,
+        );
+    }
+
     // Pub/Sub: CREATE TOPIC, DROP TOPIC, SHOW TOPICS, PUBLISH TO, SUBSCRIBE TO.
     if upper.starts_with("CREATE TOPIC ") {
         return Some(super::pubsub::create_topic(state, identity, &parts));
