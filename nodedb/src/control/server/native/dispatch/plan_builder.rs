@@ -43,6 +43,8 @@ pub(crate) fn build_plan(
         OpCode::EdgeDelete => super::plan_builder_graph::build_edge_delete(fields),
         OpCode::TextSearch => build_text_search(fields, collection),
         OpCode::HybridSearch => build_hybrid_search(fields, collection),
+        OpCode::VectorBatchInsert => build_vector_batch_insert(fields, collection),
+        OpCode::DocumentBatchInsert => build_document_batch_insert(fields, collection),
         _ => Err(crate::Error::BadRequest {
             detail: format!("operation {op:?} not supported as direct dispatch"),
         }),
@@ -341,6 +343,65 @@ fn build_hybrid_search(fields: &TextFields, collection: &str) -> crate::Result<P
         vector_weight,
         filter_bitmap: None,
         rls_filters: Vec::new(),
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// Batch operations
+// ---------------------------------------------------------------------------
+
+fn build_vector_batch_insert(fields: &TextFields, collection: &str) -> crate::Result<PhysicalPlan> {
+    let batch_vectors = fields
+        .vectors
+        .as_ref()
+        .ok_or_else(|| crate::Error::BadRequest {
+            detail: "missing 'vectors' array for batch insert".to_string(),
+        })?;
+
+    if batch_vectors.is_empty() {
+        return Err(crate::Error::BadRequest {
+            detail: "vectors array is empty".to_string(),
+        });
+    }
+
+    let dim = batch_vectors[0].embedding.len();
+    let vectors: Vec<Vec<f32>> = batch_vectors.iter().map(|v| v.embedding.clone()).collect();
+
+    Ok(PhysicalPlan::Vector(VectorOp::BatchInsert {
+        collection: collection.to_string(),
+        vectors,
+        dim,
+    }))
+}
+
+fn build_document_batch_insert(
+    fields: &TextFields,
+    collection: &str,
+) -> crate::Result<PhysicalPlan> {
+    let batch_docs = fields
+        .documents
+        .as_ref()
+        .ok_or_else(|| crate::Error::BadRequest {
+            detail: "missing 'documents' array for batch insert".to_string(),
+        })?;
+
+    if batch_docs.is_empty() {
+        return Err(crate::Error::BadRequest {
+            detail: "documents array is empty".to_string(),
+        });
+    }
+
+    let documents: Vec<(String, Vec<u8>)> = batch_docs
+        .iter()
+        .map(|d| {
+            let value_bytes = serde_json::to_vec(&d.fields).unwrap_or_default();
+            (d.id.clone(), value_bytes)
+        })
+        .collect();
+
+    Ok(PhysicalPlan::Document(DocumentOp::BatchInsert {
+        collection: collection.to_string(),
+        documents,
     }))
 }
 

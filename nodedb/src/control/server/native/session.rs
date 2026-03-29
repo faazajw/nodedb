@@ -273,12 +273,10 @@ impl NativeSession {
             | OpCode::TextSearch
             | OpCode::HybridSearch => dispatch::handle_direct_op(&ctx, seq, op, fields).await,
 
-            // Batch ops: dispatch via SQL for now.
-            OpCode::VectorBatchInsert | OpCode::DocumentBatchInsert => NativeResponse::error(
-                seq,
-                "0A000",
-                "batch operations via native protocol not yet implemented; use SQL INSERT",
-            ),
+            // Batch ops: direct Data Plane dispatch.
+            OpCode::VectorBatchInsert | OpCode::DocumentBatchInsert => {
+                dispatch::handle_direct_op(&ctx, seq, op, fields).await
+            }
 
             // Copy from file.
             OpCode::CopyFrom => {
