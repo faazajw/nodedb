@@ -140,6 +140,11 @@ mod tests {
             cert_path: "/nonexistent/cert.pem".into(),
             key_path: "/nonexistent/key.pem".into(),
             cert_reload_interval_secs: None,
+            native: true,
+            pgwire: true,
+            http: true,
+            resp: true,
+            ilp: true,
         };
         assert!(load_server_config(&tls).is_err());
     }
