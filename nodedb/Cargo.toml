@@ -60,6 +60,10 @@ loro = { workspace = true }
 # Regex (PromQL label matchers)
 regex = { workspace = true }
 
+# Protobuf + compression (Prometheus remote write/read)
+prost = { workspace = true }
+snap = { workspace = true }
+
 # Password hashing & cryptography
 argon2 = { workspace = true }
 sha2 = { version = "0.10", features = ["oid"] }

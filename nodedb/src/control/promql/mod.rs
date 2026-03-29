@@ -4,6 +4,7 @@ pub mod functions;
 pub mod label;
 pub mod lexer;
 pub mod parser;
+pub mod remote_proto;
 pub mod types;
 
 pub use evaluator::{EvalContext, evaluate_instant, evaluate_range};

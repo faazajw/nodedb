@@ -3,11 +3,13 @@
 //! Grafana data source URL: `http://nodedb:6480/obsv/api`
 
 mod handlers;
-mod helpers;
+pub(crate) mod helpers;
+mod remote;
 
 pub use handlers::{
     buildinfo, instant_query, label_names, label_values, metadata, range_query, series_query,
 };
+pub use remote::{remote_read, remote_write};
 
 /// Query parameters for `/query`.
 #[derive(Debug, serde::Deserialize)]
