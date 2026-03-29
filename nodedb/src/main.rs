@@ -152,6 +152,7 @@ async fn main() -> anyhow::Result<()> {
         tombstone_threshold: config.checkpoint.compaction_tombstone_threshold,
         query: config.tuning.query.clone(),
     };
+    let system_metrics = Arc::new(nodedb::control::metrics::SystemMetrics::new());
     let mut core_handles = Vec::with_capacity(num_cores);
     let mut notifiers = Vec::with_capacity(num_cores);
     for (core_id, data_side) in data_sides.into_iter().enumerate() {
@@ -163,6 +164,7 @@ async fn main() -> anyhow::Result<()> {
             Arc::clone(&wal_records),
             num_cores,
             compaction_cfg.clone(),
+            Some(Arc::clone(&system_metrics)),
         )?;
         core_handles.push(handle);
         notifiers.push((core_id, notifier));

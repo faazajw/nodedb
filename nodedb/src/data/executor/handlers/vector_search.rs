@@ -142,6 +142,10 @@ impl CoreLoop {
                 .map(|r| build_search_hit(r.id, r.distance, collection_ref.get_doc_id(r.id)))
                 .collect()
         };
+        if let Some(ref m) = self.metrics {
+            m.record_vector_search(0);
+            m.record_query_by_engine("vector");
+        }
         encode_hits_response(self, task, &hits)
     }
 
@@ -178,6 +182,10 @@ impl CoreLoop {
             hits.truncate(top_k);
         }
 
+        if let Some(ref m) = self.metrics {
+            m.record_vector_search(0);
+            m.record_query_by_engine("vector");
+        }
         encode_hits_response(self, task, &hits)
     }
 
@@ -248,6 +256,10 @@ impl CoreLoop {
                 .take(top_k)
                 .map(|r| build_search_hit(r.id, r.distance, resolve_doc_id(doc_source, r.id)))
                 .collect();
+            if let Some(ref m) = self.metrics {
+                m.record_vector_search(0);
+                m.record_query_by_engine("vector");
+            }
             return encode_hits_response(self, task, &hits);
         }
 
@@ -302,6 +314,10 @@ impl CoreLoop {
                 Some(build_search_hit(id, f.rrf_score as f32, doc_id))
             })
             .collect();
+        if let Some(ref m) = self.metrics {
+            m.record_vector_search(0);
+            m.record_query_by_engine("vector");
+        }
         encode_hits_response(self, task, &hits)
     }
 }

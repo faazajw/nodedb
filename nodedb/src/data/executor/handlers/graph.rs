@@ -108,6 +108,9 @@ impl CoreLoop {
             depth,
             self.graph_tuning.max_visited,
         );
+        if let Some(ref m) = self.metrics {
+            m.record_graph_traversal();
+        }
         match super::super::response_codec::encode(&result) {
             Ok(payload) => self.response_with_payload(task, payload),
             Err(e) => {
@@ -142,6 +145,9 @@ impl CoreLoop {
                 },
             )
             .collect();
+        if let Some(ref m) = self.metrics {
+            m.record_graph_traversal();
+        }
         match super::super::response_codec::encode(&result) {
             Ok(payload) => self.response_with_payload(task, payload),
             Err(e) => {
@@ -172,18 +178,23 @@ impl CoreLoop {
             max_depth,
             self.graph_tuning.max_visited,
         ) {
-            Some(path) => match super::super::response_codec::encode(&path) {
-                Ok(payload) => self.response_with_payload(task, payload),
-                Err(e) => {
-                    warn!(core = self.core_id, error = %e, "graph path serialization failed");
-                    self.response_error(
-                        task,
-                        ErrorCode::Internal {
-                            detail: e.to_string(),
-                        },
-                    )
+            Some(path) => {
+                if let Some(ref m) = self.metrics {
+                    m.record_graph_traversal();
                 }
-            },
+                match super::super::response_codec::encode(&path) {
+                    Ok(payload) => self.response_with_payload(task, payload),
+                    Err(e) => {
+                        warn!(core = self.core_id, error = %e, "graph path serialization failed");
+                        self.response_error(
+                            task,
+                            ErrorCode::Internal {
+                                detail: e.to_string(),
+                            },
+                        )
+                    }
+                }
+            }
             None => self.response_error(task, ErrorCode::NotFound),
         }
     }
@@ -217,6 +228,9 @@ impl CoreLoop {
                 dst: d.as_str(),
             })
             .collect();
+        if let Some(ref m) = self.metrics {
+            m.record_graph_traversal();
+        }
         match super::super::response_codec::encode(&result) {
             Ok(payload) => self.response_with_payload(task, payload),
             Err(e) => {

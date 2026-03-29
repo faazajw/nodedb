@@ -60,6 +60,9 @@ impl CoreLoop {
                     }
                 }
 
+                if let Some(ref m) = self.metrics {
+                    m.record_document_insert();
+                }
                 match super::super::response_codec::encode_count("inserted", documents.len()) {
                     Ok(bytes) => self.response_with_payload(task, bytes),
                     Err(e) => self.response_error(
@@ -157,6 +160,9 @@ impl CoreLoop {
 
         match scan_result {
             Ok(filtered) => {
+                if let Some(ref m) = self.metrics {
+                    m.record_document_read();
+                }
                 let sorted = if sort_keys.is_empty() {
                     filtered
                 } else if filtered.len() <= self.query_tuning.sort_run_size {

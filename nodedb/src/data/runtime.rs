@@ -160,6 +160,7 @@ impl Default for CoreCompactionConfig {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_core(
     core_id: usize,
     request_rx: Consumer<BridgeRequest>,
@@ -168,6 +169,7 @@ pub fn spawn_core(
     wal_records: Arc<[nodedb_wal::WalRecord]>,
     num_cores: usize,
     compaction_config: CoreCompactionConfig,
+    system_metrics: Option<Arc<crate::control::metrics::SystemMetrics>>,
 ) -> std::io::Result<(JoinHandle<()>, EventFdNotifier)> {
     let data_dir = data_dir.to_path_buf();
 
@@ -188,7 +190,12 @@ pub fn spawn_core(
             let mut core = CoreLoop::open(core_id, request_rx, response_tx, &data_dir)
                 .expect("failed to open CoreLoop engines");
 
-            // 2b. Apply compaction config.
+            // 2b. Apply metrics reference.
+            if let Some(m) = system_metrics {
+                core.set_metrics(m);
+            }
+
+            // 2c. Apply compaction config.
             core.set_compaction_config(
                 compaction_config.interval,
                 compaction_config.tombstone_threshold,

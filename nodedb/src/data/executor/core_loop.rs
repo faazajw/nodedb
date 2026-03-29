@@ -1,5 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
+use std::sync::Arc;
 
 use tracing::warn;
 
@@ -164,6 +165,9 @@ pub struct CoreLoop {
 
     /// Per-core KV engine: hash tables + expiry wheel. `!Send`.
     pub(in crate::data::executor) kv_engine: crate::engine::kv::KvEngine,
+
+    /// Shared system metrics — Arc is safe for `!Send` since all fields are atomic.
+    pub(in crate::data::executor) metrics: Option<Arc<crate::control::metrics::SystemMetrics>>,
 }
 
 impl CoreLoop {
@@ -242,6 +246,7 @@ impl CoreLoop {
                 crate::engine::kv::current_ms(),
                 &nodedb_types::config::tuning::KvTuning::default(),
             ),
+            metrics: None,
         })
     }
 
@@ -253,6 +258,11 @@ impl CoreLoop {
     ) {
         self.compaction_interval = interval;
         self.compaction_tombstone_threshold = tombstone_threshold;
+    }
+
+    /// Set shared system metrics reference (called after open, before event loop).
+    pub fn set_metrics(&mut self, metrics: Arc<crate::control::metrics::SystemMetrics>) {
+        self.metrics = Some(metrics);
     }
 
     /// Set checkpoint coordinator config (called after open, before event loop).

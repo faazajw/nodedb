@@ -108,6 +108,9 @@ impl CoreLoop {
                 if !super::rls_eval::rls_check_msgpack_bytes(rls_filters, &value) {
                     return self.response_error(task, ErrorCode::NotFound);
                 }
+                if let Some(ref m) = self.metrics {
+                    m.record_kv_get();
+                }
                 self.response_with_payload(task, value)
             }
             None => self.response_error(task, ErrorCode::NotFound),
@@ -139,6 +142,9 @@ impl CoreLoop {
         let _old = self
             .kv_engine
             .put(tid, collection, key, value, ttl_ms, now_ms);
+        if let Some(ref m) = self.metrics {
+            m.record_kv_put();
+        }
         self.response_ok(task)
     }
 
@@ -191,6 +197,9 @@ impl CoreLoop {
         })
         .to_string()
         .into_bytes();
+        if let Some(ref m) = self.metrics {
+            m.record_kv_scan();
+        }
         self.response_with_payload(task, payload)
     }
 
@@ -204,6 +213,9 @@ impl CoreLoop {
         debug!(core = self.core_id, %collection, count = keys.len(), "kv delete");
         let now_ms = current_ms();
         let count = self.kv_engine.delete(tid, collection, keys, now_ms);
+        if let Some(ref m) = self.metrics {
+            m.record_kv_delete();
+        }
         let payload = serde_json::json!({ "deleted": count })
             .to_string()
             .into_bytes();
