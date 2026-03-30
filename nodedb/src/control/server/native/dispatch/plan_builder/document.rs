@@ -1,11 +1,13 @@
 //! Document engine plan builders.
 
+use nodedb_types::CollectionType;
+use nodedb_types::columnar::ColumnarProfile;
 use nodedb_types::protocol::TextFields;
 
 use crate::bridge::envelope::PhysicalPlan;
 use crate::bridge::physical_plan::{DocumentOp, KvOp, TimeseriesOp};
 
-use super::{DispatchCtx, is_kv, is_timeseries, require_doc_id};
+use super::{DispatchCtx, collection_type, require_doc_id};
 
 pub(crate) fn build_point_get(
     ctx: &DispatchCtx<'_>,
@@ -13,25 +15,32 @@ pub(crate) fn build_point_get(
     collection: &str,
 ) -> crate::Result<PhysicalPlan> {
     let doc_id = require_doc_id(fields)?;
-    if is_kv(ctx, collection) {
-        return Ok(PhysicalPlan::Kv(KvOp::Get {
+    match collection_type(ctx, collection) {
+        Some(CollectionType::KeyValue(_)) => Ok(PhysicalPlan::Kv(KvOp::Get {
             collection: collection.to_string(),
             key: doc_id.into_bytes(),
             rls_filters: Vec::new(),
-        }));
-    }
-    if is_timeseries(ctx, collection) {
-        return Err(crate::Error::BadRequest {
-            detail:
-                "PointGet not supported on timeseries collections (use SQL SELECT with time range)"
+        })),
+        Some(CollectionType::Columnar(ColumnarProfile::Timeseries { .. })) => {
+            Err(crate::Error::BadRequest {
+                detail: "PointGet not supported on timeseries collections \
+                         (use SQL SELECT with time range)"
                     .to_string(),
-        });
+            })
+        }
+        Some(CollectionType::Columnar(_)) => Err(crate::Error::BadRequest {
+            detail: "PointGet not supported on columnar collections \
+                     (use SQL SELECT with filters)"
+                .to_string(),
+        }),
+        Some(CollectionType::Document(_)) | None => {
+            Ok(PhysicalPlan::Document(DocumentOp::PointGet {
+                collection: collection.to_string(),
+                document_id: doc_id,
+                rls_filters: Vec::new(),
+            }))
+        }
     }
-    Ok(PhysicalPlan::Document(DocumentOp::PointGet {
-        collection: collection.to_string(),
-        document_id: doc_id,
-        rls_filters: Vec::new(),
-    }))
 }
 
 pub(crate) fn build_point_put(
@@ -41,28 +50,35 @@ pub(crate) fn build_point_put(
 ) -> crate::Result<PhysicalPlan> {
     let doc_id = require_doc_id(fields)?;
     let value = fields.data.clone().unwrap_or_default();
-    if is_kv(ctx, collection) {
-        return Ok(PhysicalPlan::Kv(KvOp::Put {
+    match collection_type(ctx, collection) {
+        Some(CollectionType::KeyValue(_)) => Ok(PhysicalPlan::Kv(KvOp::Put {
             collection: collection.to_string(),
             key: doc_id.into_bytes(),
             value,
             ttl_ms: 0,
-        }));
+        })),
+        Some(CollectionType::Columnar(ColumnarProfile::Timeseries { .. })) => {
+            let json_str = String::from_utf8_lossy(&value);
+            let ilp_line = format!("{collection} value={json_str}\n");
+            Ok(PhysicalPlan::Timeseries(TimeseriesOp::Ingest {
+                collection: collection.to_string(),
+                payload: ilp_line.into_bytes(),
+                format: "ilp".to_string(),
+            }))
+        }
+        Some(CollectionType::Columnar(_)) => Err(crate::Error::BadRequest {
+            detail: "PointPut not supported on columnar collections \
+                     (use SQL INSERT)"
+                .to_string(),
+        }),
+        Some(CollectionType::Document(_)) | None => {
+            Ok(PhysicalPlan::Document(DocumentOp::PointPut {
+                collection: collection.to_string(),
+                document_id: doc_id,
+                value,
+            }))
+        }
     }
-    if is_timeseries(ctx, collection) {
-        let json_str = String::from_utf8_lossy(&value);
-        let ilp_line = format!("{collection} value={json_str}\n");
-        return Ok(PhysicalPlan::Timeseries(TimeseriesOp::Ingest {
-            collection: collection.to_string(),
-            payload: ilp_line.into_bytes(),
-            format: "ilp".to_string(),
-        }));
-    }
-    Ok(PhysicalPlan::Document(DocumentOp::PointPut {
-        collection: collection.to_string(),
-        document_id: doc_id,
-        value,
-    }))
 }
 
 pub(crate) fn build_point_delete(
@@ -71,21 +87,30 @@ pub(crate) fn build_point_delete(
     collection: &str,
 ) -> crate::Result<PhysicalPlan> {
     let doc_id = require_doc_id(fields)?;
-    if is_kv(ctx, collection) {
-        return Ok(PhysicalPlan::Kv(KvOp::Delete {
+    match collection_type(ctx, collection) {
+        Some(CollectionType::KeyValue(_)) => Ok(PhysicalPlan::Kv(KvOp::Delete {
             collection: collection.to_string(),
             keys: vec![doc_id.into_bytes()],
-        }));
+        })),
+        Some(CollectionType::Columnar(ColumnarProfile::Timeseries { .. })) => {
+            Err(crate::Error::BadRequest {
+                detail: "PointDelete not supported on timeseries collections \
+                         (append-only; use retention policies)"
+                    .to_string(),
+            })
+        }
+        Some(CollectionType::Columnar(_)) => Err(crate::Error::BadRequest {
+            detail: "PointDelete not supported on columnar collections \
+                     (append-only)"
+                .to_string(),
+        }),
+        Some(CollectionType::Document(_)) | None => {
+            Ok(PhysicalPlan::Document(DocumentOp::PointDelete {
+                collection: collection.to_string(),
+                document_id: doc_id,
+            }))
+        }
     }
-    if is_timeseries(ctx, collection) {
-        return Err(crate::Error::BadRequest {
-            detail: "PointDelete not supported on timeseries collections (append-only; use retention policies)".to_string(),
-        });
-    }
-    Ok(PhysicalPlan::Document(DocumentOp::PointDelete {
-        collection: collection.to_string(),
-        document_id: doc_id,
-    }))
 }
 
 pub(crate) fn build_range_scan(

@@ -344,13 +344,19 @@ async fn flush_ilp_batch(
                     .collect();
 
                 if !fields.is_empty()
-                    && let Some(catalog) = state.credentials.catalog()
+                    && let Some(catalog) = state.credentials.catalog().as_ref()
                     && let Ok(Some(mut coll)) =
                         catalog.get_collection(tenant_id.as_u32(), &collection)
-                    && coll.fields.len() != fields.len()
+                    && coll.fields != fields
                 {
                     coll.fields = fields;
-                    let _ = catalog.put_collection(&coll);
+                    if let Err(e) = catalog.put_collection(&coll) {
+                        tracing::warn!(
+                            collection = %collection,
+                            error = %e,
+                            "failed to propagate ILP schema to catalog",
+                        );
+                    }
                 }
             }
         }
