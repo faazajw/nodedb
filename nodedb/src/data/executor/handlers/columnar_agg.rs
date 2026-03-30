@@ -17,6 +17,8 @@ use std::collections::HashMap;
 
 use crate::engine::timeseries::columnar_memtable::{ColumnData, ColumnType, ColumnarMemtable};
 
+use super::columnar_filter;
+
 /// Accumulator for running aggregate computation per group.
 #[derive(Debug, Clone)]
 struct AggAccum {
@@ -69,73 +71,6 @@ type GroupKey = Vec<GroupKeyPart>;
 /// Result of native columnar aggregation.
 pub(super) struct ColumnarAggResult {
     pub rows: Vec<serde_json::Value>,
-}
-
-/// Evaluate a simple numeric filter directly on a column vector.
-/// Returns a bitmask (one bool per row) indicating which rows pass.
-fn eval_columnar_filter(
-    mt: &ColumnarMemtable,
-    filter_field: &str,
-    filter_op: &str,
-    filter_value: f64,
-    row_count: usize,
-) -> Option<Vec<bool>> {
-    let schema = mt.schema();
-    let col_idx = schema
-        .columns
-        .iter()
-        .position(|(name, _)| name == filter_field)?;
-    let col_data = mt.column(col_idx);
-
-    let mut mask = vec![true; row_count];
-
-    match col_data {
-        ColumnData::Float64(vals) => {
-            for (i, &v) in vals.iter().enumerate().take(row_count) {
-                mask[i] = match filter_op {
-                    "gt" => v > filter_value,
-                    "gte" => v >= filter_value,
-                    "lt" => v < filter_value,
-                    "lte" => v <= filter_value,
-                    "eq" => (v - filter_value).abs() < f64::EPSILON,
-                    "ne" => (v - filter_value).abs() >= f64::EPSILON,
-                    _ => true,
-                };
-            }
-            Some(mask)
-        }
-        ColumnData::Int64(vals) => {
-            let fv_i64 = filter_value as i64;
-            for (i, &v) in vals.iter().enumerate().take(row_count) {
-                mask[i] = match filter_op {
-                    "gt" => v > fv_i64,
-                    "gte" => v >= fv_i64,
-                    "lt" => v < fv_i64,
-                    "lte" => v <= fv_i64,
-                    "eq" => v == fv_i64,
-                    "ne" => v != fv_i64,
-                    _ => true,
-                };
-            }
-            Some(mask)
-        }
-        ColumnData::Timestamp(vals) => {
-            let fv_i64 = filter_value as i64;
-            for (i, &v) in vals.iter().enumerate().take(row_count) {
-                mask[i] = match filter_op {
-                    "gt" => v > fv_i64,
-                    "gte" => v >= fv_i64,
-                    "lt" => v < fv_i64,
-                    "lte" => v <= fv_i64,
-                    "eq" => v == fv_i64,
-                    "ne" => v != fv_i64,
-                    _ => true,
-                };
-            }
-            Some(mask)
-        }
-        _ => None, // Symbol columns need string comparison — fall back
-    }
 }
 
 /// Extract a group key part from a column at a given row index.
@@ -256,28 +191,17 @@ pub(super) fn try_columnar_aggregate(
 
     // --- Phase 2: Build filter bitmask ---
 
-    let mut row_mask = vec![true; row_count];
-    let mut has_mask = false;
-
-    for f in filters {
-        // Only handle simple numeric comparisons. Complex filters (OR, nested,
-        // string comparisons) fall back to generic path.
-        if !f.clauses.is_empty() {
-            return None; // OR clauses — too complex for native path
-        }
-        if f.op == "match_all" {
-            continue;
-        }
-        // Try to parse filter value as f64.
-        let filter_val = f.value.as_f64()?;
-        let col_mask = eval_columnar_filter(mt, &f.field, &f.op, filter_val, row_count)?;
-        for (i, passes) in col_mask.iter().enumerate() {
-            if !passes {
-                row_mask[i] = false;
+    let (row_mask, has_mask) = if filters.is_empty() {
+        (vec![true; row_count], false)
+    } else {
+        match columnar_filter::eval_filters_dense(mt, filters, row_count) {
+            Some(mask) => {
+                let any_filtered = mask.iter().any(|&b| !b);
+                (mask, any_filtered)
             }
+            None => return None, // Complex filters — fall back to generic path
         }
-        has_mask = true;
-    }
+    };
 
     // --- Phase 3: Group and accumulate ---
 

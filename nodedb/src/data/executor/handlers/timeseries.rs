@@ -13,6 +13,8 @@ use crate::engine::timeseries::ilp_ingest;
 
 use std::collections::HashMap;
 
+use super::columnar_filter;
+
 /// Parameters for a timeseries scan operation.
 pub(in crate::data::executor) struct TimeseriesScanParams<'a> {
     pub task: &'a ExecutionTask,
@@ -34,10 +36,18 @@ impl CoreLoop {
             collection,
             time_range,
             limit,
-            filters: _filters,
+            filters,
             bucket_interval_ms,
         } = params;
         let mut results = Vec::new();
+
+        // Deserialize WHERE filters (if any) for post-scan evaluation.
+        let filter_predicates: Vec<crate::bridge::scan_filter::ScanFilter> = if filters.is_empty() {
+            Vec::new()
+        } else {
+            rmp_serde::from_slice(filters).unwrap_or_default()
+        };
+        let has_filters = !filter_predicates.is_empty();
 
         // 1. Read from in-memory memtable (hot data).
         if let Some(mt) = self.columnar_memtables.get(collection)
@@ -54,9 +64,56 @@ impl CoreLoop {
                 // time_bucket aggregation.
                 let val_col = mt.column(1);
                 let values = val_col.as_f64();
-                let buckets = aggregate_by_time_bucket(timestamps, values, bucket_interval_ms);
+
+                // Filter indices before bucketing using columnar eval.
+                let passing_indices = if has_filters {
+                    match columnar_filter::eval_filters_sparse(mt, &filter_predicates, &indices) {
+                        Some(mask) => columnar_filter::apply_mask(&indices, &mask),
+                        None => {
+                            // Complex filters — fall back to JSON eval per row.
+                            let columns: Vec<_> = schema
+                                .columns
+                                .iter()
+                                .enumerate()
+                                .map(|(i, (name, ty))| (i, name, ty, mt.column(i)))
+                                .collect();
+                            indices
+                                .iter()
+                                .copied()
+                                .filter(|&idx| {
+                                    let mut row = serde_json::Map::new();
+                                    for (col_idx, col_name, col_type, col_data) in &columns {
+                                        let val = super::columnar_read::emit_column_value(
+                                            mt,
+                                            *col_idx,
+                                            col_type,
+                                            col_data,
+                                            idx as usize,
+                                        );
+                                        row.insert(col_name.to_string(), val);
+                                    }
+                                    let row_val = serde_json::Value::Object(row);
+                                    filter_predicates.iter().all(|f| f.matches(&row_val))
+                                })
+                                .collect()
+                        }
+                    }
+                } else {
+                    indices.clone()
+                };
+
+                let filtered_ts: Vec<i64> = passing_indices
+                    .iter()
+                    .map(|&i| timestamps[i as usize])
+                    .collect();
+                let filtered_vals: Vec<f64> = passing_indices
+                    .iter()
+                    .map(|&i| values[i as usize])
+                    .collect();
+                let buckets =
+                    aggregate_by_time_bucket(&filtered_ts, &filtered_vals, bucket_interval_ms);
                 for (bucket_ts, agg) in &buckets {
-                    let row = serde_json::json!({
+                    results.push(serde_json::json!({
                         "bucket": bucket_ts,
                         "count": agg.count,
                         "sum": agg.sum,
@@ -65,20 +122,34 @@ impl CoreLoop {
                         "avg": agg.avg(),
                         "first": agg.first,
                         "last": agg.last,
-                    });
-                    results.push(row);
+                    }));
                 }
             } else if !indices.is_empty() {
                 // Raw row output — emit all columns from the memtable schema.
-                // Hoist column references outside the row loop to avoid
-                // re-fetching per row.
+
+                // Apply WHERE filters directly on columnar data (no JSON construction
+                // for filtered-out rows). Falls back to JSON-based evaluation only for
+                // unsupported filter patterns (OR clauses, string ordering, etc.).
+                let (filtered_indices, need_json_filter) = if has_filters {
+                    match columnar_filter::eval_filters_sparse(mt, &filter_predicates, &indices) {
+                        Some(mask) => (columnar_filter::apply_mask(&indices, &mask), false),
+                        None => (indices.clone(), true), // fall back to JSON eval
+                    }
+                } else {
+                    (indices, false)
+                };
+
+                // Hoist column references outside the row loop.
                 let columns: Vec<_> = schema
                     .columns
                     .iter()
                     .enumerate()
                     .map(|(i, (name, ty))| (i, name, ty, mt.column(i)))
                     .collect();
-                for &idx in indices.iter().take(limit) {
+                for &idx in &filtered_indices {
+                    if results.len() >= limit {
+                        break;
+                    }
                     let mut row = serde_json::Map::new();
                     for (col_idx, col_name, col_type, col_data) in &columns {
                         let val = match col_type {
@@ -114,7 +185,12 @@ impl CoreLoop {
                         };
                         row.insert(col_name.to_string(), val);
                     }
-                    results.push(serde_json::Value::Object(row));
+                    let row_val = serde_json::Value::Object(row);
+                    // JSON fallback: only when columnar eval couldn't handle the filters.
+                    if need_json_filter && !filter_predicates.iter().all(|f| f.matches(&row_val)) {
+                        continue;
+                    }
+                    results.push(row_val);
                 }
             }
         }
@@ -133,30 +209,120 @@ impl CoreLoop {
                     continue;
                 }
 
-                // Read timestamp column.
-                let ts_data = match ColumnarSegmentReader::read_column(
-                    &part_dir,
-                    "timestamp",
-                    ColumnType::Timestamp,
-                ) {
-                    Ok(d) => d,
+                // Read partition schema so we can read ALL columns (not just timestamp + value).
+                let schema = match ColumnarSegmentReader::read_schema(&part_dir) {
+                    Ok(s) => s,
                     Err(_) => continue,
                 };
-                let timestamps = ts_data.as_timestamps();
 
-                // Read value column if it exists.
-                let val_data =
-                    ColumnarSegmentReader::read_column(&part_dir, "value", ColumnType::Float64);
+                // Read all columns from the partition.
+                let col_data: Vec<Option<ColumnData>> = schema
+                    .columns
+                    .iter()
+                    .map(|(name, ty)| ColumnarSegmentReader::read_column(&part_dir, name, *ty).ok())
+                    .collect();
+
+                // Read symbol dictionaries for Symbol columns.
+                let sym_dicts: HashMap<usize, nodedb_types::timeseries::SymbolDictionary> = schema
+                    .columns
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, (_, ty))| *ty == ColumnType::Symbol)
+                    .filter_map(|(i, (name, _))| {
+                        ColumnarSegmentReader::read_symbol_dict(&part_dir, name)
+                            .ok()
+                            .map(|dict| (i, dict))
+                    })
+                    .collect();
+
+                // Timestamp column is required.
+                let ts_col = col_data.get(schema.timestamp_idx).and_then(|d| d.as_ref());
+                let Some(ts_col) = ts_col else {
+                    continue;
+                };
+                let timestamps = ts_col.as_timestamps();
 
                 let indices = timestamp_range_filter(timestamps, time_range.0, time_range.1);
 
+                // Build PartitionColumns adapter for native columnar filtering.
+                let schema_vec: Vec<(String, ColumnType)> = schema.columns.clone();
+                let part_src = columnar_filter::PartitionColumns {
+                    schema: &schema_vec,
+                    columns: &col_data,
+                    sym_dicts: &sym_dicts,
+                };
+
+                // Apply filters natively on columnar data (same as memtable path).
+                let filtered_indices = if has_filters {
+                    match columnar_filter::eval_filters_sparse(
+                        &part_src,
+                        &filter_predicates,
+                        &indices,
+                    ) {
+                        Some(mask) => columnar_filter::apply_mask(&indices, &mask),
+                        None => indices.clone(), // complex filters — keep all, filter below
+                    }
+                } else {
+                    indices.clone()
+                };
+
+                // Emit rows from filtered indices.
+                let emit_row = |idx: usize| -> serde_json::Value {
+                    let mut row = serde_json::Map::new();
+                    for (col_i, (col_name, col_type)) in schema_vec.iter().enumerate() {
+                        let Some(data) = &col_data[col_i] else {
+                            continue;
+                        };
+                        let val = match col_type {
+                            ColumnType::Timestamp => serde_json::Value::Number(
+                                serde_json::Number::from(data.as_timestamps()[idx]),
+                            ),
+                            ColumnType::Float64 => {
+                                let v = data.as_f64()[idx];
+                                serde_json::Number::from_f64(v)
+                                    .map(serde_json::Value::Number)
+                                    .unwrap_or(serde_json::Value::Null)
+                            }
+                            ColumnType::Int64 => {
+                                if let ColumnData::Int64(vals) = data {
+                                    serde_json::Value::Number(serde_json::Number::from(vals[idx]))
+                                } else {
+                                    serde_json::Value::Null
+                                }
+                            }
+                            ColumnType::Symbol => {
+                                if let ColumnData::Symbol(ids) = data {
+                                    sym_dicts
+                                        .get(&col_i)
+                                        .and_then(|dict| dict.get(ids[idx]))
+                                        .map(|s| serde_json::Value::String(s.to_string()))
+                                        .unwrap_or(serde_json::Value::Null)
+                                } else {
+                                    serde_json::Value::Null
+                                }
+                            }
+                        };
+                        row.insert(col_name.clone(), val);
+                    }
+                    serde_json::Value::Object(row)
+                };
+
                 if bucket_interval_ms > 0 {
-                    if let Ok(ref vd) = val_data {
-                        let values = vd.as_f64();
-                        let filtered_ts: Vec<i64> =
-                            indices.iter().map(|&i| timestamps[i as usize]).collect();
-                        let filtered_vals: Vec<f64> =
-                            indices.iter().map(|&i| values[i as usize]).collect();
+                    let val_col_idx = schema_vec
+                        .iter()
+                        .position(|(_, ty)| *ty == ColumnType::Float64);
+                    let val_col = val_col_idx.and_then(|i| col_data[i].as_ref());
+
+                    if let Some(val_data) = val_col {
+                        let values = val_data.as_f64();
+                        let filtered_ts: Vec<i64> = filtered_indices
+                            .iter()
+                            .map(|&i| timestamps[i as usize])
+                            .collect();
+                        let filtered_vals: Vec<f64> = filtered_indices
+                            .iter()
+                            .map(|&i| values[i as usize])
+                            .collect();
                         let buckets = aggregate_by_time_bucket(
                             &filtered_ts,
                             &filtered_vals,
@@ -173,13 +339,12 @@ impl CoreLoop {
                             }));
                         }
                     }
-                } else if let Ok(ref vd) = val_data {
-                    let values = vd.as_f64();
-                    for &idx in indices.iter().take(limit.saturating_sub(results.len())) {
-                        results.push(serde_json::json!({
-                            "timestamp": timestamps[idx as usize],
-                            "value": values[idx as usize],
-                        }));
+                } else {
+                    for &idx in &filtered_indices {
+                        if results.len() >= limit {
+                            break;
+                        }
+                        results.push(emit_row(idx as usize));
                     }
                 }
             }

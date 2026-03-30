@@ -139,10 +139,7 @@ impl CoreLoop {
             let filter_predicates: Vec<ScanFilter> = if filters.is_empty() {
                 Vec::new()
             } else {
-                match rmp_serde::from_slice(filters) {
-                    Ok(f) => f,
-                    Err(_) => Vec::new(),
-                }
+                rmp_serde::from_slice(filters).unwrap_or_default()
             };
 
             if let Some(mut agg_result) = super::columnar_agg::try_columnar_aggregate(
@@ -155,10 +152,8 @@ impl CoreLoop {
             ) {
                 // Apply HAVING filters.
                 if !having.is_empty() {
-                    let having_predicates: Vec<ScanFilter> = match rmp_serde::from_slice(having) {
-                        Ok(f) => f,
-                        Err(_) => Vec::new(),
-                    };
+                    let having_predicates: Vec<ScanFilter> =
+                        rmp_serde::from_slice(having).unwrap_or_default();
                     if !having_predicates.is_empty() {
                         agg_result
                             .rows
