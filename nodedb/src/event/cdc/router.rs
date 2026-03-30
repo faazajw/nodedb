@@ -120,6 +120,16 @@ impl CdcRouter {
             .clone()
     }
 
+    /// Ensure a buffer exists for a given key (stream or topic). Creates if missing.
+    pub fn ensure_buffer(
+        &self,
+        tenant_id: u32,
+        name: &str,
+        retention: &super::stream_def::RetentionConfig,
+    ) -> Arc<StreamBuffer> {
+        self.get_or_create_buffer(tenant_id, name, retention)
+    }
+
     /// Get a buffer for a stream (if it exists). Used by consumers to poll events.
     pub fn get_buffer(&self, tenant_id: u32, stream_name: &str) -> Option<Arc<StreamBuffer>> {
         let key = (tenant_id, stream_name.to_string());
@@ -207,6 +217,7 @@ mod tests {
                 max_events: 1000,
                 max_age_secs: 3600,
             },
+            compaction: CompactionConfig::default(),
             owner: "admin".into(),
             created_at: 0,
         }

@@ -184,6 +184,9 @@ pub struct SharedState {
     /// Job execution history (redb-persisted).
     pub job_history: Arc<crate::event::scheduler::JobHistoryStore>,
 
+    /// Event Plane durable topic registry (distinct from control::pubsub::TopicRegistry).
+    pub ep_topic_registry: crate::event::topic::EpTopicRegistry,
+
     /// Total connections rejected due to max_connections limit (monotonic counter).
     pub connections_rejected: AtomicU64,
 
@@ -313,6 +316,7 @@ impl SharedState {
                         .expect("failed to open test job history"),
                 )
             },
+            ep_topic_registry: crate::event::topic::EpTopicRegistry::new(),
             connections_rejected: AtomicU64::new(0),
             connections_accepted: AtomicU64::new(0),
             system_metrics: Some(Arc::new(crate::control::metrics::SystemMetrics::new())),
@@ -349,6 +353,7 @@ impl SharedState {
         let stream_registry = Arc::new(crate::event::cdc::StreamRegistry::new());
         let group_registry = crate::event::cdc::GroupRegistry::new();
         let schedule_registry = Arc::new(crate::event::scheduler::ScheduleRegistry::new());
+        let ep_topic_registry = crate::event::topic::EpTopicRegistry::new();
         let mut audit_start_seq = 1u64;
         if let Some(catalog) = credentials.catalog() {
             api_keys.load_from(catalog)?;
@@ -359,6 +364,7 @@ impl SharedState {
             stream_registry.load_from_catalog(catalog);
             group_registry.load_from_catalog(catalog);
             schedule_registry.load_from_catalog(catalog);
+            ep_topic_registry.load_from_catalog(catalog);
             let max_seq = catalog.load_audit_max_seq()?;
             if max_seq > 0 {
                 audit_start_seq = max_seq + 1;
@@ -388,6 +394,7 @@ impl SharedState {
             job_history: Arc::new(crate::event::scheduler::JobHistoryStore::open(
                 catalog_path.parent().unwrap_or(std::path::Path::new(".")),
             )?),
+            ep_topic_registry,
             tenants: Mutex::new(TenantIsolation::new(TenantQuota::default())),
             cluster_topology: None,
             cluster_routing: None,

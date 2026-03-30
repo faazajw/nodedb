@@ -31,11 +31,20 @@ pub fn create_consumer_group(
     let stream_name = parts[5].to_lowercase();
     let tenant_id = identity.tenant_id.as_u32();
 
-    // Verify the stream exists.
-    if state.stream_registry.get(tenant_id, &stream_name).is_none() {
+    // Verify the stream or topic exists.
+    // Consumer groups can be created on change streams or durable topics.
+    let is_stream = state.stream_registry.get(tenant_id, &stream_name).is_some();
+    let is_topic = state
+        .ep_topic_registry
+        .get(tenant_id, &stream_name)
+        .is_some();
+    // Topics use "topic:<name>" as buffer key — check with prefix too.
+    let topic_bare = stream_name.strip_prefix("topic:").unwrap_or(&stream_name);
+    let is_topic = is_topic || state.ep_topic_registry.get(tenant_id, topic_bare).is_some();
+    if !is_stream && !is_topic {
         return Err(sqlstate_error(
             "42704",
-            &format!("change stream '{stream_name}' does not exist"),
+            &format!("change stream or topic '{stream_name}' does not exist"),
         ));
     }
 

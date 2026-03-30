@@ -6,6 +6,7 @@ pub mod plane;
 pub mod scheduler;
 #[cfg(test)]
 mod test_utils;
+pub mod topic;
 pub mod trigger;
 pub mod types;
 pub mod wal_replay;

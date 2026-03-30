@@ -74,6 +74,13 @@ impl EventPlane {
             shutdown_rx.clone(),
         );
 
+        // Spawn the CDC log compaction background task.
+        let _compaction_handle = super::cdc::compaction::spawn_compaction_task(
+            Arc::clone(&shared_state.stream_registry),
+            Arc::clone(&cdc_router),
+            shutdown_rx.clone(),
+        );
+
         let plane = Self {
             consumers,
             watermark_store,

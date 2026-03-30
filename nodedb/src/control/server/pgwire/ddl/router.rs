@@ -163,6 +163,30 @@ pub async fn dispatch(
         ));
     }
 
+    // Topics: CREATE/DROP/SHOW TOPIC + PUBLISH TO
+    if upper.starts_with("CREATE TOPIC ") {
+        return Some(super::topic::create_topic(state, identity, &parts, sql));
+    }
+    if upper.starts_with("DROP TOPIC ") {
+        return Some(super::topic::drop_topic(state, identity, &parts));
+    }
+    if upper.starts_with("SHOW TOPIC") {
+        return Some(super::topic::show_topics(state, identity));
+    }
+    if upper.starts_with("PUBLISH TO ") {
+        return Some(super::topic::handle_publish(state, identity, sql));
+    }
+
+    // Stream/Topic consumption: SELECT * FROM STREAM/TOPIC ... CONSUMER GROUP ...
+    if upper.starts_with("SELECT ")
+        && upper.contains("FROM TOPIC ")
+        && upper.contains("CONSUMER GROUP")
+    {
+        // Rewrite: topics use "topic:<name>" buffer keys.
+        // The stream_select handler works for both — we just need to prefix the name.
+        return Some(select_from_topic(state, identity, &parts));
+    }
+
     // Schedules: CREATE/DROP/SHOW SCHEDULE
     if upper.starts_with("CREATE SCHEDULE ") {
         return Some(super::schedule::create_schedule(state, identity, sql));
@@ -283,19 +307,8 @@ pub async fn dispatch(
         ));
     }
 
-    // Pub/Sub: CREATE TOPIC, DROP TOPIC, SHOW TOPICS, PUBLISH TO, SUBSCRIBE TO.
-    if upper.starts_with("CREATE TOPIC ") {
-        return Some(super::pubsub::create_topic(state, identity, &parts));
-    }
-    if upper.starts_with("DROP TOPIC ") {
-        return Some(super::pubsub::drop_topic(state, identity, &parts));
-    }
-    if upper == "SHOW TOPICS" || upper.starts_with("SHOW TOPICS") {
-        return Some(super::pubsub::show_topics(state));
-    }
-    if upper.starts_with("PUBLISH TO ") {
-        return Some(super::pubsub::publish_to(state, identity, sql, &parts));
-    }
+    // Pub/Sub: SUBSCRIBE TO (legacy). CREATE/DROP/SHOW TOPIC and PUBLISH TO
+    // are handled by Event Plane topic handlers above (lines 167-180).
     if upper.starts_with("SUBSCRIBE TO ") {
         return Some(super::pubsub::subscribe_to(state, identity, sql, &parts));
     }
@@ -840,4 +853,46 @@ pub async fn dispatch(
     }
 
     None
+}
+
+/// Handle `SELECT * FROM TOPIC <topic> CONSUMER GROUP <group> [LIMIT <n>]`.
+///
+/// Topics use the same buffer pool as change streams, prefixed with "topic:".
+/// We rewrite the parts to use the prefixed name and delegate to stream_select.
+/// Handle `SELECT * FROM TOPIC <topic> CONSUMER GROUP <group> [LIMIT <n>]`.
+///
+/// Topics use "topic:<name>" as buffer keys. We parse the parts directly
+/// and call stream_select's underlying consume logic with the prefixed name.
+fn select_from_topic(
+    state: &crate::control::state::SharedState,
+    identity: &crate::control::security::identity::AuthenticatedIdentity,
+    parts: &[&str],
+) -> pgwire::error::PgWireResult<Vec<pgwire::api::results::Response>> {
+    // parts: [SELECT, *, FROM, TOPIC, <topic>, CONSUMER, GROUP, <group>, ...]
+    if parts.len() < 8
+        || !parts[3].eq_ignore_ascii_case("TOPIC")
+        || !parts[5].eq_ignore_ascii_case("CONSUMER")
+        || !parts[6].eq_ignore_ascii_case("GROUP")
+    {
+        return Err(super::super::types::sqlstate_error(
+            "42601",
+            "expected SELECT * FROM TOPIC <topic> CONSUMER GROUP <group>",
+        ));
+    }
+
+    // Build a rewritten parts slice with STREAM and prefixed name.
+    // Only two owned strings needed — the rest are borrowed from the original.
+    let prefixed_name = format!("topic:{}", parts[4].to_lowercase());
+    let stream_keyword = "STREAM";
+
+    let mut rewritten = Vec::with_capacity(parts.len());
+    for (i, &p) in parts.iter().enumerate() {
+        match i {
+            3 => rewritten.push(stream_keyword),
+            4 => rewritten.push(&prefixed_name),
+            _ => rewritten.push(p),
+        }
+    }
+
+    super::stream_select::select_from_stream(state, identity, &rewritten)
 }

@@ -59,6 +59,10 @@ pub(super) const CONSUMER_GROUPS: TableDefinition<&str, &[u8]> =
 pub(super) const SCHEDULES: TableDefinition<&str, &[u8]> =
     TableDefinition::new("_system.schedules");
 
+/// Table: "{tenant_id}:{topic_name}" -> MessagePack-serialized TopicDef.
+pub(super) const TOPICS_EP: TableDefinition<&str, &[u8]> =
+    TableDefinition::new("_system.topics_ep");
+
 /// Table: "{tenant_id}:{name}" -> MessagePack-serialized stored procedure definition.
 pub(super) const PROCEDURES: TableDefinition<&str, &[u8]> =
     TableDefinition::new("_system.procedures");
@@ -478,6 +482,9 @@ impl SystemCatalog {
             let _ = write_txn
                 .open_table(SCHEDULES)
                 .map_err(|e| catalog_err("init schedules table", e))?;
+            let _ = write_txn
+                .open_table(TOPICS_EP)
+                .map_err(|e| catalog_err("init topics_ep table", e))?;
         }
         write_txn
             .commit()
