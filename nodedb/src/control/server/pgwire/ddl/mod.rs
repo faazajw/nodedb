@@ -40,6 +40,7 @@ pub mod sync_dispatch;
 pub mod tenant;
 pub mod timeseries;
 mod timeseries_helpers;
+pub mod trigger;
 pub mod user;
 
 pub use router::dispatch;

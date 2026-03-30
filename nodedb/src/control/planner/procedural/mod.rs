@@ -1,5 +1,6 @@
 pub mod ast;
 pub mod compiler;
+pub mod executor;
 pub mod parser;
 pub mod tokenizer;
 pub mod validate;

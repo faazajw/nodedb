@@ -97,6 +97,20 @@ pub async fn dispatch(
         return Some(super::function::show_functions(state, identity));
     }
 
+    // Triggers.
+    if upper.starts_with("CREATE OR REPLACE TRIGGER ") || upper.starts_with("CREATE TRIGGER ") {
+        return Some(super::trigger::create_trigger(state, identity, sql));
+    }
+    if upper.starts_with("DROP TRIGGER ") {
+        return Some(super::trigger::drop_trigger(state, identity, &parts));
+    }
+    if upper.starts_with("ALTER TRIGGER ") {
+        return Some(super::trigger::alter_trigger(state, identity, &parts));
+    }
+    if upper == "SHOW TRIGGERS" || upper.starts_with("SHOW TRIGGERS") {
+        return Some(super::trigger::show_triggers(state, identity, &parts));
+    }
+
     // Schema introspection.
     if upper.starts_with("DESCRIBE ") || upper.starts_with("\\D ") {
         return Some(super::collection::describe_collection(

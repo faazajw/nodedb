@@ -158,6 +158,10 @@ pub struct SharedState {
     /// Used by LISTEN/NOTIFY, live queries, event triggers, and CDC.
     pub change_stream: crate::control::change_stream::ChangeStream,
 
+    /// In-memory trigger registry for fast lookup during DML.
+    /// Loaded from catalog on startup, updated by CREATE/DROP TRIGGER DDL.
+    pub trigger_registry: crate::control::trigger::TriggerRegistry,
+
     /// Total connections rejected due to max_connections limit (monotonic counter).
     pub connections_rejected: AtomicU64,
 
@@ -251,6 +255,7 @@ impl SharedState {
             topic_registry: crate::control::pubsub::TopicRegistry::new(10_000),
             shape_registry: crate::control::server::sync::shape::ShapeRegistry::new(),
             change_stream: crate::control::change_stream::ChangeStream::new(4096),
+            trigger_registry: crate::control::trigger::TriggerRegistry::new(),
             connections_rejected: AtomicU64::new(0),
             connections_accepted: AtomicU64::new(0),
             system_metrics: Some(Arc::new(crate::control::metrics::SystemMetrics::new())),
@@ -283,12 +288,14 @@ impl SharedState {
         let roles = RoleStore::new();
         let permissions = PermissionStore::new();
         let blacklist = crate::control::security::blacklist::store::BlacklistStore::new();
+        let trigger_registry = crate::control::trigger::TriggerRegistry::new();
         let mut audit_start_seq = 1u64;
         if let Some(catalog) = credentials.catalog() {
             api_keys.load_from(catalog)?;
             roles.load_from(catalog)?;
             permissions.load_from(catalog)?;
             blacklist.load_from(catalog)?;
+            trigger_registry.load_all(catalog);
             let max_seq = catalog.load_audit_max_seq()?;
             if max_seq > 0 {
                 audit_start_seq = max_seq + 1;
@@ -307,6 +314,7 @@ impl SharedState {
             api_keys,
             roles,
             permissions,
+            trigger_registry,
             tenants: Mutex::new(TenantIsolation::new(TenantQuota::default())),
             cluster_topology: None,
             cluster_routing: None,

@@ -44,6 +44,9 @@ pub(super) const MATERIALIZED_VIEWS: TableDefinition<&str, &[u8]> =
 pub(super) const FUNCTIONS: TableDefinition<&str, &[u8]> =
     TableDefinition::new("_system.functions");
 
+/// Table: "{tenant_id}:{name}" -> MessagePack-serialized trigger definition.
+pub(super) const TRIGGERS: TableDefinition<&str, &[u8]> = TableDefinition::new("_system.triggers");
+
 /// Table: "{source_type}:{tenant_id}:{source_name}" -> MessagePack-serialized dependency list.
 /// Tracks what objects a function/trigger/procedure references in its body.
 pub(super) const DEPENDENCIES: TableDefinition<&str, &[u8]> =
@@ -441,6 +444,9 @@ impl SystemCatalog {
             let _ = write_txn
                 .open_table(FUNCTIONS)
                 .map_err(|e| catalog_err("init functions table", e))?;
+            let _ = write_txn
+                .open_table(TRIGGERS)
+                .map_err(|e| catalog_err("init triggers table", e))?;
             let _ = write_txn
                 .open_table(DEPENDENCIES)
                 .map_err(|e| catalog_err("init dependencies table", e))?;

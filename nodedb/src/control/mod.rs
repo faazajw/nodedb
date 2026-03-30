@@ -23,6 +23,7 @@ pub mod security;
 pub mod server;
 pub mod state;
 pub mod trace_context;
+pub mod trigger;
 pub mod wal_replication;
 
 pub use event_trigger::spawn_event_trigger_processor;

@@ -207,6 +207,20 @@ pub async fn insert_document(
         return Some(Err(sqlstate_error("XX000", &e.to_string())));
     }
 
+    // Fire AFTER INSERT triggers.
+    if let Err(e) = crate::control::trigger::fire::fire_after_insert(
+        state,
+        identity,
+        tenant_id,
+        &parsed.coll_name,
+        &parsed.fields,
+        0, // cascade depth starts at 0
+    )
+    .await
+    {
+        return Some(Err(sqlstate_error("XX000", &format!("trigger error: {e}"))));
+    }
+
     // Dispatch VectorInsert for vector fields.
     let vec_vshard = crate::types::VShardId::from_collection(&parsed.coll_name);
     for (_field_name, vector) in &parsed.vector_fields {
