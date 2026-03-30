@@ -207,7 +207,9 @@ pub async fn insert_document(
         return Some(Err(sqlstate_error("XX000", &e.to_string())));
     }
 
-    // Fire AFTER INSERT triggers.
+    // Fire SYNC AFTER INSERT triggers (execute in write path, same transaction).
+    // ASYNC triggers are handled by the Event Plane via WriteEvent dispatch.
+    use crate::control::security::catalog::trigger_types::TriggerExecutionMode;
     if let Err(e) = crate::control::trigger::fire::fire_after_insert(
         state,
         identity,
@@ -215,6 +217,7 @@ pub async fn insert_document(
         &parsed.coll_name,
         &parsed.fields,
         0, // cascade depth starts at 0
+        Some(TriggerExecutionMode::Sync),
     )
     .await
     {

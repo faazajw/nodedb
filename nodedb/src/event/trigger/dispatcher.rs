@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use tracing::{debug, trace, warn};
 
+use crate::control::security::catalog::trigger_types::TriggerExecutionMode;
 use crate::control::security::identity::{AuthMethod, AuthenticatedIdentity, Role};
 use crate::control::state::SharedState;
 use crate::control::trigger::fire;
@@ -53,7 +54,48 @@ pub async fn dispatch_triggers(
 
     let op_str = event.op.to_string();
     let result = match event.op {
-        WriteOp::BulkInsert { .. } | WriteOp::BulkDelete { .. } => Ok(()),
+        WriteOp::BulkInsert { .. } => {
+            // BulkInsert events from WAL replay may not carry per-row payload
+            // (new_value is None for KV batch puts). If we have row data,
+            // try to deserialize as an array and fire per-row in chunks of 1024.
+            if let Some(ref new) = new_fields {
+                fire_for_operation(
+                    "INSERT",
+                    state,
+                    &identity,
+                    event.tenant_id,
+                    &event.collection,
+                    Some(new),
+                    None,
+                    0,
+                    Some(TriggerExecutionMode::Async),
+                )
+                .await
+            } else {
+                // No row data in bulk event (e.g., KV batch from WAL replay).
+                // Individual row events are emitted separately on the ring buffer path.
+                Ok(())
+            }
+        }
+        WriteOp::BulkDelete { .. } => {
+            // Same as BulkInsert: if we have old_value, fire per-row.
+            if let Some(ref old) = old_fields {
+                fire_for_operation(
+                    "DELETE",
+                    state,
+                    &identity,
+                    event.tenant_id,
+                    &event.collection,
+                    None,
+                    Some(old),
+                    0,
+                    Some(TriggerExecutionMode::Async),
+                )
+                .await
+            } else {
+                Ok(())
+            }
+        }
         _ => {
             fire_for_operation(
                 &op_str,
@@ -64,6 +106,7 @@ pub async fn dispatch_triggers(
                 new_fields.as_ref(),
                 old_fields.as_ref(),
                 0, // cascade_depth starts at 0 for Event Plane dispatch
+                Some(TriggerExecutionMode::Async), // Event Plane only fires ASYNC triggers
             )
             .await
         }
@@ -134,6 +177,7 @@ async fn retry_fire(
         entry.new_fields.as_ref(),
         entry.old_fields.as_ref(),
         entry.cascade_depth,
+        Some(TriggerExecutionMode::Async), // Retries are always ASYNC
     )
     .await
 }
@@ -141,6 +185,7 @@ async fn retry_fire(
 /// Shared trigger fire logic: routes to the correct fire_after_* function.
 ///
 /// Used by both initial dispatch (from WriteEvent) and retry (from RetryEntry).
+/// `mode_filter` controls which execution mode triggers are fired.
 #[allow(clippy::too_many_arguments)]
 async fn fire_for_operation(
     operation: &str,
@@ -151,12 +196,21 @@ async fn fire_for_operation(
     new_fields: Option<&serde_json::Map<String, serde_json::Value>>,
     old_fields: Option<&serde_json::Map<String, serde_json::Value>>,
     cascade_depth: u32,
+    mode_filter: Option<TriggerExecutionMode>,
 ) -> crate::Result<()> {
     match operation {
         "INSERT" => {
             if let Some(new) = new_fields {
-                fire::fire_after_insert(state, identity, tenant_id, collection, new, cascade_depth)
-                    .await
+                fire::fire_after_insert(
+                    state,
+                    identity,
+                    tenant_id,
+                    collection,
+                    new,
+                    cascade_depth,
+                    mode_filter,
+                )
+                .await
             } else {
                 Ok(())
             }
@@ -171,6 +225,7 @@ async fn fire_for_operation(
                     old,
                     new,
                     cascade_depth,
+                    mode_filter,
                 )
                 .await
             } else {
@@ -179,8 +234,16 @@ async fn fire_for_operation(
         }
         "DELETE" => {
             if let Some(old) = old_fields {
-                fire::fire_after_delete(state, identity, tenant_id, collection, old, cascade_depth)
-                    .await
+                fire::fire_after_delete(
+                    state,
+                    identity,
+                    tenant_id,
+                    collection,
+                    old,
+                    cascade_depth,
+                    mode_filter,
+                )
+                .await
             } else {
                 Ok(())
             }

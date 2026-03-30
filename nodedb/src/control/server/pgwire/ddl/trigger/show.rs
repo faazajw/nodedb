@@ -32,6 +32,7 @@ pub fn show_triggers(
         text_field("timing"),
         text_field("events"),
         text_field("granularity"),
+        text_field("execution"),
         text_field("enabled"),
         text_field("priority"),
         text_field("owner"),
@@ -54,6 +55,7 @@ pub fn show_triggers(
         let _ = encoder.encode_field(&t.timing.as_str().to_string());
         let _ = encoder.encode_field(&t.events.display());
         let _ = encoder.encode_field(&t.granularity.as_str().to_string());
+        let _ = encoder.encode_field(&t.execution_mode.as_str().to_string());
         let _ = encoder.encode_field(&t.enabled.to_string());
         let _ = encoder.encode_field(&t.priority.to_string());
         let _ = encoder.encode_field(&t.owner);

@@ -15,20 +15,21 @@ pub(super) struct ParsedCreateTrigger {
     pub granularity: TriggerGranularity,
     pub when_condition: Option<String>,
     pub priority: i32,
+    pub execution_mode: TriggerExecutionMode,
     pub body_sql: String,
 }
 
+/// Syntax:
+/// ```text
+/// CREATE [OR REPLACE] [SYNC | DEFERRED] TRIGGER <name> ...
+/// ```
+/// Default execution mode is ASYNC (omit the keyword).
 pub(super) fn parse_create_trigger(sql: &str) -> PgWireResult<ParsedCreateTrigger> {
     let trimmed = sql.trim().trim_end_matches(';').trim();
     let upper = trimmed.to_uppercase();
 
-    let (or_replace, rest) = if upper.starts_with("CREATE OR REPLACE TRIGGER ") {
-        (true, &trimmed["CREATE OR REPLACE TRIGGER ".len()..])
-    } else if upper.starts_with("CREATE TRIGGER ") {
-        (false, &trimmed["CREATE TRIGGER ".len()..])
-    } else {
-        return Err(sqlstate_error("42601", "expected CREATE TRIGGER"));
-    };
+    // Parse prefix: CREATE [OR REPLACE] [SYNC|DEFERRED] TRIGGER
+    let (or_replace, execution_mode, rest) = parse_prefix(&upper, trimmed)?;
 
     let begin_pos = find_begin_pos(rest)
         .ok_or_else(|| sqlstate_error("42601", "trigger body must start with BEGIN"))?;
@@ -70,8 +71,51 @@ pub(super) fn parse_create_trigger(sql: &str) -> PgWireResult<ParsedCreateTrigge
         granularity,
         when_condition,
         priority,
+        execution_mode,
         body_sql,
     })
+}
+
+/// Parse `CREATE [OR REPLACE] [SYNC|DEFERRED] TRIGGER` prefix.
+/// Returns `(or_replace, execution_mode, rest_of_sql)`.
+fn parse_prefix<'a>(
+    upper: &str,
+    original: &'a str,
+) -> PgWireResult<(bool, TriggerExecutionMode, &'a str)> {
+    // Try all valid prefixes from most specific to least (no heap allocations).
+    const PREFIXES: &[(&str, bool, TriggerExecutionMode)] = &[
+        (
+            "CREATE OR REPLACE SYNC TRIGGER ",
+            true,
+            TriggerExecutionMode::Sync,
+        ),
+        (
+            "CREATE OR REPLACE DEFERRED TRIGGER ",
+            true,
+            TriggerExecutionMode::Deferred,
+        ),
+        (
+            "CREATE OR REPLACE TRIGGER ",
+            true,
+            TriggerExecutionMode::Async,
+        ),
+        ("CREATE SYNC TRIGGER ", false, TriggerExecutionMode::Sync),
+        (
+            "CREATE DEFERRED TRIGGER ",
+            false,
+            TriggerExecutionMode::Deferred,
+        ),
+        ("CREATE TRIGGER ", false, TriggerExecutionMode::Async),
+    ];
+    for &(prefix, or_replace, mode) in PREFIXES {
+        if upper.starts_with(prefix) {
+            return Ok((or_replace, mode, &original[prefix.len()..]));
+        }
+    }
+    Err(sqlstate_error(
+        "42601",
+        "expected CREATE [SYNC|DEFERRED] TRIGGER",
+    ))
 }
 
 fn parse_timing(tokens: &[&str], i: &mut usize) -> PgWireResult<TriggerTiming> {
@@ -310,5 +354,39 @@ mod tests {
                     FOR EACH STATEMENT BEGIN RETURN; END";
         let parsed = parse_create_trigger(sql).unwrap();
         assert_eq!(parsed.granularity, TriggerGranularity::Statement);
+    }
+
+    #[test]
+    fn parse_sync_trigger() {
+        let sql = "CREATE SYNC TRIGGER t AFTER INSERT ON c \
+                    FOR EACH ROW BEGIN RETURN; END";
+        let parsed = parse_create_trigger(sql).unwrap();
+        assert_eq!(parsed.execution_mode, TriggerExecutionMode::Sync);
+        assert_eq!(parsed.name, "t");
+    }
+
+    #[test]
+    fn parse_deferred_trigger() {
+        let sql = "CREATE DEFERRED TRIGGER t AFTER INSERT ON c \
+                    FOR EACH ROW BEGIN RETURN; END";
+        let parsed = parse_create_trigger(sql).unwrap();
+        assert_eq!(parsed.execution_mode, TriggerExecutionMode::Deferred);
+    }
+
+    #[test]
+    fn parse_default_is_async() {
+        let sql = "CREATE TRIGGER t AFTER INSERT ON c \
+                    FOR EACH ROW BEGIN RETURN; END";
+        let parsed = parse_create_trigger(sql).unwrap();
+        assert_eq!(parsed.execution_mode, TriggerExecutionMode::Async);
+    }
+
+    #[test]
+    fn parse_or_replace_sync() {
+        let sql = "CREATE OR REPLACE SYNC TRIGGER t AFTER INSERT ON c \
+                    FOR EACH ROW BEGIN RETURN; END";
+        let parsed = parse_create_trigger(sql).unwrap();
+        assert!(parsed.or_replace);
+        assert_eq!(parsed.execution_mode, TriggerExecutionMode::Sync);
     }
 }

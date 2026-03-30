@@ -217,6 +217,7 @@ mod tests {
             body_sql: "BEGIN RETURN; END".into(),
             priority: 0,
             enabled: true,
+            execution_mode: TriggerExecutionMode::default(),
             owner: "admin".into(),
             created_at: 0,
         }

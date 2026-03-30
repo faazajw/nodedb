@@ -111,8 +111,14 @@ pub async fn dispatch(
         return Some(super::procedure::call_procedure(state, identity, sql).await);
     }
 
-    // Triggers.
-    if upper.starts_with("CREATE OR REPLACE TRIGGER ") || upper.starts_with("CREATE TRIGGER ") {
+    // Triggers: CREATE [OR REPLACE] [SYNC|DEFERRED] TRIGGER ...
+    if upper.starts_with("CREATE TRIGGER ")
+        || upper.starts_with("CREATE OR REPLACE TRIGGER ")
+        || upper.starts_with("CREATE SYNC TRIGGER ")
+        || upper.starts_with("CREATE DEFERRED TRIGGER ")
+        || upper.starts_with("CREATE OR REPLACE SYNC TRIGGER ")
+        || upper.starts_with("CREATE OR REPLACE DEFERRED TRIGGER ")
+    {
         return Some(super::trigger::create_trigger(state, identity, sql));
     }
     if upper.starts_with("DROP TRIGGER ") {

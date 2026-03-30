@@ -10,7 +10,7 @@ use tracing::warn;
 
 use crate::control::planner::procedural::executor::bindings::RowBindings;
 use crate::control::planner::procedural::executor::core::{MAX_CASCADE_DEPTH, StatementExecutor};
-use crate::control::security::catalog::trigger_types::TriggerTiming;
+use crate::control::security::catalog::trigger_types::{TriggerExecutionMode, TriggerTiming};
 use crate::control::security::identity::AuthenticatedIdentity;
 use crate::control::state::SharedState;
 use crate::types::TenantId;
@@ -20,10 +20,13 @@ use super::registry::DmlEvent;
 /// Fire AFTER ROW triggers for an INSERT operation.
 ///
 /// Called after a successful INSERT dispatch. `new_fields` contains the
-/// inserted row's field values.
+/// inserted row's field values. The trigger body's DML is dispatched through
+/// the normal plan+SPSC path, executing in the same logical transaction context.
 ///
-/// The trigger body's DML is dispatched through the normal plan+SPSC path,
-/// executing in the same logical transaction context.
+/// `mode_filter` selects which execution mode to fire:
+/// - `Some(Sync)`: only fire SYNC triggers (called from write path)
+/// - `Some(Async)`: only fire ASYNC triggers (called from Event Plane)
+/// - `None`: fire all AFTER triggers regardless of mode (legacy behavior)
 pub async fn fire_after_insert(
     state: &SharedState,
     identity: &AuthenticatedIdentity,
@@ -31,6 +34,7 @@ pub async fn fire_after_insert(
     collection: &str,
     new_fields: &serde_json::Map<String, serde_json::Value>,
     cascade_depth: u32,
+    mode_filter: Option<TriggerExecutionMode>,
 ) -> crate::Result<()> {
     let triggers =
         state
@@ -40,6 +44,7 @@ pub async fn fire_after_insert(
     let after_triggers: Vec<_> = triggers
         .into_iter()
         .filter(|t| t.timing == TriggerTiming::After)
+        .filter(|t| mode_filter.is_none() || Some(t.execution_mode) == mode_filter)
         .collect();
 
     if after_triggers.is_empty() {
@@ -77,6 +82,7 @@ pub async fn fire_after_insert(
 ///
 /// `old_fields` is the row before the update, `new_fields` is after.
 /// Both are available as OLD.field and NEW.field in the trigger body.
+#[allow(clippy::too_many_arguments)]
 pub async fn fire_after_update(
     state: &SharedState,
     identity: &AuthenticatedIdentity,
@@ -85,6 +91,7 @@ pub async fn fire_after_update(
     old_fields: &serde_json::Map<String, serde_json::Value>,
     new_fields: &serde_json::Map<String, serde_json::Value>,
     cascade_depth: u32,
+    mode_filter: Option<TriggerExecutionMode>,
 ) -> crate::Result<()> {
     let triggers =
         state
@@ -94,6 +101,7 @@ pub async fn fire_after_update(
     let after_triggers: Vec<_> = triggers
         .into_iter()
         .filter(|t| t.timing == TriggerTiming::After)
+        .filter(|t| mode_filter.is_none() || Some(t.execution_mode) == mode_filter)
         .collect();
 
     if after_triggers.is_empty() {
@@ -141,6 +149,7 @@ pub async fn fire_after_delete(
     collection: &str,
     old_fields: &serde_json::Map<String, serde_json::Value>,
     cascade_depth: u32,
+    mode_filter: Option<TriggerExecutionMode>,
 ) -> crate::Result<()> {
     let triggers =
         state
@@ -150,6 +159,7 @@ pub async fn fire_after_delete(
     let after_triggers: Vec<_> = triggers
         .into_iter()
         .filter(|t| t.timing == TriggerTiming::After)
+        .filter(|t| mode_filter.is_none() || Some(t.execution_mode) == mode_filter)
         .collect();
 
     if after_triggers.is_empty() {
