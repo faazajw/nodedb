@@ -178,8 +178,12 @@ impl PlanConverter {
         let vshard = VShardId::from_collection(&collection);
 
         // Check for timeseries collection with time_bucket() in GROUP BY.
-        if self.is_timeseries(tenant_id, &collection)
-            && let Some(bucket_interval_ms) = try_extract_time_bucket_interval(&agg.group_expr)
+        if matches!(
+            self.collection_type(tenant_id, &collection),
+            Some(nodedb_types::CollectionType::Columnar(
+                nodedb_types::columnar::ColumnarProfile::Timeseries { .. }
+            ))
+        ) && let Some(bucket_interval_ms) = try_extract_time_bucket_interval(&agg.group_expr)
         {
             // Extract time range from input filters.
             let (time_range, filter_bytes) =

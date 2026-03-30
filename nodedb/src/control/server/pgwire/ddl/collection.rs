@@ -213,14 +213,23 @@ pub async fn dispatch_register_if_needed(
         return;
     };
 
-    // Determine storage mode from collection type.
+    // Determine storage mode from collection type — exhaustive match
+    // ensures new CollectionType variants get a compile error here.
     let storage_mode = match &coll.collection_type {
         nodedb_types::CollectionType::Document(nodedb_types::DocumentMode::Strict(schema)) => {
             crate::bridge::physical_plan::StorageMode::Strict {
                 schema: schema.clone(),
             }
         }
-        _ => crate::bridge::physical_plan::StorageMode::Schemaless,
+        nodedb_types::CollectionType::KeyValue(config) => {
+            crate::bridge::physical_plan::StorageMode::Strict {
+                schema: config.schema.clone(),
+            }
+        }
+        nodedb_types::CollectionType::Document(nodedb_types::DocumentMode::Schemaless)
+        | nodedb_types::CollectionType::Columnar(_) => {
+            crate::bridge::physical_plan::StorageMode::Schemaless
+        }
     };
 
     // Parse index paths from FIELDS clause (if any).

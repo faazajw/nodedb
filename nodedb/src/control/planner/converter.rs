@@ -1,5 +1,7 @@
 use datafusion::logical_expr::{FetchType, LogicalPlan};
 use datafusion::prelude::*;
+use nodedb_types::CollectionType;
+use nodedb_types::columnar::ColumnarProfile;
 
 use crate::bridge::envelope::PhysicalPlan;
 use crate::bridge::physical_plan::{
@@ -39,60 +41,21 @@ impl PlanConverter {
         }
     }
 
-    /// Check if a collection is a timeseries collection.
-    pub(super) fn is_timeseries(&self, tenant_id: TenantId, collection: &str) -> bool {
-        if let Some(ref creds) = self.credentials
-            && let Some(catalog) = creds.catalog()
-            && let Ok(Some(coll)) = catalog.get_collection(tenant_id.as_u32(), collection)
-        {
-            return coll.collection_type.is_timeseries();
-        }
-        false
-    }
-
-    /// Check if a collection is a plain columnar collection (not timeseries, not spatial).
-    pub(super) fn is_plain_columnar(&self, tenant_id: TenantId, collection: &str) -> bool {
-        if let Some(ref creds) = self.credentials
-            && let Some(catalog) = creds.catalog()
-            && let Ok(Some(coll)) = catalog.get_collection(tenant_id.as_u32(), collection)
-        {
-            return coll.collection_type.is_columnar()
-                && !coll.collection_type.is_timeseries()
-                && !matches!(
-                    coll.collection_type,
-                    nodedb_types::CollectionType::Columnar(
-                        nodedb_types::columnar::ColumnarProfile::Spatial { .. }
-                    )
-                );
-        }
-        false
-    }
-
-    /// Check if a collection is a spatial columnar collection.
-    pub(super) fn is_spatial(&self, tenant_id: TenantId, collection: &str) -> bool {
-        if let Some(ref creds) = self.credentials
-            && let Some(catalog) = creds.catalog()
-            && let Ok(Some(coll)) = catalog.get_collection(tenant_id.as_u32(), collection)
-        {
-            return matches!(
-                coll.collection_type,
-                nodedb_types::CollectionType::Columnar(
-                    nodedb_types::columnar::ColumnarProfile::Spatial { .. }
-                )
-            );
-        }
-        false
-    }
-
-    /// Check if a collection is a KV collection.
-    pub(super) fn is_kv(&self, tenant_id: TenantId, collection: &str) -> bool {
-        if let Some(ref creds) = self.credentials
-            && let Some(catalog) = creds.catalog()
-            && let Ok(Some(coll)) = catalog.get_collection(tenant_id.as_u32(), collection)
-        {
-            return coll.collection_type.is_kv();
-        }
-        false
+    /// Single catalog lookup returning the collection's storage type.
+    ///
+    /// Returns `None` when: no catalog available, collection not found,
+    /// or catalog read error. Callers treat `None` as "default to document".
+    pub(super) fn collection_type(
+        &self,
+        tenant_id: TenantId,
+        collection: &str,
+    ) -> Option<CollectionType> {
+        let creds = self.credentials.as_ref()?;
+        let catalog = creds.catalog().as_ref()?;
+        let coll = catalog
+            .get_collection(tenant_id.as_u32(), collection)
+            .ok()??;
+        Some(coll.collection_type.clone())
     }
 
     /// Convert a DataFusion logical plan into one or more physical tasks.
@@ -181,96 +144,144 @@ impl PlanConverter {
                     return Ok(vec![task]);
                 }
 
-                // Check if the filter predicate can be converted to a point get
-                // before recursing into the input.
+                // Filter(TableScan): dispatch by collection type.
                 if let LogicalPlan::TableScan(scan) = filter.input.as_ref() {
                     let collection = scan.table_name.to_string().to_lowercase();
                     let vshard = VShardId::from_collection(&collection);
+                    let coll_type = self.collection_type(tenant_id, &collection);
 
-                    // KV routing: try PK point-get first, then fall back to scan.
-                    // Note: is_kv() requires catalog access. If the catalog is
-                    // unavailable, this returns false and the query falls through
-                    // to document scan instead of KV scan.
-                    if self.is_kv(tenant_id, &collection) {
-                        // Try O(1) hash lookup: WHERE <any_column> = <literal>.
-                        if let Some(key_bytes) = extract_equality_key(&filter.predicate) {
+                    match coll_type {
+                        Some(CollectionType::KeyValue(_)) => {
+                            // Try O(1) hash lookup: WHERE <col> = <literal>.
+                            if let Some(key_bytes) = extract_equality_key(&filter.predicate) {
+                                return Ok(vec![PhysicalTask {
+                                    tenant_id,
+                                    vshard_id: vshard,
+                                    plan: PhysicalPlan::Kv(KvOp::Get {
+                                        collection,
+                                        key: key_bytes,
+                                        rls_filters: Vec::new(),
+                                    }),
+                                }]);
+                            }
+
+                            // Fall back to KV scan with filters.
+                            let filter_bytes = serialize_predicate_filters(&filter.predicate)?;
+                            let limit = scan.fetch.unwrap_or(1000);
                             return Ok(vec![PhysicalTask {
                                 tenant_id,
                                 vshard_id: vshard,
-                                plan: PhysicalPlan::Kv(KvOp::Get {
+                                plan: PhysicalPlan::Kv(KvOp::Scan {
                                     collection,
-                                    key: key_bytes,
+                                    cursor: Vec::new(),
+                                    count: limit,
+                                    filters: filter_bytes,
+                                    match_pattern: None,
+                                }),
+                            }]);
+                        }
+                        Some(CollectionType::Columnar(ColumnarProfile::Timeseries { .. })) => {
+                            // Combine Filter predicate with any pushed-down
+                            // TableScan filters, then extract time-range bounds.
+                            let mut all_filters = vec![filter.predicate.clone()];
+                            all_filters.extend(scan.filters.iter().cloned());
+                            let (time_range, filter_bytes) =
+                                super::converter_helpers::extract_timeseries_filters(&all_filters)?;
+                            let limit = scan.fetch.unwrap_or(10_000);
+                            let projection = resolve_scan_projection(scan);
+
+                            return Ok(vec![PhysicalTask {
+                                tenant_id,
+                                vshard_id: vshard,
+                                plan: PhysicalPlan::Timeseries(TimeseriesOp::Scan {
+                                    collection,
+                                    time_range,
+                                    projection,
+                                    limit,
+                                    filters: filter_bytes,
+                                    bucket_interval_ms: 0,
                                     rls_filters: Vec::new(),
                                 }),
                             }]);
                         }
+                        Some(CollectionType::Columnar(ColumnarProfile::Plain)) => {
+                            let filter_bytes = serialize_predicate_filters(&filter.predicate)?;
+                            let limit = scan.fetch.unwrap_or(10_000);
+                            let projection = resolve_scan_projection(scan);
 
-                        // Fall back to KV scan with filters.
-                        let filters = expr_to_scan_filters(&filter.predicate);
-                        let filter_bytes = rmp_serde::to_vec_named(&filters).map_err(|e| {
-                            crate::Error::Serialization {
-                                format: "msgpack".into(),
-                                detail: format!("kv filter serialization: {e}"),
-                            }
-                        })?;
-                        let limit = scan.fetch.unwrap_or(1000);
-                        return Ok(vec![PhysicalTask {
-                            tenant_id,
-                            vshard_id: vshard,
-                            plan: PhysicalPlan::Kv(KvOp::Scan {
-                                collection,
-                                cursor: Vec::new(),
-                                count: limit,
-                                filters: filter_bytes,
-                                match_pattern: None,
-                            }),
-                        }]);
-                    }
-
-                    if let Some(task) = self.try_point_get(
-                        &collection,
-                        std::slice::from_ref(&filter.predicate),
-                        tenant_id,
-                        vshard,
-                    )? {
-                        return Ok(vec![task]);
-                    }
-
-                    // Try secondary index: equality or range on a non-id field → RangeScan.
-                    if let Some(task) = try_range_scan_from_predicate(
-                        &collection,
-                        &filter.predicate,
-                        tenant_id,
-                        vshard,
-                    ) {
-                        return Ok(vec![task]);
-                    }
-
-                    // Not a point get or indexed scan — emit DocumentScan with filters.
-                    let filters = expr_to_scan_filters(&filter.predicate);
-                    let filter_bytes = rmp_serde::to_vec_named(&filters).map_err(|e| {
-                        crate::Error::Serialization {
-                            format: "msgpack".into(),
-                            detail: format!("filter serialization: {e}"),
+                            return Ok(vec![PhysicalTask {
+                                tenant_id,
+                                vshard_id: vshard,
+                                plan: PhysicalPlan::Columnar(ColumnarOp::Scan {
+                                    collection,
+                                    projection,
+                                    limit,
+                                    filters: filter_bytes,
+                                    rls_filters: Vec::new(),
+                                }),
+                            }]);
                         }
-                    })?;
-                    let limit = scan.fetch.unwrap_or(1000);
+                        Some(CollectionType::Columnar(ColumnarProfile::Spatial { .. })) => {
+                            // Spatial ST_* predicates are handled above
+                            // by try_extract_spatial_scan. Non-spatial
+                            // WHERE on spatial collections → columnar scan.
+                            let filter_bytes = serialize_predicate_filters(&filter.predicate)?;
+                            let limit = scan.fetch.unwrap_or(10_000);
+                            let projection = resolve_scan_projection(scan);
 
-                    return Ok(vec![PhysicalTask {
-                        tenant_id,
-                        vshard_id: vshard,
-                        plan: PhysicalPlan::Document(DocumentOp::Scan {
-                            collection,
-                            limit,
-                            offset: 0,
-                            sort_keys: Vec::new(),
-                            filters: filter_bytes,
-                            distinct: false,
-                            projection: Vec::new(),
-                            computed_columns: Vec::new(),
-                            window_functions: Vec::new(),
-                        }),
-                    }]);
+                            return Ok(vec![PhysicalTask {
+                                tenant_id,
+                                vshard_id: vshard,
+                                plan: PhysicalPlan::Columnar(ColumnarOp::Scan {
+                                    collection,
+                                    projection,
+                                    limit,
+                                    filters: filter_bytes,
+                                    rls_filters: Vec::new(),
+                                }),
+                            }]);
+                        }
+                        // Document (schemaless/strict) or unknown: try
+                        // point-get, range-scan, then full document scan.
+                        Some(CollectionType::Document(_)) | None => {
+                            if let Some(task) = self.try_point_get(
+                                &collection,
+                                std::slice::from_ref(&filter.predicate),
+                                tenant_id,
+                                vshard,
+                            )? {
+                                return Ok(vec![task]);
+                            }
+
+                            if let Some(task) = try_range_scan_from_predicate(
+                                &collection,
+                                &filter.predicate,
+                                tenant_id,
+                                vshard,
+                            ) {
+                                return Ok(vec![task]);
+                            }
+
+                            let filter_bytes = serialize_predicate_filters(&filter.predicate)?;
+                            let limit = scan.fetch.unwrap_or(1000);
+
+                            return Ok(vec![PhysicalTask {
+                                tenant_id,
+                                vshard_id: vshard,
+                                plan: PhysicalPlan::Document(DocumentOp::Scan {
+                                    collection,
+                                    limit,
+                                    offset: 0,
+                                    sort_keys: Vec::new(),
+                                    filters: filter_bytes,
+                                    distinct: false,
+                                    projection: Vec::new(),
+                                    computed_columns: Vec::new(),
+                                    window_functions: Vec::new(),
+                                }),
+                            }]);
+                        }
+                    }
                 }
                 // Filter wrapping Aggregate = HAVING clause.
                 if matches!(filter.input.as_ref(), LogicalPlan::Aggregate(_)) {
@@ -338,191 +349,119 @@ impl PlanConverter {
             LogicalPlan::TableScan(scan) => {
                 let collection = scan.table_name.to_string().to_lowercase();
                 let vshard = VShardId::from_collection(&collection);
+                let coll_type = self.collection_type(tenant_id, &collection);
 
-                // Timeseries routing: if collection is timeseries, emit TimeseriesScan.
-                if self.is_timeseries(tenant_id, &collection) {
-                    let limit = scan.fetch.unwrap_or(10_000);
-                    let (time_range, filter_bytes) =
-                        super::converter_helpers::extract_timeseries_filters(&scan.filters)?;
+                match coll_type {
+                    Some(CollectionType::Columnar(ColumnarProfile::Timeseries { .. })) => {
+                        let limit = scan.fetch.unwrap_or(10_000);
+                        let (time_range, filter_bytes) =
+                            super::converter_helpers::extract_timeseries_filters(&scan.filters)?;
+                        let projection = resolve_scan_projection(scan);
 
-                    // Resolve column projection from indices to names.
-                    let projection = scan
-                        .projection
-                        .as_ref()
-                        .map(|indices| {
-                            let schema = scan.source.schema();
-                            indices
-                                .iter()
-                                .filter_map(|&idx| {
-                                    schema.fields().get(idx).map(|f| f.name().clone())
-                                })
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default();
-
-                    return Ok(vec![PhysicalTask {
-                        tenant_id,
-                        vshard_id: vshard,
-                        plan: PhysicalPlan::Timeseries(TimeseriesOp::Scan {
-                            collection,
-                            time_range,
-                            projection,
-                            limit,
-                            filters: filter_bytes,
-                            bucket_interval_ms: 0,
-                            rls_filters: Vec::new(),
-                        }),
-                    }]);
-                }
-
-                // Plain columnar routing: uses same infrastructure as timeseries
-                // but without time-range constraints or bucketing.
-                if self.is_plain_columnar(tenant_id, &collection) {
-                    let limit = scan.fetch.unwrap_or(10_000);
-                    let filter_bytes = if !scan.filters.is_empty() {
-                        let mut all_filters = Vec::new();
-                        for f in &scan.filters {
-                            all_filters.extend(expr_to_scan_filters(f));
-                        }
-                        rmp_serde::to_vec_named(&all_filters).map_err(|e| {
-                            crate::Error::Serialization {
-                                format: "msgpack".into(),
-                                detail: format!("columnar filter serialization: {e}"),
-                            }
-                        })?
-                    } else {
-                        Vec::new()
-                    };
-
-                    let projection = scan
-                        .projection
-                        .as_ref()
-                        .map(|indices| {
-                            let schema = scan.source.schema();
-                            indices
-                                .iter()
-                                .filter_map(|&idx| {
-                                    schema.fields().get(idx).map(|f| f.name().clone())
-                                })
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default();
-
-                    return Ok(vec![PhysicalTask {
-                        tenant_id,
-                        vshard_id: vshard,
-                        plan: PhysicalPlan::Columnar(ColumnarOp::Scan {
-                            collection,
-                            projection,
-                            limit,
-                            filters: filter_bytes,
-                            rls_filters: Vec::new(),
-                        }),
-                    }]);
-                }
-
-                // Spatial columnar routing: bare table scans on spatial collections
-                // read from columnar memtable. ST_* predicate queries go through
-                // SpatialOp::Scan (handled in the Filter case above).
-                if self.is_spatial(tenant_id, &collection) {
-                    let limit = scan.fetch.unwrap_or(10_000);
-                    let projection = scan
-                        .projection
-                        .as_ref()
-                        .map(|indices| {
-                            let schema = scan.source.schema();
-                            indices
-                                .iter()
-                                .filter_map(|&idx| {
-                                    schema.fields().get(idx).map(|f| f.name().clone())
-                                })
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default();
-
-                    return Ok(vec![PhysicalTask {
-                        tenant_id,
-                        vshard_id: vshard,
-                        plan: PhysicalPlan::Columnar(ColumnarOp::Scan {
-                            collection,
-                            projection,
-                            limit,
-                            filters: Vec::new(),
-                            rls_filters: Vec::new(),
-                        }),
-                    }]);
-                }
-
-                // KV routing: if collection is KV, emit KvScan.
-                if self.is_kv(tenant_id, &collection) {
-                    let limit = scan.fetch.unwrap_or(1000);
-                    return Ok(vec![PhysicalTask {
-                        tenant_id,
-                        vshard_id: vshard,
-                        plan: PhysicalPlan::Kv(KvOp::Scan {
-                            collection,
-                            cursor: Vec::new(),
-                            count: limit,
-                            filters: Vec::new(),
-                            match_pattern: None,
-                        }),
-                    }]);
-                }
-
-                // Check for filter pushdown: equality on id → point get.
-                if let Some(task) =
-                    self.try_point_get(&collection, &scan.filters, tenant_id, vshard)?
-                {
-                    return Ok(vec![task]);
-                }
-
-                // Default: full document scan.
-                let limit = scan.fetch.unwrap_or(1000);
-
-                // Convert any TableScan filters to scan filters.
-                let filter_bytes = if !scan.filters.is_empty() {
-                    let mut all_filters = Vec::new();
-                    for f in &scan.filters {
-                        all_filters.extend(expr_to_scan_filters(f));
+                        Ok(vec![PhysicalTask {
+                            tenant_id,
+                            vshard_id: vshard,
+                            plan: PhysicalPlan::Timeseries(TimeseriesOp::Scan {
+                                collection,
+                                time_range,
+                                projection,
+                                limit,
+                                filters: filter_bytes,
+                                bucket_interval_ms: 0,
+                                rls_filters: Vec::new(),
+                            }),
+                        }])
                     }
-                    rmp_serde::to_vec_named(&all_filters).map_err(|e| {
-                        crate::Error::Serialization {
-                            format: "msgpack".into(),
-                            detail: format!("filter serialization: {e}"),
-                        }
-                    })?
-                } else {
-                    Vec::new()
-                };
+                    Some(CollectionType::Columnar(ColumnarProfile::Plain)) => {
+                        let limit = scan.fetch.unwrap_or(10_000);
+                        let filter_bytes = serialize_scan_filters(&scan.filters)?;
+                        let projection = resolve_scan_projection(scan);
 
-                Ok(vec![PhysicalTask {
-                    tenant_id,
-                    vshard_id: vshard,
-                    plan: PhysicalPlan::Document(DocumentOp::Scan {
-                        collection,
-                        limit,
-                        offset: 0,
-                        sort_keys: Vec::new(),
-                        filters: filter_bytes,
-                        distinct: false,
-                        projection: Vec::new(),
-                        computed_columns: Vec::new(),
-                        window_functions: Vec::new(),
-                    }),
-                }])
+                        Ok(vec![PhysicalTask {
+                            tenant_id,
+                            vshard_id: vshard,
+                            plan: PhysicalPlan::Columnar(ColumnarOp::Scan {
+                                collection,
+                                projection,
+                                limit,
+                                filters: filter_bytes,
+                                rls_filters: Vec::new(),
+                            }),
+                        }])
+                    }
+                    Some(CollectionType::Columnar(ColumnarProfile::Spatial { .. })) => {
+                        let limit = scan.fetch.unwrap_or(10_000);
+                        let projection = resolve_scan_projection(scan);
+
+                        Ok(vec![PhysicalTask {
+                            tenant_id,
+                            vshard_id: vshard,
+                            plan: PhysicalPlan::Columnar(ColumnarOp::Scan {
+                                collection,
+                                projection,
+                                limit,
+                                filters: Vec::new(),
+                                rls_filters: Vec::new(),
+                            }),
+                        }])
+                    }
+                    Some(CollectionType::KeyValue(_)) => {
+                        let limit = scan.fetch.unwrap_or(1000);
+                        Ok(vec![PhysicalTask {
+                            tenant_id,
+                            vshard_id: vshard,
+                            plan: PhysicalPlan::Kv(KvOp::Scan {
+                                collection,
+                                cursor: Vec::new(),
+                                count: limit,
+                                filters: Vec::new(),
+                                match_pattern: None,
+                            }),
+                        }])
+                    }
+                    Some(CollectionType::Document(_)) | None => {
+                        // Try filter pushdown: equality on id → point get.
+                        if let Some(task) =
+                            self.try_point_get(&collection, &scan.filters, tenant_id, vshard)?
+                        {
+                            return Ok(vec![task]);
+                        }
+
+                        let limit = scan.fetch.unwrap_or(1000);
+                        let filter_bytes = serialize_scan_filters(&scan.filters)?;
+
+                        Ok(vec![PhysicalTask {
+                            tenant_id,
+                            vshard_id: vshard,
+                            plan: PhysicalPlan::Document(DocumentOp::Scan {
+                                collection,
+                                limit,
+                                offset: 0,
+                                sort_keys: Vec::new(),
+                                filters: filter_bytes,
+                                distinct: false,
+                                projection: Vec::new(),
+                                computed_columns: Vec::new(),
+                                window_functions: Vec::new(),
+                            }),
+                        }])
+                    }
+                }
             }
 
             LogicalPlan::Limit(limit_plan) => {
                 let mut tasks = self.convert(&limit_plan.input, tenant_id)?;
 
-                // Extract LIMIT (fetch) value.
+                // Extract LIMIT (fetch) value — propagate to all scan types.
                 if let Ok(FetchType::Literal(Some(n))) = limit_plan.get_fetch_type() {
                     for task in &mut tasks {
                         match &mut task.plan {
-                            PhysicalPlan::Document(DocumentOp::Scan { limit, .. }) => *limit = n,
-                            PhysicalPlan::Document(DocumentOp::RangeScan { limit, .. }) => {
-                                *limit = n
-                            }
+                            PhysicalPlan::Document(DocumentOp::Scan { limit, .. })
+                            | PhysicalPlan::Document(DocumentOp::RangeScan { limit, .. })
+                            | PhysicalPlan::Columnar(ColumnarOp::Scan { limit, .. })
+                            | PhysicalPlan::Timeseries(TimeseriesOp::Scan { limit, .. })
+                            | PhysicalPlan::Spatial(SpatialOp::Scan { limit, .. }) => *limit = n,
+                            PhysicalPlan::Kv(KvOp::Scan { count, .. }) => *count = n,
                             _ => {}
                         }
                     }
@@ -641,6 +580,46 @@ impl PlanConverter {
             }),
         }
     }
+}
+
+/// Resolve column projection from DataFusion's index-based representation
+/// to named columns. Returns empty vec for "select all".
+fn resolve_scan_projection(scan: &datafusion::logical_expr::TableScan) -> Vec<String> {
+    scan.projection
+        .as_ref()
+        .map(|indices| {
+            let schema = scan.source.schema();
+            indices
+                .iter()
+                .filter_map(|&idx| schema.fields().get(idx).map(|f| f.name().clone()))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+/// Serialize a single Filter predicate expression into ScanFilter bytes.
+fn serialize_predicate_filters(predicate: &Expr) -> crate::Result<Vec<u8>> {
+    let filters = expr_to_scan_filters(predicate);
+    rmp_serde::to_vec_named(&filters).map_err(|e| crate::Error::Serialization {
+        format: "msgpack".into(),
+        detail: format!("filter serialization: {e}"),
+    })
+}
+
+/// Serialize pushed-down TableScan filter expressions into ScanFilter bytes.
+/// Returns empty vec when no filters are present.
+fn serialize_scan_filters(scan_filters: &[Expr]) -> crate::Result<Vec<u8>> {
+    if scan_filters.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut all_filters = Vec::new();
+    for f in scan_filters {
+        all_filters.extend(expr_to_scan_filters(f));
+    }
+    rmp_serde::to_vec_named(&all_filters).map_err(|e| crate::Error::Serialization {
+        format: "msgpack".into(),
+        detail: format!("filter serialization: {e}"),
+    })
 }
 
 /// Extract serialized filter predicates from a LogicalPlan (for recursive CTE terms).

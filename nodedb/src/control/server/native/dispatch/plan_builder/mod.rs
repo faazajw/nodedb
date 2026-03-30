@@ -102,24 +102,19 @@ pub(crate) fn build_plan(
 
 // ── Shared helpers ──────────────────────────────────────────────────
 
-/// Check if a collection is KV type via catalog lookup.
-pub(super) fn is_kv(ctx: &DispatchCtx<'_>, collection: &str) -> bool {
-    if let Some(catalog) = ctx.state.credentials.catalog()
-        && let Ok(Some(coll)) = catalog.get_collection(ctx.identity.tenant_id.as_u32(), collection)
-    {
-        return coll.collection_type.is_kv();
-    }
-    false
-}
-
-/// Check if a collection is timeseries type via catalog lookup.
-pub(super) fn is_timeseries(ctx: &DispatchCtx<'_>, collection: &str) -> bool {
-    if let Some(catalog) = ctx.state.credentials.catalog()
-        && let Ok(Some(coll)) = catalog.get_collection(ctx.identity.tenant_id.as_u32(), collection)
-    {
-        return coll.collection_type.is_timeseries();
-    }
-    false
+/// Single catalog lookup returning the collection's storage type.
+///
+/// Returns `None` when: no catalog available, collection not found,
+/// or catalog read error. Callers treat `None` as "default to document".
+pub(super) fn collection_type(
+    ctx: &DispatchCtx<'_>,
+    collection: &str,
+) -> Option<nodedb_types::CollectionType> {
+    let catalog = ctx.state.credentials.catalog().as_ref()?;
+    let coll = catalog
+        .get_collection(ctx.identity.tenant_id.as_u32(), collection)
+        .ok()??;
+    Some(coll.collection_type.clone())
 }
 
 /// Extract document_id from request fields.

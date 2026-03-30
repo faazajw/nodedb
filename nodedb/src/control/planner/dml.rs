@@ -1,6 +1,8 @@
 //! DML plan conversion: INSERT, UPDATE, DELETE.
 
 use datafusion::prelude::*;
+use nodedb_types::CollectionType;
+use nodedb_types::columnar::ColumnarProfile;
 
 use crate::bridge::envelope::PhysicalPlan;
 use crate::bridge::physical_plan::{ColumnarOp, DocumentOp, KvOp, TimeseriesOp};
@@ -76,19 +78,23 @@ impl PlanConverter {
         let collection = dml.table_name.to_string().to_lowercase();
         let vshard = VShardId::from_collection(&collection);
 
-        // KV collection DML routing.
-        if self.is_kv(tenant_id, &collection) {
-            return self.convert_kv_dml(dml, tenant_id, &collection, vshard);
-        }
-
-        // Timeseries collection DML routing.
-        if self.is_timeseries(tenant_id, &collection) {
-            return self.convert_timeseries_dml(dml, tenant_id, &collection, vshard);
-        }
-
-        // Plain columnar: route inserts to ColumnarOp::Insert.
-        if self.is_plain_columnar(tenant_id, &collection) {
-            return self.convert_columnar_dml(dml, &collection, tenant_id, vshard);
+        // Dispatch by collection type — exhaustive match ensures new
+        // types get a compile error instead of silent misrouting.
+        match self.collection_type(tenant_id, &collection) {
+            Some(CollectionType::KeyValue(_)) => {
+                return self.convert_kv_dml(dml, tenant_id, &collection, vshard);
+            }
+            Some(CollectionType::Columnar(ColumnarProfile::Timeseries { .. })) => {
+                return self.convert_timeseries_dml(dml, tenant_id, &collection, vshard);
+            }
+            Some(CollectionType::Columnar(ColumnarProfile::Plain)) => {
+                return self.convert_columnar_dml(dml, &collection, tenant_id, vshard);
+            }
+            Some(CollectionType::Columnar(ColumnarProfile::Spatial { .. })) => {
+                return self.convert_columnar_dml(dml, &collection, tenant_id, vshard);
+            }
+            // Document (schemaless/strict) or unknown catalog.
+            Some(CollectionType::Document(_)) | None => {}
         }
 
         // Strict and schemaless document collections both use DocumentOp.

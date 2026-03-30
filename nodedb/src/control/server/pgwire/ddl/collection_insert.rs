@@ -49,10 +49,10 @@ fn parse_write_statement(
         if !coll.fields.is_empty() {
             return None;
         }
-        // Skip strict/columnar collections — they need schema-aware insert,
-        // not schemaless document insert. For now, dispatch them to the Data
-        // Plane which validates against the stored schema.
-        if coll.collection_type.is_strict() || coll.collection_type.is_columnar() {
+        // Skip non-schemaless collections — they need schema-aware insert
+        // (strict, columnar, timeseries, spatial) or engine-specific insert
+        // (KV). Dispatch these to DataFusion / Data Plane instead.
+        if !coll.collection_type.is_schemaless() {
             return None;
         }
     }
