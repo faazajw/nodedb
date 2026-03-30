@@ -33,6 +33,7 @@ pub mod pubsub;
 pub mod rls;
 pub mod role;
 pub mod router;
+pub mod schedule;
 pub mod schema_validation;
 pub mod scope_ddl;
 pub mod scope_query_ddl;

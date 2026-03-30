@@ -153,6 +153,17 @@ pub async fn dispatch(
         ));
     }
 
+    // Schedules: CREATE/DROP/SHOW SCHEDULE
+    if upper.starts_with("CREATE SCHEDULE ") {
+        return Some(super::schedule::create_schedule(state, identity, sql));
+    }
+    if upper.starts_with("DROP SCHEDULE ") {
+        return Some(super::schedule::drop_schedule(state, identity, &parts));
+    }
+    if upper.starts_with("SHOW SCHEDULE") {
+        return Some(super::schedule::show_schedules(state, identity));
+    }
+
     // Triggers: CREATE [OR REPLACE] [SYNC|DEFERRED] TRIGGER ...
     if upper.starts_with("CREATE TRIGGER ")
         || upper.starts_with("CREATE OR REPLACE TRIGGER ")

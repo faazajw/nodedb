@@ -66,6 +66,14 @@ impl EventPlane {
             })
             .collect();
 
+        // Spawn the cron scheduler loop on the Event Plane.
+        let _scheduler_handle = super::scheduler::executor::spawn_scheduler(
+            Arc::clone(&shared_state),
+            Arc::clone(&shared_state.schedule_registry),
+            Arc::clone(&shared_state.job_history),
+            shutdown_rx.clone(),
+        );
+
         let plane = Self {
             consumers,
             watermark_store,

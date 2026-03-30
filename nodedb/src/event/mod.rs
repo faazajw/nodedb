@@ -3,6 +3,7 @@ pub mod cdc;
 pub mod consumer;
 pub mod metrics;
 pub mod plane;
+pub mod scheduler;
 #[cfg(test)]
 mod test_utils;
 pub mod trigger;
