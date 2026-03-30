@@ -130,6 +130,72 @@ impl CoreLoop {
             .get(collection)
             .is_some_and(|mt| !mt.is_empty());
 
+        // Fast path: native columnar aggregation.
+        // Groups directly on symbol IDs (u32) instead of JSON-serialized strings.
+        // Accumulates in-place without document construction.
+        // Falls back to generic path for complex filters (OR, string comparisons).
+        if use_columnar && sub_group_by.is_empty() && sub_aggregates.is_empty() {
+            let mt = self.columnar_memtables.get(collection).unwrap();
+            let filter_predicates: Vec<ScanFilter> = if filters.is_empty() {
+                Vec::new()
+            } else {
+                match rmp_serde::from_slice(filters) {
+                    Ok(f) => f,
+                    Err(_) => Vec::new(),
+                }
+            };
+
+            if let Some(mut agg_result) = super::columnar_agg::try_columnar_aggregate(
+                mt,
+                group_by,
+                aggregates,
+                &filter_predicates,
+                limit,
+                scan_limit,
+            ) {
+                // Apply HAVING filters.
+                if !having.is_empty() {
+                    let having_predicates: Vec<ScanFilter> = match rmp_serde::from_slice(having) {
+                        Ok(f) => f,
+                        Err(_) => Vec::new(),
+                    };
+                    if !having_predicates.is_empty() {
+                        agg_result
+                            .rows
+                            .retain(|row| having_predicates.iter().all(|f| f.matches(row)));
+                    }
+                }
+
+                agg_result.rows.truncate(limit);
+
+                return match super::super::response_codec::encode(&agg_result.rows) {
+                    Ok(payload) => {
+                        if filters.is_empty() && having.is_empty() {
+                            let cache_key = aggregate_cache_key(
+                                tid,
+                                collection,
+                                group_by,
+                                aggregates,
+                                sub_group_by,
+                                sub_aggregates,
+                            );
+                            if self.aggregate_cache.len() < 256 {
+                                self.aggregate_cache.insert(cache_key, payload.clone());
+                            }
+                        }
+                        self.response_with_payload(task, payload)
+                    }
+                    Err(e) => self.response_error(
+                        task,
+                        ErrorCode::Internal {
+                            detail: e.to_string(),
+                        },
+                    ),
+                };
+            }
+            // Native path returned None — fall through to generic path.
+        }
+
         let docs_result = if use_columnar {
             let mt = self.columnar_memtables.get(collection).unwrap();
             let schema = mt.schema();
