@@ -4,7 +4,7 @@ NodeDB uses SQL as its primary query language across all protocols. Whether you 
 
 ## How Queries Execute
 
-All SQL goes through the same pipeline regardless of protocol:
+SQL is the primary interface. All user-visible entry points feed the same pipeline:
 
 ```
 ndb CLI (NDB protocol)   ──┐
@@ -13,6 +13,8 @@ HTTP    (REST/JSON)      ──┘
 ```
 
 Three doors, one room. Same parser, same optimizer, same execution engine.
+
+The Rust SDK (`nodedb-client`), FFI bindings (`nodedb-lite-ffi`), and WASM bindings (`nodedb-lite-wasm`) take a parallel path for programmatic access: they dispatch native opcodes over the NDB protocol, which the Control Plane converts directly to a `PhysicalPlan` via `build_plan()` — skipping SQL parsing. The resulting plan is identical in structure and executes on the same Data Plane. This is an SDK-internal optimization; application code always interacts through SQL or typed SDK methods, never raw opcodes.
 
 ## SELECT
 

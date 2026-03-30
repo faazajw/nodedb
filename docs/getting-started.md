@@ -122,6 +122,21 @@ psql -h localhost -p 6432
 
 NodeDB speaks PostgreSQL's wire protocol, so standard tools like `psql`, ORMs, and BI tools work out of the box.
 
+### With the Rust SDK or FFI
+
+The `nodedb-client` crate connects over the NDB protocol (port 6433) and supports both SQL and native modes on the same connection:
+
+```rust
+// SQL — same as psql/HTTP, full query support
+let rows = client.sql("SELECT * FROM users WHERE age > 30").await?;
+
+// Native — typed methods, skip SQL parsing for hot paths
+let user = client.get("users", "u1").await?;
+client.put("users", "u1", &doc).await?;
+```
+
+Use SQL for complex queries and rapid prototyping. Use native methods for high-throughput CRUD and ingest where parsing overhead matters. The same dual-mode access is available via `nodedb-lite-ffi` (iOS/Android) and `nodedb-lite-wasm` (WASM/browser).
+
 ## First Queries
 
 ### Documents (schemaless)

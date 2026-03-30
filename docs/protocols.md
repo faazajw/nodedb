@@ -4,14 +4,14 @@ NodeDB speaks six wire protocols. All SQL-capable protocols share the same query
 
 ## Protocol Overview
 
-| Protocol   | Port         | Default | Query Format           | Best For                     |
-| ---------- | ------------ | ------- | ---------------------- | ---------------------------- |
-| **pgwire** | 6432         | On      | SQL text               | `psql`, ORMs, BI tools, JDBC |
-| **NDB**    | 6433         | On      | SQL + binary opcodes   | `ndb` CLI, Rust SDK          |
-| **HTTP**   | 6480         | On      | SQL via JSON           | REST clients, browsers       |
-| **Sync**   | 9090         | On      | CRDT deltas            | NodeDB-Lite (mobile, WASM)   |
-| **RESP**   | configurable | Off     | Redis commands         | Cache layer, Redis clients   |
-| **ILP**    | configurable | Off     | InfluxDB Line Protocol | Metrics/telemetry ingest     |
+| Protocol   | Port         | Default | Query Format                      | Best For                     |
+| ---------- | ------------ | ------- | --------------------------------- | ---------------------------- |
+| **pgwire** | 6432         | On      | SQL text                          | `psql`, ORMs, BI tools, JDBC |
+| **NDB**    | 6433         | On      | SQL (user) / native opcodes (SDK) | `ndb` CLI, Rust SDK, FFI     |
+| **HTTP**   | 6480         | On      | SQL via JSON                      | REST clients, browsers       |
+| **Sync**   | 9090         | On      | CRDT deltas                       | NodeDB-Lite (mobile, WASM)   |
+| **RESP**   | configurable | Off     | Redis commands                    | Cache layer, Redis clients   |
+| **ILP**    | configurable | Off     | InfluxDB Line Protocol            | Metrics/telemetry ingest     |
 
 ## pgwire (PostgreSQL Protocol)
 
@@ -30,26 +30,37 @@ psql -h localhost -p 6432
 
 ## NDB (Native Protocol)
 
-Binary MessagePack protocol used by the `ndb` CLI and Rust SDK. Supports two modes:
+Binary MessagePack protocol used by the `ndb` CLI, Rust SDK, and FFI bindings. It carries two kinds of messages, serving two different audiences:
 
-**1. SQL mode** — Same SQL as pgwire, transported as MessagePack:
+**SQL (user-facing)** — The primary interface. SQL text is transported as a MessagePack `Sql` message and goes through DataFusion exactly as it does on pgwire:
 
 ```sql
--- You type SQL in the ndb TUI, it gets sent as OpCode::Sql
+-- You type SQL in the ndb TUI; it is sent as a Sql message over the NDB protocol
 SELECT * FROM users WHERE age > 30;
 ```
 
-**2. Direct opcode mode** — Structured operations that bypass SQL parsing. Used by the SDK for performance-critical paths:
+**Native opcodes (SDK optimization)** — Typed, structured messages used by `nodedb-client` (Rust SDK), `nodedb-lite-ffi` (iOS/Android), and `nodedb-lite-wasm` (WASM) for programmatic access. They skip SQL parsing and serialization overhead, routing directly to `build_plan()`:
 
 ```rust
-// Rust SDK — sends OpCode::VectorSearch directly
+// Rust SDK — dispatches a native VectorSearch opcode; no SQL parsing
 client.vector_search("articles", &query_vector, 10, None).await?;
 
 // Equivalent SQL (goes through DataFusion):
 // SELECT * FROM articles WHERE embedding <-> [0.1, ...] LIMIT 10;
 ```
 
-Both modes produce the same `PhysicalPlan` and execute on the same Data Plane. The opcode path is faster for simple operations (zero parsing overhead) but limited to operations that have defined opcodes.
+Both paths produce the same `PhysicalPlan` and execute on the same Data Plane. SDKs support **both modes** on the same connection:
+
+```rust
+// SQL mode — flexible, any query, fast development
+let rows = client.sql("SELECT * FROM users WHERE age > 30 ORDER BY name").await?;
+
+// Native mode — typed methods, skip SQL parsing, maximum throughput
+let user = client.get("users", "u1").await?;
+client.put("users", "u1", &doc).await?;
+```
+
+Use SQL for complex queries, ad-hoc exploration, and rapid prototyping. Use native methods for hot-path CRUD, vector search, and high-throughput ingest where parsing overhead matters.
 
 **Connection:**
 
@@ -230,9 +241,9 @@ ilp = false         # Example: disable TLS for ILP ingest
 
 Environment variables override config: `NODEDB_PORT_PGWIRE`, `NODEDB_PORT_NATIVE`, `NODEDB_PORT_HTTP`, `NODEDB_PORT_RESP`, `NODEDB_PORT_ILP`.
 
-## Native Protocol Opcodes
+## Native Protocol Opcodes (SDK Reference)
 
-The NDB protocol's direct opcode mode covers 18 engine-specific operations added across the engines. All opcodes are single-byte identifiers in the MessagePack framing.
+Native opcodes are used internally by the Rust SDK (`nodedb-client`), FFI bindings (`nodedb-lite-ffi`), and WASM bindings (`nodedb-lite-wasm`). Application code does not construct opcodes directly — it calls typed SDK methods that dispatch the appropriate opcode. All opcodes are single-byte identifiers in the MessagePack framing and cover 18 engine-specific operations.
 
 | Opcode               | Hex    | Operation                                        |
 | -------------------- | ------ | ------------------------------------------------ |
@@ -258,16 +269,18 @@ The NDB protocol's direct opcode mode covers 18 engine-specific operations added
 
 ## Which Protocol Should I Use?
 
-| Use case                                  | Protocol          |
-| ----------------------------------------- | ----------------- |
-| Standard SQL tooling (psql, ORMs, BI)     | pgwire            |
-| NodeDB CLI                                | NDB (automatic)   |
-| Rust/Go/Python application                | NDB SDK or pgwire |
-| Web app / REST API                        | HTTP              |
-| Existing Redis client / cache replacement | RESP              |
-| High-throughput metrics ingest            | ILP               |
-| Mobile/WASM offline-first sync            | Sync (WebSocket)  |
-| Prometheus scraping                       | HTTP (`/metrics`) |
+| Use case                                  | Protocol                                      |
+| ----------------------------------------- | --------------------------------------------- |
+| Standard SQL tooling (psql, ORMs, BI)     | pgwire                                        |
+| NodeDB CLI (`ndb`)                        | NDB — SQL mode (automatic)                    |
+| Rust application (programmatic)           | NDB — via `nodedb-client` (native opcodes)    |
+| iOS / Android (FFI)                       | NDB — via `nodedb-lite-ffi` (native opcodes)  |
+| WASM / browser                            | NDB — via `nodedb-lite-wasm` (native opcodes) |
+| Web app / REST API                        | HTTP                                          |
+| Existing Redis client / cache replacement | RESP                                          |
+| High-throughput metrics ingest            | ILP                                           |
+| Mobile/WASM offline-first sync            | Sync (WebSocket)                              |
+| Prometheus scraping                       | HTTP (`/metrics`)                             |
 
 ## Related
 

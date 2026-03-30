@@ -27,6 +27,42 @@ NodeDB splits work between two runtimes connected by a lock-free bridge. This is
 
 This separation means the Control Plane never touches storage directly, and the Data Plane never handles network I/O. Each does what it's best at.
 
+## Query Entry Paths
+
+There are two ways a query reaches the Data Plane. Both produce the same `PhysicalPlan` and execute identically from that point on.
+
+**SQL path (user-facing)** — All user-visible interfaces use SQL. `psql`, the `ndb` CLI, and the HTTP `/query` endpoint all accept SQL text. The Control Plane runs it through DataFusion (parse → logical plan → optimize → `PhysicalPlan`):
+
+```
+psql / ndb CLI / HTTP /query
+         │
+         ▼
+   DataFusion parser
+         │
+         ▼
+   Logical plan + optimizer
+         │
+         ▼
+   PhysicalPlan ──► SPSC Bridge ──► Data Plane
+```
+
+**Native opcode path (SDK optimization)** — The Rust SDK (`nodedb-client`), FFI bindings (`nodedb-lite-ffi`), and WASM bindings (`nodedb-lite-wasm`) dispatch typed opcode messages over the NDB protocol instead of SQL text. The Control Plane converts them directly to a `PhysicalPlan` via `build_plan()`, skipping SQL parsing and serialization:
+
+```
+nodedb-client / nodedb-lite-ffi / nodedb-lite-wasm
+         │
+         ▼
+   Native opcode + typed fields
+         │
+         ▼
+   build_plan()
+         │
+         ▼
+   PhysicalPlan ──► SPSC Bridge ──► Data Plane
+```
+
+SDKs support **both modes** on the same connection. Use SQL for complex queries and rapid prototyping (`client.sql("SELECT ...")`). Use native methods for hot-path CRUD and high-throughput ingest (`client.get()`, `client.put()`, `client.vector_search()`) where parsing overhead matters.
+
 ## Storage Tiers
 
 NodeDB uses tiered storage to match data temperature to the right medium:
@@ -49,13 +85,13 @@ Unlike most databases that lock you into one storage model, NodeDB lets you choo
 - **Columnar** — Per-column compression, block statistics, predicate pushdown. Best for analytics. Timeseries and Spatial are profiles that extend it.
 - **Key-Value** — Hash-indexed O(1) point lookups. Best for key-dominant access patterns.
 
-**Columnar-first architecture.** Columnar is the base storage engine for all analytics workloads. Timeseries and Spatial are profiles layered on top of it — they do not have separate storage layers. All three share the same `columnar_memtables` (the in-memory L0 write buffer). Profile-specific behavior (partition-by-time, R*-tree indexing) is implemented as extensions to the base `ColumnarOp` physical plan node:
+**Columnar-first architecture.** Columnar is the base storage engine for all analytics workloads. Timeseries and Spatial are profiles layered on top of it — they do not have separate storage layers. All three share the same `columnar_memtables` (the in-memory L0 write buffer). Profile-specific behavior (partition-by-time, R\*-tree indexing) is implemented as extensions to the base `ColumnarOp` physical plan node:
 
 - `ColumnarOp` — base plan for plain columnar collections
 - `TimeseriesOp` — extends `ColumnarOp` with `time_range` bounds, time bucketing, and retention
-- `SpatialOp` — extends `ColumnarOp` with R*-tree candidate lookup
+- `SpatialOp` — extends `ColumnarOp` with R\*-tree candidate lookup
 
-A `TIME_KEY` column modifier on a `TIMESTAMP` or `DATETIME` column designates the primary time dimension. A `SPATIAL_INDEX` modifier on a `GEOMETRY` column triggers automatic R*-tree maintenance.
+A `TIME_KEY` column modifier on a `TIMESTAMP` or `DATETIME` column designates the primary time dimension. A `SPATIAL_INDEX` modifier on a `GEOMETRY` column triggers automatic R\*-tree maintenance.
 
 Collections can be converted between modes at any time with `CONVERT COLLECTION <name> TO <mode>`.
 
