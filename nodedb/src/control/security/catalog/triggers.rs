@@ -145,6 +145,7 @@ mod tests {
             body_sql: "BEGIN INSERT INTO audit (id) VALUES (NEW.id); END".into(),
             priority: 0,
             enabled: true,
+            execution_mode: TriggerExecutionMode::default(),
             owner: "admin".into(),
             created_at: 1000,
         }

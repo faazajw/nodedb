@@ -1,7 +1,9 @@
 pub mod audit;
 pub mod auth_users;
 pub mod blacklist;
+pub mod change_streams;
 pub mod collections;
+pub mod consumer_groups;
 pub mod dependencies;
 pub mod function_types;
 pub mod functions;
@@ -10,6 +12,7 @@ pub mod metadata;
 pub mod orgs;
 pub mod procedure_types;
 pub mod procedures;
+pub mod schedules;
 pub mod scopes;
 pub mod security;
 pub mod trigger_types;

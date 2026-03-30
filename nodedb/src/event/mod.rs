@@ -1,7 +1,12 @@
 pub mod bus;
+pub mod cdc;
 pub mod consumer;
 pub mod metrics;
 pub mod plane;
+pub mod scheduler;
+#[cfg(test)]
+mod test_utils;
+pub mod trigger;
 pub mod types;
 pub mod wal_replay;
 pub mod watermark;

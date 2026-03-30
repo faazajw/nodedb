@@ -42,6 +42,37 @@ impl TriggerEvents {
     }
 }
 
+/// Execution mode for AFTER triggers.
+///
+/// Controls where and when the trigger body executes:
+/// - `Async` (default): Event Plane, eventually consistent, zero write latency impact.
+/// - `Sync`: Control Plane write path, same logical transaction, adds to write latency.
+/// - `Deferred`: Data Plane at COMMIT time, same transaction, batched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum TriggerExecutionMode {
+    /// Trigger fires asynchronously via Event Plane after commit.
+    /// Default. Eventually consistent side effects. Zero write latency impact.
+    #[default]
+    Async,
+    /// Trigger fires synchronously in the Control Plane write path.
+    /// ACID (same logical transaction). Adds trigger execution time to write latency.
+    /// Cross-shard SYNC triggers are rejected at CREATE TRIGGER time.
+    Sync,
+    /// Trigger fires at COMMIT time in the Data Plane, batched.
+    /// ACID (same transaction). Only adds latency at COMMIT, not per-statement.
+    Deferred,
+}
+
+impl TriggerExecutionMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Async => "ASYNC",
+            Self::Sync => "SYNC",
+            Self::Deferred => "DEFERRED",
+        }
+    }
+}
+
 /// Row-level or statement-level granularity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TriggerGranularity {
@@ -81,6 +112,10 @@ pub struct StoredTrigger {
     /// Whether the trigger is currently enabled.
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+    /// Execution mode: ASYNC (Event Plane), SYNC (write path), DEFERRED (COMMIT time).
+    /// Backward-compatible: defaults to ASYNC for triggers created before this field existed.
+    #[serde(default)]
+    pub execution_mode: TriggerExecutionMode,
     pub owner: String,
     pub created_at: u64,
 }

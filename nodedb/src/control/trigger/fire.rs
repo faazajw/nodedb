@@ -10,7 +10,7 @@ use tracing::warn;
 
 use crate::control::planner::procedural::executor::bindings::RowBindings;
 use crate::control::planner::procedural::executor::core::{MAX_CASCADE_DEPTH, StatementExecutor};
-use crate::control::security::catalog::trigger_types::TriggerTiming;
+use crate::control::security::catalog::trigger_types::{TriggerExecutionMode, TriggerTiming};
 use crate::control::security::identity::AuthenticatedIdentity;
 use crate::control::state::SharedState;
 use crate::types::TenantId;
@@ -20,10 +20,13 @@ use super::registry::DmlEvent;
 /// Fire AFTER ROW triggers for an INSERT operation.
 ///
 /// Called after a successful INSERT dispatch. `new_fields` contains the
-/// inserted row's field values.
+/// inserted row's field values. The trigger body's DML is dispatched through
+/// the normal plan+SPSC path, executing in the same logical transaction context.
 ///
-/// The trigger body's DML is dispatched through the normal plan+SPSC path,
-/// executing in the same logical transaction context.
+/// `mode_filter` selects which execution mode to fire:
+/// - `Some(Sync)`: only fire SYNC triggers (called from write path)
+/// - `Some(Async)`: only fire ASYNC triggers (called from Event Plane)
+/// - `None`: fire all AFTER triggers regardless of mode (legacy behavior)
 pub async fn fire_after_insert(
     state: &SharedState,
     identity: &AuthenticatedIdentity,
@@ -31,16 +34,17 @@ pub async fn fire_after_insert(
     collection: &str,
     new_fields: &serde_json::Map<String, serde_json::Value>,
     cascade_depth: u32,
+    mode_filter: Option<TriggerExecutionMode>,
 ) -> crate::Result<()> {
     let triggers =
         state
             .trigger_registry
             .get_matching(tenant_id.as_u32(), collection, DmlEvent::Insert);
 
-    // Filter to AFTER ROW triggers only (BEFORE not yet supported).
     let after_triggers: Vec<_> = triggers
         .into_iter()
         .filter(|t| t.timing == TriggerTiming::After)
+        .filter(|t| mode_filter.is_none() || Some(t.execution_mode) == mode_filter)
         .collect();
 
     if after_triggers.is_empty() {
@@ -56,15 +60,150 @@ pub async fn fire_after_insert(
         });
     }
 
-    // Build NEW row bindings.
     let new_row: HashMap<String, serde_json::Value> = new_fields
         .iter()
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
     let bindings = RowBindings::after_insert(collection, new_row);
 
-    for trigger in &after_triggers {
-        // Evaluate WHEN clause if present.
+    fire_triggers(
+        state,
+        identity,
+        tenant_id,
+        collection,
+        &after_triggers,
+        &bindings,
+        cascade_depth,
+    )
+    .await
+}
+
+/// Fire AFTER ROW triggers for an UPDATE operation.
+///
+/// `old_fields` is the row before the update, `new_fields` is after.
+/// Both are available as OLD.field and NEW.field in the trigger body.
+#[allow(clippy::too_many_arguments)]
+pub async fn fire_after_update(
+    state: &SharedState,
+    identity: &AuthenticatedIdentity,
+    tenant_id: TenantId,
+    collection: &str,
+    old_fields: &serde_json::Map<String, serde_json::Value>,
+    new_fields: &serde_json::Map<String, serde_json::Value>,
+    cascade_depth: u32,
+    mode_filter: Option<TriggerExecutionMode>,
+) -> crate::Result<()> {
+    let triggers =
+        state
+            .trigger_registry
+            .get_matching(tenant_id.as_u32(), collection, DmlEvent::Update);
+
+    let after_triggers: Vec<_> = triggers
+        .into_iter()
+        .filter(|t| t.timing == TriggerTiming::After)
+        .filter(|t| mode_filter.is_none() || Some(t.execution_mode) == mode_filter)
+        .collect();
+
+    if after_triggers.is_empty() {
+        return Ok(());
+    }
+
+    if cascade_depth >= MAX_CASCADE_DEPTH {
+        return Err(crate::Error::BadRequest {
+            detail: format!(
+                "trigger cascade depth exceeded ({MAX_CASCADE_DEPTH}): \
+                 possible infinite loop on collection '{collection}'"
+            ),
+        });
+    }
+
+    let old_row: HashMap<String, serde_json::Value> = old_fields
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    let new_row: HashMap<String, serde_json::Value> = new_fields
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    let bindings = RowBindings::after_update(collection, old_row, new_row);
+
+    fire_triggers(
+        state,
+        identity,
+        tenant_id,
+        collection,
+        &after_triggers,
+        &bindings,
+        cascade_depth,
+    )
+    .await
+}
+
+/// Fire AFTER ROW triggers for a DELETE operation.
+///
+/// `old_fields` is the deleted row. Available as OLD.field in the trigger body.
+pub async fn fire_after_delete(
+    state: &SharedState,
+    identity: &AuthenticatedIdentity,
+    tenant_id: TenantId,
+    collection: &str,
+    old_fields: &serde_json::Map<String, serde_json::Value>,
+    cascade_depth: u32,
+    mode_filter: Option<TriggerExecutionMode>,
+) -> crate::Result<()> {
+    let triggers =
+        state
+            .trigger_registry
+            .get_matching(tenant_id.as_u32(), collection, DmlEvent::Delete);
+
+    let after_triggers: Vec<_> = triggers
+        .into_iter()
+        .filter(|t| t.timing == TriggerTiming::After)
+        .filter(|t| mode_filter.is_none() || Some(t.execution_mode) == mode_filter)
+        .collect();
+
+    if after_triggers.is_empty() {
+        return Ok(());
+    }
+
+    if cascade_depth >= MAX_CASCADE_DEPTH {
+        return Err(crate::Error::BadRequest {
+            detail: format!(
+                "trigger cascade depth exceeded ({MAX_CASCADE_DEPTH}): \
+                 possible infinite loop on collection '{collection}'"
+            ),
+        });
+    }
+
+    let old_row: HashMap<String, serde_json::Value> = old_fields
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    let bindings = RowBindings::after_delete(collection, old_row);
+
+    fire_triggers(
+        state,
+        identity,
+        tenant_id,
+        collection,
+        &after_triggers,
+        &bindings,
+        cascade_depth,
+    )
+    .await
+}
+
+/// Shared trigger execution logic: evaluate WHEN, parse body, execute.
+async fn fire_triggers(
+    state: &SharedState,
+    identity: &AuthenticatedIdentity,
+    tenant_id: TenantId,
+    collection: &str,
+    triggers: &[crate::control::security::catalog::trigger_types::StoredTrigger],
+    bindings: &RowBindings,
+    cascade_depth: u32,
+) -> crate::Result<()> {
+    for trigger in triggers {
         if let Some(ref when_cond) = trigger.when_condition {
             let bound_cond = bindings.substitute(when_cond);
             if !evaluate_simple_condition(&bound_cond) {
@@ -72,7 +211,6 @@ pub async fn fire_after_insert(
             }
         }
 
-        // Parse trigger body.
         let block = match crate::control::planner::procedural::parse_block(&trigger.body_sql) {
             Ok(b) => b,
             Err(e) => {
@@ -85,12 +223,10 @@ pub async fn fire_after_insert(
             }
         };
 
-        // Execute via statement executor.
         let executor =
             StatementExecutor::new(state, identity.clone(), tenant_id, cascade_depth + 1);
 
-        if let Err(e) = executor.execute_block(&block, &bindings).await {
-            // Trigger exception → propagate (rolls back the transaction).
+        if let Err(e) = executor.execute_block(&block, bindings).await {
             return Err(crate::Error::BadRequest {
                 detail: format!(
                     "trigger '{}' on '{}' failed: {}",
