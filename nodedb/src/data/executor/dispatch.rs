@@ -551,6 +551,8 @@ impl CoreLoop {
                 limit,
                 filters,
                 bucket_interval_ms,
+                group_by,
+                aggregates,
                 ..
             }) => self.execute_timeseries_scan(super::handlers::timeseries::TimeseriesScanParams {
                 task,
@@ -559,6 +561,8 @@ impl CoreLoop {
                 limit: *limit,
                 filters,
                 bucket_interval_ms: *bucket_interval_ms,
+                group_by,
+                aggregates,
             }),
 
             PhysicalPlan::Timeseries(TimeseriesOp::Ingest {

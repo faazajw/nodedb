@@ -164,9 +164,10 @@ impl PlanConverter {
 impl PlanConverter {
     /// Convert a DataFusion `Aggregate` logical plan into physical tasks.
     ///
-    /// For timeseries collections with `time_bucket()` in GROUP BY, routes to
-    /// `TimeseriesOp::Scan` with `bucket_interval_ms` populated. Otherwise,
-    /// produces a `QueryOp::Aggregate` for document-style aggregation.
+    /// For timeseries collections, ALL aggregates route through
+    /// `TimeseriesOp::Scan` — the universal timeseries query path that
+    /// reads from both the active memtable and sealed disk partitions.
+    /// Non-timeseries collections use `QueryOp::Aggregate`.
     pub(super) fn convert_aggregate(
         &self,
         agg: &datafusion::logical_expr::Aggregate,
@@ -177,44 +178,8 @@ impl PlanConverter {
         })?;
         let vshard = VShardId::from_collection(&collection);
 
-        // Check for timeseries collection with time_bucket() in GROUP BY.
-        if matches!(
-            self.collection_type(tenant_id, &collection),
-            Some(nodedb_types::CollectionType::Columnar(
-                nodedb_types::columnar::ColumnarProfile::Timeseries { .. }
-            ))
-        ) && let Some(bucket_interval_ms) = try_extract_time_bucket_interval(&agg.group_expr)
-        {
-            // Extract time range from input filters.
-            let (time_range, filter_bytes) =
-                if let datafusion::logical_expr::LogicalPlan::Filter(filter) = agg.input.as_ref() {
-                    extract_timeseries_filters(std::slice::from_ref(&filter.predicate))?
-                } else {
-                    ((0i64, i64::MAX), Vec::new())
-                };
-
-            return Ok(vec![PhysicalTask {
-                tenant_id,
-                vshard_id: vshard,
-                plan: PhysicalPlan::Timeseries(TimeseriesOp::Scan {
-                    collection,
-                    time_range,
-                    projection: Vec::new(),
-                    limit: 10_000,
-                    filters: filter_bytes,
-                    bucket_interval_ms,
-                    rls_filters: Vec::new(),
-                }),
-            }]);
-        }
-
-        // Plain columnar aggregate: scan all rows, let QueryOp::Aggregate
-        // read from columnar_memtables (the aggregate handler checks there first).
-        // No special routing needed — just fall through to standard aggregate
-        // with the collection name. The Data Plane aggregate handler was updated
-        // to read from columnar_memtables when data exists there.
-
-        // Standard document-style aggregation (also used by columnar via aggregate handler).
+        // Extract GROUP BY columns (filtering out time_bucket expressions
+        // which are handled separately via bucket_interval_ms).
         let group_by: Vec<String> = agg
             .group_expr
             .iter()
@@ -227,6 +192,7 @@ impl PlanConverter {
             })
             .collect();
 
+        // Extract aggregate expressions: (op, field).
         let mut aggregates = Vec::new();
         for expr in &agg.aggr_expr {
             if let Expr::AggregateFunction(func) = expr {
@@ -250,6 +216,43 @@ impl PlanConverter {
             }
         }
 
+        // Route ALL timeseries aggregates through TimeseriesOp::Scan.
+        // This is the universal path that reads from both memtable and
+        // sealed disk partitions, avoiding the QueryOp::Aggregate path
+        // which only sees memtable data.
+        if matches!(
+            self.collection_type(tenant_id, &collection),
+            Some(nodedb_types::CollectionType::Columnar(
+                nodedb_types::columnar::ColumnarProfile::Timeseries { .. }
+            ))
+        ) {
+            let bucket_interval_ms = try_extract_time_bucket_interval(&agg.group_expr).unwrap_or(0);
+
+            let (time_range, filter_bytes) =
+                if let datafusion::logical_expr::LogicalPlan::Filter(filter) = agg.input.as_ref() {
+                    extract_timeseries_filters(std::slice::from_ref(&filter.predicate))?
+                } else {
+                    ((0i64, i64::MAX), Vec::new())
+                };
+
+            return Ok(vec![PhysicalTask {
+                tenant_id,
+                vshard_id: vshard,
+                plan: PhysicalPlan::Timeseries(TimeseriesOp::Scan {
+                    collection,
+                    time_range,
+                    projection: Vec::new(),
+                    limit: usize::MAX,
+                    filters: filter_bytes,
+                    bucket_interval_ms,
+                    group_by,
+                    aggregates,
+                    rls_filters: Vec::new(),
+                }),
+            }]);
+        }
+
+        // Non-timeseries: standard document-style aggregation.
         let filter_bytes =
             if let datafusion::logical_expr::LogicalPlan::Filter(filter) = agg.input.as_ref() {
                 let filters = expr_to_scan_filters(&filter.predicate);
@@ -267,7 +270,7 @@ impl PlanConverter {
                 aggregates,
                 filters: filter_bytes,
                 having: Vec::new(),
-                limit: 10000,
+                limit: usize::MAX,
                 sub_group_by: Vec::new(),
                 sub_aggregates: Vec::new(),
             }),

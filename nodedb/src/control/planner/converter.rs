@@ -200,6 +200,8 @@ impl PlanConverter {
                                     limit,
                                     filters: filter_bytes,
                                     bucket_interval_ms: 0,
+                                    group_by: Vec::new(),
+                                    aggregates: Vec::new(),
                                     rls_filters: Vec::new(),
                                 }),
                             }]);
@@ -368,6 +370,8 @@ impl PlanConverter {
                                 limit,
                                 filters: filter_bytes,
                                 bucket_interval_ms: 0,
+                                group_by: Vec::new(),
+                                aggregates: Vec::new(),
                                 rls_filters: Vec::new(),
                             }),
                         }])
