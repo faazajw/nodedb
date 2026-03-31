@@ -14,6 +14,7 @@ use crate::control::state::SharedState;
 use crate::event::cdc::stream_def::{
     ChangeStreamDef, CompactionConfig, OpFilter, RetentionConfig, StreamFormat,
 };
+use crate::event::webhook::WebhookConfig;
 
 use super::super::super::types::{require_admin, sqlstate_error};
 
@@ -55,15 +56,28 @@ pub fn create_change_stream(
         format: parsed.format,
         retention: RetentionConfig::default(),
         compaction: parsed.compaction,
+        webhook: parsed.webhook,
         owner: identity.username.clone(),
         created_at: now,
     };
+
+    // If webhook is configured, start the delivery task.
+    let has_webhook = def.webhook.is_configured();
 
     catalog
         .put_change_stream(&def)
         .map_err(|e| sqlstate_error("XX000", &format!("catalog write: {e}")))?;
 
+    let webhook_config = def.webhook.clone();
+    let stream_name_for_webhook = parsed.name.clone();
     state.stream_registry.register(def);
+
+    // Start webhook delivery task if configured.
+    if has_webhook {
+        state
+            .webhook_manager
+            .start_task(tenant_id, &stream_name_for_webhook, webhook_config);
+    }
 
     state.audit_record(
         crate::control::security::audit::AuditEvent::AdminAction,
@@ -85,6 +99,7 @@ struct ParsedCreateChangeStream {
     op_filter: OpFilter,
     format: StreamFormat,
     compaction: CompactionConfig,
+    webhook: WebhookConfig,
 }
 
 /// Extract all `KEY = VALUE` pairs from a WITH clause inner string.
@@ -162,6 +177,7 @@ fn parse_create_change_stream(sql: &str) -> PgWireResult<ParsedCreateChangeStrea
     let mut op_filter = OpFilter::all();
     let mut format = StreamFormat::Json;
     let mut compaction = CompactionConfig::default();
+    let mut webhook = WebhookConfig::default();
 
     if let Some(with_pos) = upper.find("WITH") {
         let with_section = trimmed[with_pos + 4..].trim();
@@ -200,6 +216,24 @@ fn parse_create_change_stream(sql: &str) -> PgWireResult<ParsedCreateChangeStrea
                     compaction.key_field = val;
                     compaction.enabled = true;
                 }
+                "DELIVERY" if val.eq_ignore_ascii_case("webhook") => {
+                    // Webhook delivery mode — URL must also be specified.
+                }
+                "URL" if !val.is_empty() => {
+                    webhook.url = val;
+                }
+                "RETRY" => {
+                    webhook.max_retries = val.parse().unwrap_or(3);
+                }
+                "TIMEOUT" => {
+                    // Parse duration like "5s", "10s", or raw seconds.
+                    let secs = val
+                        .strip_suffix('s')
+                        .or(Some(&val))
+                        .and_then(|s| s.parse::<u64>().ok())
+                        .unwrap_or(5);
+                    webhook.timeout_secs = secs;
+                }
                 _ => {}
             }
         }
@@ -212,6 +246,7 @@ fn parse_create_change_stream(sql: &str) -> PgWireResult<ParsedCreateChangeStrea
         op_filter,
         format,
         compaction,
+        webhook,
     })
 }
 

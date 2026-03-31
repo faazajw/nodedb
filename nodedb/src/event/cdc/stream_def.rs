@@ -132,6 +132,9 @@ pub struct ChangeStreamDef {
     /// Log compaction configuration (optional).
     #[serde(default)]
     pub compaction: CompactionConfig,
+    /// Webhook delivery configuration (optional).
+    #[serde(default)]
+    pub webhook: crate::event::webhook::WebhookConfig,
     /// Owner (creator).
     pub owner: String,
     /// Creation timestamp (epoch seconds).
@@ -176,6 +179,7 @@ mod tests {
             format: StreamFormat::Json,
             retention: RetentionConfig::default(),
             compaction: CompactionConfig::default(),
+            webhook: crate::event::webhook::WebhookConfig::default(),
             owner: "admin".into(),
             created_at: 0,
         };
@@ -194,6 +198,7 @@ mod tests {
             format: StreamFormat::Json,
             retention: RetentionConfig::default(),
             compaction: CompactionConfig::default(),
+            webhook: crate::event::webhook::WebhookConfig::default(),
             owner: "admin".into(),
             created_at: 0,
         };

@@ -306,6 +306,9 @@ async fn main() -> anyhow::Result<()> {
     // Event trigger processor: evaluates DEFINE EVENT triggers on writes.
     nodedb::control::event_trigger::spawn_event_trigger_processor(Arc::clone(&shared));
 
+    // Wire webhook manager with Arc<SharedState> so it can spawn delivery tasks.
+    shared.webhook_manager.set_state(Arc::clone(&shared));
+
     // Spawn Event Plane: one consumer Tokio task per Data Plane core.
     // Kept alive until process exit — Drop impl aborts consumer tasks.
     // CdcRouter lives in SharedState (shared with DDL handlers for drop cleanup).

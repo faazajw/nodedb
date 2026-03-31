@@ -218,6 +218,7 @@ mod tests {
                 max_age_secs: 3600,
             },
             compaction: CompactionConfig::default(),
+            webhook: crate::event::webhook::WebhookConfig::default(),
             owner: "admin".into(),
             created_at: 0,
         }

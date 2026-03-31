@@ -11,6 +11,7 @@ pub mod trigger;
 pub mod types;
 pub mod wal_replay;
 pub mod watermark;
+pub mod webhook;
 
 pub use bus::{EventProducer, create_event_bus};
 pub use plane::EventPlane;

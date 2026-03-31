@@ -52,6 +52,9 @@ pub fn drop_change_stream(
 
     state.stream_registry.unregister(tenant_id, &name);
 
+    // Stop webhook delivery task if one was running for this stream.
+    state.webhook_manager.stop_task(tenant_id, &name);
+
     // Immediately remove the in-memory event buffer so no new events accumulate
     // and memory is freed.
     state.cdc_router.remove_buffer(tenant_id, &name);

@@ -187,6 +187,9 @@ pub struct SharedState {
     /// Event Plane durable topic registry (distinct from control::pubsub::TopicRegistry).
     pub ep_topic_registry: crate::event::topic::EpTopicRegistry,
 
+    /// Webhook delivery manager for CDC change streams.
+    pub webhook_manager: crate::event::webhook::WebhookManager,
+
     /// Total connections rejected due to max_connections limit (monotonic counter).
     pub connections_rejected: AtomicU64,
 
@@ -317,6 +320,14 @@ impl SharedState {
                 )
             },
             ep_topic_registry: crate::event::topic::EpTopicRegistry::new(),
+            webhook_manager: {
+                // Dummy shutdown channel for test context. Tasks are stopped
+                // explicitly via stop_task() or aborted via Drop — the watch
+                // receiver is kept alive but never signals true.
+                let (_tx, rx) = tokio::sync::watch::channel(false);
+                std::mem::forget(_tx);
+                crate::event::webhook::WebhookManager::new(rx)
+            },
             connections_rejected: AtomicU64::new(0),
             connections_accepted: AtomicU64::new(0),
             system_metrics: Some(Arc::new(crate::control::metrics::SystemMetrics::new())),
@@ -395,6 +406,14 @@ impl SharedState {
                 catalog_path.parent().unwrap_or(std::path::Path::new(".")),
             )?),
             ep_topic_registry,
+            webhook_manager: {
+                // Dummy shutdown channel. Delivery tasks are stopped explicitly
+                // via stop_task() on DROP CHANGE STREAM, or aborted via Drop on
+                // process exit. The watch receiver stays valid but never signals.
+                let (_tx, rx) = tokio::sync::watch::channel(false);
+                std::mem::forget(_tx);
+                crate::event::webhook::WebhookManager::new(rx)
+            },
             tenants: Mutex::new(TenantIsolation::new(TenantQuota::default())),
             cluster_topology: None,
             cluster_routing: None,

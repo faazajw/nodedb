@@ -121,6 +121,7 @@ mod tests {
             format: StreamFormat::Json,
             retention: RetentionConfig::default(),
             compaction: CompactionConfig::default(),
+            webhook: crate::event::webhook::WebhookConfig::default(),
             owner: "admin".into(),
             created_at: 0,
         }
