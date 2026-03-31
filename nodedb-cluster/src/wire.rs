@@ -95,6 +95,12 @@ pub enum VShardMessageType {
     SpatialScatterRequest = 60,
     /// Gather: shard responds with matching document IDs.
     SpatialScatterResponse = 61,
+
+    // ── Event Plane Cross-Shard Delivery ──
+    /// Cross-shard event write request (trigger DML, CDC, etc.).
+    CrossShardEvent = 70,
+    /// Acknowledgement for a cross-shard event write.
+    CrossShardEventAck = 71,
 }
 
 /// Current wire protocol version.
@@ -176,6 +182,10 @@ impl VShardEnvelope {
             45 => VShardMessageType::TsArchiveAck,
             50 => VShardMessageType::VectorScatterRequest,
             51 => VShardMessageType::VectorScatterResponse,
+            60 => VShardMessageType::SpatialScatterRequest,
+            61 => VShardMessageType::SpatialScatterResponse,
+            70 => VShardMessageType::CrossShardEvent,
+            71 => VShardMessageType::CrossShardEventAck,
             _ => return None,
         };
 
@@ -232,6 +242,10 @@ mod tests {
             VShardMessageType::TsArchiveAck,
             VShardMessageType::VectorScatterRequest,
             VShardMessageType::VectorScatterResponse,
+            VShardMessageType::SpatialScatterRequest,
+            VShardMessageType::SpatialScatterResponse,
+            VShardMessageType::CrossShardEvent,
+            VShardMessageType::CrossShardEventAck,
         ];
 
         for msg_type in types {

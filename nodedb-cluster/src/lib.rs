@@ -45,7 +45,7 @@ pub use migration_executor::{
     MigrationExecutor, MigrationRequest, MigrationResult, MigrationSnapshot, MigrationTracker,
 };
 pub use multi_raft::{GroupStatus, MultiRaft};
-pub use raft_loop::{CommitApplier, RaftLoop};
+pub use raft_loop::{CommitApplier, RaftLoop, VShardEnvelopeHandler};
 pub use rebalance::{RebalancePlan, compute_plan, plan_to_requests};
 pub use routing::RoutingTable;
 pub use rpc_codec::RaftRpc;

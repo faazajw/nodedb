@@ -7,6 +7,7 @@
 //! - Committed entries are applied via a [`CommitApplier`] callback
 //! - RPC responses are fed back asynchronously (non-blocking tick loop)
 
+use std::pin::Pin;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
@@ -42,6 +43,16 @@ pub trait CommitApplier: Send + Sync + 'static {
     fn apply_committed(&self, group_id: u64, entries: &[LogEntry]) -> u64;
 }
 
+/// Type-erased async handler for incoming `VShardEnvelope` messages.
+///
+/// Receives raw envelope bytes, returns response bytes. Set by the main binary
+/// to dispatch to the appropriate engine handler (Event Plane, timeseries, etc.).
+pub type VShardEnvelopeHandler = Arc<
+    dyn Fn(Vec<u8>) -> Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>>> + Send>>
+        + Send
+        + Sync,
+>;
+
 /// Raft event loop coordinator.
 ///
 /// Owns the MultiRaft state (behind `Arc<Mutex>`) and drives it via periodic
@@ -55,6 +66,9 @@ pub struct RaftLoop<A: CommitApplier, F: RequestForwarder = crate::forward::Noop
     applier: A,
     forwarder: Arc<F>,
     tick_interval: Duration,
+    /// Optional handler for incoming VShardEnvelope messages.
+    /// Set when the Event Plane or other subsystems need cross-node messaging.
+    vshard_handler: Option<VShardEnvelopeHandler>,
 }
 
 impl<A: CommitApplier> RaftLoop<A> {
@@ -73,6 +87,7 @@ impl<A: CommitApplier> RaftLoop<A> {
             applier,
             forwarder: Arc::new(crate::forward::NoopForwarder),
             tick_interval: DEFAULT_TICK_INTERVAL,
+            vshard_handler: None,
         }
     }
 }
@@ -95,7 +110,14 @@ impl<A: CommitApplier, F: RequestForwarder> RaftLoop<A, F> {
             applier,
             forwarder,
             tick_interval: DEFAULT_TICK_INTERVAL,
+            vshard_handler: None,
         }
+    }
+
+    /// Set a handler for incoming VShardEnvelope messages.
+    pub fn with_vshard_handler(mut self, handler: VShardEnvelopeHandler) -> Self {
+        self.vshard_handler = Some(handler);
+        self
     }
 
     pub fn with_tick_interval(mut self, interval: Duration) -> Self {
@@ -349,6 +371,17 @@ impl<A: CommitApplier, F: RequestForwarder> RaftRpcHandler for RaftLoop<A, F> {
             RaftRpc::ForwardRequest(req) => {
                 let resp = self.forwarder.execute_forwarded(req).await;
                 Ok(RaftRpc::ForwardResponse(resp))
+            }
+            // VShardEnvelope — dispatch to registered handler (Event Plane, etc.).
+            RaftRpc::VShardEnvelope(bytes) => {
+                if let Some(ref handler) = self.vshard_handler {
+                    let response_bytes = handler(bytes).await?;
+                    Ok(RaftRpc::VShardEnvelope(response_bytes))
+                } else {
+                    Err(ClusterError::Transport {
+                        detail: "VShardEnvelope handler not configured".into(),
+                    })
+                }
             }
             other => Err(ClusterError::Transport {
                 detail: format!("unexpected request type in RPC handler: {other:?}"),

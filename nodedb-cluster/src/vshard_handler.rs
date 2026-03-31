@@ -78,6 +78,10 @@ pub fn dispatch_by_type(envelope: &VShardEnvelope) -> DispatchTarget {
         // Spatial distributed queries
         VShardMessageType::SpatialScatterRequest => DispatchTarget::SpatialSearch,
         VShardMessageType::SpatialScatterResponse => DispatchTarget::SpatialCoordinator,
+
+        // Event Plane cross-shard delivery
+        VShardMessageType::CrossShardEvent => DispatchTarget::EventPlane,
+        VShardMessageType::CrossShardEventAck => DispatchTarget::EventPlane,
     }
 }
 
@@ -110,6 +114,8 @@ pub enum DispatchTarget {
     SpatialSearch,
     /// Spatial coordinator (receives shard search responses).
     SpatialCoordinator,
+    /// Event Plane cross-shard delivery (trigger DML, CDC events).
+    EventPlane,
 }
 
 /// Build a response envelope for a timeseries scatter response.
@@ -204,6 +210,8 @@ mod tests {
             VShardMessageType::VectorScatterResponse,
             VShardMessageType::SpatialScatterRequest,
             VShardMessageType::SpatialScatterResponse,
+            VShardMessageType::CrossShardEvent,
+            VShardMessageType::CrossShardEventAck,
         ];
         for msg_type in all_types {
             let env = VShardEnvelope::new(msg_type, 1, 2, 0, vec![]);
