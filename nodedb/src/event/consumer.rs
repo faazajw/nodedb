@@ -161,13 +161,25 @@ async fn consumer_loop(config: ConsumerConfig, metrics: Arc<CoreMetrics>) {
 
                     // Dispatch triggers + CDC routing + watermarks for each event.
                     for event in &events {
-                        // Advance partition watermark (for ALL events including heartbeats).
-                        shared_state
-                            .watermark_tracker
-                            .advance(event.vshard_id.as_u16(), event.lsn.as_u64());
-
-                        // Heartbeats only advance watermarks — skip triggers/CDC/MVs.
-                        if !event.op.is_data_event() {
+                        // Advance partition watermark with (LSN, event_time) pair.
+                        if event.op.is_data_event() {
+                            // Data events carry wall-clock event_time from CdcEvent.
+                            // WriteEvent doesn't have event_time directly — use current
+                            // wall-clock as the event_time for watermark tracking.
+                            let event_time_ms = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_millis() as u64;
+                            shared_state.watermark_tracker.advance(
+                                event.vshard_id.as_u16(),
+                                event.lsn.as_u64(),
+                                event_time_ms,
+                            );
+                        } else {
+                            // Heartbeats advance LSN only — no new wall-clock data.
+                            shared_state
+                                .watermark_tracker
+                                .advance_lsn_only(event.vshard_id.as_u16(), event.lsn.as_u64());
                             continue;
                         }
 

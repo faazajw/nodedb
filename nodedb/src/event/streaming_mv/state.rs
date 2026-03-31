@@ -12,6 +12,12 @@ use serde::{Deserialize, Serialize};
 
 use super::types::{AggDef, AggFunction};
 
+/// A row of aggregate results: (aggregate_name, value).
+pub type AggRow = Vec<(String, f64)>;
+
+/// MV result row: (group_key, aggregate_values, finalized).
+pub type MvResultRow = (String, AggRow, bool);
+
 /// Partial aggregate state for one group key.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GroupState {
@@ -19,15 +25,30 @@ pub struct GroupState {
     pub sum: f64,
     pub min: Option<f64>,
     pub max: Option<f64>,
+    /// Whether this bucket is finalized (all partitions have advanced past it).
+    /// Once finalized, no more events will arrive for this group key.
+    #[serde(default)]
+    pub finalized: bool,
+    /// Latest event_time (wall-clock ms) seen for this group key.
+    /// Used to map LSN watermarks to wall-clock time for time-bucket finalization.
+    #[serde(default)]
+    pub latest_event_time: u64,
 }
 
 impl GroupState {
-    /// Update this state with a new value.
+    /// Update this state with a new value and event timestamp.
     pub fn update(&mut self, value: f64) {
         self.count += 1;
         self.sum += value;
         self.min = Some(self.min.map_or(value, |m| m.min(value)));
         self.max = Some(self.max.map_or(value, |m| m.max(value)));
+    }
+
+    /// Update the latest event time for this group key.
+    pub fn update_event_time(&mut self, event_time_ms: u64) {
+        if event_time_ms > self.latest_event_time {
+            self.latest_event_time = event_time_ms;
+        }
     }
 
     /// Compute a specific aggregate from this state.
@@ -76,6 +97,22 @@ impl MvState {
     ///
     /// `group_key` is the concatenated GROUP BY values (e.g., "INSERT" or "orders:INSERT").
     /// `agg_values` is one value per aggregate definition (NaN if not applicable).
+    /// `event_time_ms` is the wall-clock timestamp of the event.
+    pub fn update_with_time(&self, group_key: &str, agg_values: &[f64], event_time_ms: u64) {
+        let mut groups = self.groups.write().unwrap_or_else(|p| p.into_inner());
+        let states = groups
+            .entry(group_key.to_string())
+            .or_insert_with(|| vec![GroupState::default(); self.aggregates.len()]);
+
+        for (i, &value) in agg_values.iter().enumerate() {
+            if i < states.len() && !value.is_nan() {
+                states[i].update(value);
+                states[i].update_event_time(event_time_ms);
+            }
+        }
+    }
+
+    /// Update the MV state (without event time — backward compat).
     pub fn update(&self, group_key: &str, agg_values: &[f64]) {
         let mut groups = self.groups.write().unwrap_or_else(|p| p.into_inner());
         let states = groups
@@ -92,9 +129,9 @@ impl MvState {
     /// Read the current aggregate results.
     ///
     /// Returns: Vec<(group_key, Vec<(agg_name, value)>)>
-    pub fn read_results(&self) -> Vec<(String, Vec<(String, f64)>)> {
+    pub fn read_results(&self) -> Vec<(String, AggRow)> {
         let groups = self.groups.read().unwrap_or_else(|p| p.into_inner());
-        let mut results: Vec<(String, Vec<(String, f64)>)> = groups
+        let mut results: Vec<(String, AggRow)> = groups
             .iter()
             .map(|(key, states)| {
                 let values: Vec<(String, f64)> = self
@@ -111,6 +148,61 @@ impl MvState {
                     })
                     .collect();
                 (key.clone(), values)
+            })
+            .collect();
+        results.sort_by(|a, b| a.0.cmp(&b.0));
+        results
+    }
+
+    /// Finalize time buckets whose latest event_time is below the watermark time.
+    ///
+    /// `watermark_time_ms` is the wall-clock time corresponding to the global
+    /// watermark LSN. All partitions have advanced past this point, so no more
+    /// events will arrive for time buckets ending before this time.
+    ///
+    /// Returns the number of newly finalized groups.
+    pub fn finalize_buckets(&self, watermark_time_ms: u64) -> u32 {
+        let mut groups = self.groups.write().unwrap_or_else(|p| p.into_inner());
+        let mut finalized_count = 0u32;
+
+        for states in groups.values_mut() {
+            for state in states.iter_mut() {
+                if !state.finalized
+                    && state.latest_event_time > 0
+                    && state.latest_event_time < watermark_time_ms
+                {
+                    state.finalized = true;
+                    finalized_count += 1;
+                }
+            }
+        }
+
+        finalized_count
+    }
+
+    /// Read results with finalization status.
+    ///
+    /// Returns: Vec<(group_key, Vec<(agg_name, value)>, finalized)>
+    pub fn read_results_with_status(&self) -> Vec<MvResultRow> {
+        let groups = self.groups.read().unwrap_or_else(|p| p.into_inner());
+        let mut results: Vec<MvResultRow> = groups
+            .iter()
+            .map(|(key, states)| {
+                let finalized = states.iter().all(|s| s.finalized);
+                let values: Vec<(String, f64)> = self
+                    .aggregates
+                    .iter()
+                    .enumerate()
+                    .map(|(i, agg)| {
+                        let val = if i < states.len() {
+                            states[i].compute(agg.function)
+                        } else {
+                            0.0
+                        };
+                        (agg.output_name.clone(), val)
+                    })
+                    .collect();
+                (key.clone(), values, finalized)
             })
             .collect();
         results.sort_by(|a, b| a.0.cmp(&b.0));

@@ -105,7 +105,7 @@ fn update_mv(event: &CdcEvent, mv_state: &MvState) {
         .map(|agg| extract_agg_value(event, agg.function, &agg.input_expr))
         .collect();
 
-    mv_state.update(&group_key, &agg_values);
+    mv_state.update_with_time(&group_key, &agg_values, event.event_time);
 
     trace!(
         mv = %mv_state.name,

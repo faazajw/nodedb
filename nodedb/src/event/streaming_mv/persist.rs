@@ -203,6 +203,7 @@ impl MvPersistence {
 pub fn spawn_persist_task(
     persistence: Arc<MvPersistence>,
     registry: Arc<MvRegistry>,
+    watermark_tracker: Arc<crate::event::watermark_tracker::WatermarkTracker>,
     mut shutdown: watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -210,7 +211,29 @@ pub fn spawn_persist_task(
         loop {
             tokio::select! {
                 _ = tokio::time::sleep(PERSIST_INTERVAL) => {
-                    // Periodic flush.
+                    // Finalize time buckets using the global watermark event_time.
+                    // This is min(per_partition_event_times) — the wall-clock time
+                    // below which ALL partitions have advanced. Groups with
+                    // latest_event_time < this value will receive no more events.
+                    let cutoff = watermark_tracker.global_watermark_event_time();
+
+                    if cutoff > 0 {
+                        let mut total_finalized = 0u32;
+                        for mv_def in registry.list_all() {
+                            if let Some(state) = registry.get_state(mv_def.tenant_id, &mv_def.name) {
+                                total_finalized += state.finalize_buckets(cutoff);
+                            }
+                        }
+                        if total_finalized > 0 {
+                            debug!(
+                                finalized = total_finalized,
+                                cutoff_ms = cutoff,
+                                "MV time buckets finalized via global watermark event_time"
+                            );
+                        }
+                    }
+
+                    // Persist state to redb.
                     persistence.flush_all(&registry);
                     trace!("MV state flushed to redb");
                 }
@@ -243,6 +266,8 @@ mod tests {
                     sum: 100.0,
                     min: Some(10.0),
                     max: Some(50.0),
+                    finalized: false,
+                    latest_event_time: 0,
                 }],
             ),
             (
@@ -252,6 +277,8 @@ mod tests {
                     sum: 30.0,
                     min: Some(5.0),
                     max: Some(15.0),
+                    finalized: false,
+                    latest_event_time: 0,
                 }],
             ),
         ];

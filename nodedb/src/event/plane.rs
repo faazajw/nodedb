@@ -90,6 +90,7 @@ impl EventPlane {
         let _mv_persist_handle = super::streaming_mv::persist::spawn_persist_task(
             Arc::clone(&shared_state.mv_persistence),
             Arc::clone(&shared_state.mv_registry),
+            Arc::clone(&shared_state.watermark_tracker),
             shutdown_rx.clone(),
         );
 
