@@ -193,6 +193,41 @@ pub async fn fire_after_delete(
     .await
 }
 
+/// Execute raw SQL in a trigger-like context (no row bindings).
+///
+/// Used by the cross-shard receiver to execute trigger-originated DML
+/// on the target node. The SQL is parsed and executed through the normal
+/// Control Plane → Data Plane path with cascade depth tracking.
+pub async fn fire_sql(
+    state: &SharedState,
+    identity: &AuthenticatedIdentity,
+    tenant_id: TenantId,
+    sql: &str,
+    cascade_depth: u32,
+) -> crate::Result<()> {
+    if cascade_depth >= MAX_CASCADE_DEPTH {
+        return Err(crate::Error::BadRequest {
+            detail: format!("cross-shard cascade depth exceeded ({MAX_CASCADE_DEPTH})"),
+        });
+    }
+
+    let block = crate::control::planner::procedural::parse_block(sql).map_err(|e| {
+        crate::Error::BadRequest {
+            detail: format!("cross-shard SQL parse error: {e}"),
+        }
+    })?;
+
+    let executor = StatementExecutor::new(state, identity.clone(), tenant_id, cascade_depth);
+    let bindings = RowBindings::empty();
+
+    executor
+        .execute_block(&block, &bindings)
+        .await
+        .map_err(|e| crate::Error::BadRequest {
+            detail: format!("cross-shard SQL execution failed: {e}"),
+        })
+}
+
 /// Shared trigger execution logic: evaluate WHEN, parse body, execute.
 async fn fire_triggers(
     state: &SharedState,

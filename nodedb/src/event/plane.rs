@@ -94,6 +94,23 @@ impl EventPlane {
             shutdown_rx.clone(),
         );
 
+        // Spawn cross-shard dispatcher task (cluster mode only).
+        if let (Some(dispatcher), Some(transport), Some(metrics), Some(dlq)) = (
+            shared_state.cross_shard_dispatcher.as_ref(),
+            shared_state.cluster_transport.as_ref(),
+            shared_state.cross_shard_metrics.as_ref(),
+            shared_state.cross_shard_dlq.as_ref(),
+        ) {
+            let _cross_shard_handle = super::cross_shard::dispatcher::spawn_dispatcher_task(
+                Arc::clone(dispatcher),
+                Arc::clone(transport),
+                Arc::clone(metrics),
+                Arc::clone(dlq),
+                shutdown_rx.clone(),
+            );
+            info!("cross-shard dispatcher task started");
+        }
+
         let plane = Self {
             consumers,
             watermark_store,

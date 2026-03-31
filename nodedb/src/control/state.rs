@@ -202,6 +202,18 @@ pub struct SharedState {
     /// Event Plane memory budget (512 MB cap).
     pub event_plane_budget: Arc<crate::event::budget::EventPlaneBudget>,
 
+    /// Cross-shard event dispatcher (None in single-node mode).
+    pub cross_shard_dispatcher: Option<Arc<crate::event::cross_shard::CrossShardDispatcher>>,
+
+    /// Cross-shard dead letter queue (None in single-node mode).
+    pub cross_shard_dlq: Option<Arc<Mutex<crate::event::cross_shard::CrossShardDlq>>>,
+
+    /// Cross-shard delivery metrics (None in single-node mode).
+    pub cross_shard_metrics: Option<Arc<crate::event::cross_shard::CrossShardMetrics>>,
+
+    /// Cross-shard high-water-mark dedup store (None in single-node mode).
+    pub hwm_store: Option<Arc<crate::event::cross_shard::HwmStore>>,
+
     /// Streaming MV state persistence (redb).
     pub mv_persistence: Arc<crate::event::streaming_mv::MvPersistence>,
 
@@ -347,6 +359,10 @@ impl SharedState {
             consumer_assignments: crate::event::cdc::consumer_group::ConsumerAssignments::new(),
             watermark_tracker: Arc::new(crate::event::watermark_tracker::WatermarkTracker::new()),
             event_plane_budget: Arc::new(crate::event::budget::EventPlaneBudget::new()),
+            cross_shard_dispatcher: None,
+            cross_shard_dlq: None,
+            cross_shard_metrics: None,
+            hwm_store: None,
             mv_persistence: {
                 let dir = std::env::temp_dir().join(format!(
                     "nodedb-test-mvstate-{}-{}",
@@ -453,6 +469,10 @@ impl SharedState {
             consumer_assignments: crate::event::cdc::consumer_group::ConsumerAssignments::new(),
             watermark_tracker: Arc::new(crate::event::watermark_tracker::WatermarkTracker::new()),
             event_plane_budget: Arc::new(crate::event::budget::EventPlaneBudget::new()),
+            cross_shard_dispatcher: None,
+            cross_shard_dlq: None,
+            cross_shard_metrics: None,
+            hwm_store: None,
             mv_persistence: Arc::new(crate::event::streaming_mv::MvPersistence::open(
                 catalog_path.parent().unwrap_or(std::path::Path::new(".")),
             )?),
