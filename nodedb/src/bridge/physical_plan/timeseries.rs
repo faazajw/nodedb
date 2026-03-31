@@ -4,6 +4,10 @@
 #[derive(Debug, Clone)]
 pub enum TimeseriesOp {
     /// Columnar partition scan with time-range pruning.
+    ///
+    /// Universal timeseries query path: handles raw scans, time-bucket
+    /// aggregation, and generic GROUP BY. Reads from both the active
+    /// memtable and sealed disk partitions.
     Scan {
         collection: String,
         /// `(min_ts_ms, max_ts_ms)`. (0, i64::MAX) = no time filter.
@@ -13,6 +17,11 @@ pub enum TimeseriesOp {
         filters: Vec<u8>,
         /// time_bucket interval in milliseconds. 0 = no bucketing.
         bucket_interval_ms: i64,
+        /// GROUP BY column names (empty = no grouping or whole-table agg).
+        group_by: Vec<String>,
+        /// Aggregate expressions: `(op, field)` e.g. `("count","*")`, `("avg","elapsed_ms")`.
+        /// Empty = raw scan (no aggregation).
+        aggregates: Vec<(String, String)>,
         /// RLS post-scan filters (applied after time-range pruning).
         rls_filters: Vec<u8>,
     },
