@@ -937,11 +937,25 @@ impl CoreLoop {
                 }
 
                 // Schema evolution: detect new fields and expand memtable schema.
+                // Track column count before evolution to detect changes.
+                let cols_before = if !is_new_memtable {
+                    self.columnar_memtables
+                        .get(collection)
+                        .map(|mt| mt.schema().columns.len())
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
                 if !is_new_memtable {
                     if let Some(mt) = self.columnar_memtables.get_mut(collection) {
                         ilp_ingest::evolve_schema(mt, &lines);
                     }
                 }
+                let schema_changed = !is_new_memtable
+                    && self
+                        .columnar_memtables
+                        .get(collection)
+                        .is_some_and(|mt| mt.schema().columns.len() != cols_before);
 
                 let Some(mt) = self.columnar_memtables.get_mut(collection) else {
                     return self.response_error(
@@ -970,8 +984,11 @@ impl CoreLoop {
 
                 self.checkpoint_coordinator
                     .mark_dirty("timeseries", accepted);
+                // Include schema_columns when schema is new OR evolved,
+                // so the ILP listener can propagate changes to the catalog.
+                let include_schema = is_new_memtable || schema_changed;
                 let result =
-                    if is_new_memtable && let Some(mt) = self.columnar_memtables.get(collection) {
+                    if include_schema && let Some(mt) = self.columnar_memtables.get(collection) {
                         let schema_columns: Vec<serde_json::Value> = mt
                             .schema()
                             .columns

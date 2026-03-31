@@ -228,12 +228,7 @@ impl PlanConverter {
         ) {
             let bucket_interval_ms = try_extract_time_bucket_interval(&agg.group_expr).unwrap_or(0);
 
-            let (time_range, filter_bytes) =
-                if let datafusion::logical_expr::LogicalPlan::Filter(filter) = agg.input.as_ref() {
-                    extract_timeseries_filters(std::slice::from_ref(&filter.predicate))?
-                } else {
-                    ((0i64, i64::MAX), Vec::new())
-                };
+            let (time_range, filter_bytes) = extract_aggregate_filters(&agg.input)?;
 
             return Ok(vec![PhysicalTask {
                 tenant_id,
@@ -275,6 +270,50 @@ impl PlanConverter {
                 sub_aggregates: Vec::new(),
             }),
         }])
+    }
+}
+
+/// Extract filters from an aggregate's input plan.
+///
+/// Handles all shapes DataFusion may produce:
+/// - `Filter(TableScan)` — explicit filter node
+/// - `TableScan{filters:[...]}` — pushed-down predicates
+/// - `Filter(TableScan{filters:[...]})` — both
+/// - `SubqueryAlias(Filter(...))` — alias wrappers
+///
+/// Returns `((min_ts, max_ts), serialized_non_timestamp_filters)`.
+fn extract_aggregate_filters(
+    input: &datafusion::logical_expr::LogicalPlan,
+) -> crate::Result<((i64, i64), Vec<u8>)> {
+    let mut all_filter_exprs: Vec<Expr> = Vec::new();
+
+    collect_filter_exprs(input, &mut all_filter_exprs);
+
+    if all_filter_exprs.is_empty() {
+        return Ok(((0i64, i64::MAX), Vec::new()));
+    }
+
+    extract_timeseries_filters(&all_filter_exprs)
+}
+
+/// Recursively collect filter expressions from a plan tree.
+fn collect_filter_exprs(plan: &datafusion::logical_expr::LogicalPlan, out: &mut Vec<Expr>) {
+    use datafusion::logical_expr::LogicalPlan;
+    match plan {
+        LogicalPlan::Filter(filter) => {
+            out.push(filter.predicate.clone());
+            collect_filter_exprs(&filter.input, out);
+        }
+        LogicalPlan::TableScan(scan) => {
+            out.extend(scan.filters.iter().cloned());
+        }
+        LogicalPlan::SubqueryAlias(alias) => {
+            collect_filter_exprs(&alias.input, out);
+        }
+        LogicalPlan::Projection(proj) => {
+            collect_filter_exprs(&proj.input, out);
+        }
+        _ => {}
     }
 }
 

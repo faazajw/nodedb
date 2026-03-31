@@ -76,6 +76,40 @@ fn ts_scan(
     serde_json::from_slice(&raw).unwrap_or_default()
 }
 
+fn ts_scan_filtered(
+    core: &mut nodedb::data::executor::core_loop::CoreLoop,
+    tx: &mut nodedb_bridge::buffer::Producer<nodedb::bridge::dispatch::BridgeRequest>,
+    rx: &mut nodedb_bridge::buffer::Consumer<nodedb::bridge::dispatch::BridgeResponse>,
+    collection: &str,
+    group_by: Vec<String>,
+    aggregates: Vec<(String, String)>,
+    bucket_interval_ms: i64,
+    filters: Vec<nodedb::bridge::scan_filter::ScanFilter>,
+) -> Vec<serde_json::Value> {
+    let filter_bytes = if filters.is_empty() {
+        Vec::new()
+    } else {
+        rmp_serde::to_vec_named(&filters).unwrap_or_default()
+    };
+    let raw = send_ok(
+        core,
+        tx,
+        rx,
+        PhysicalPlan::Timeseries(TimeseriesOp::Scan {
+            collection: collection.to_string(),
+            time_range: (0, i64::MAX),
+            projection: Vec::new(),
+            limit: usize::MAX,
+            filters: filter_bytes,
+            bucket_interval_ms,
+            group_by,
+            aggregates,
+            rls_filters: Vec::new(),
+        }),
+    );
+    serde_json::from_slice(&raw).unwrap_or_default()
+}
+
 // ---------------------------------------------------------------------------
 // #6 — Query reads all data (memtable + disk partitions)
 // ---------------------------------------------------------------------------
@@ -200,6 +234,50 @@ fn time_bucket_with_named_value_column() {
         let avg = r["avg_elapsed_ms"].as_f64();
         assert!(avg.is_some(), "avg should be present: {r}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// #6 (cont.) — WHERE predicates filter aggregate results
+// ---------------------------------------------------------------------------
+
+#[test]
+fn where_predicate_filters_count() {
+    let (mut core, mut tx, mut rx) = make_core();
+
+    let payload = ilp_lines("dns_filt", 1_000, 1_700_000_000_000_000_000);
+    ingest_ilp(&mut core, &mut tx, &mut rx, "dns_filt", &payload);
+
+    // Unfiltered COUNT(*) = 1000.
+    let all = ts_scan(
+        &mut core,
+        &mut tx,
+        &mut rx,
+        "dns_filt",
+        Vec::new(),
+        vec![("count".into(), "*".into())],
+        0,
+    );
+    let total = all[0]["count_all"].as_u64().unwrap();
+    assert_eq!(total, 1_000);
+
+    // Filtered: qtype = 'A' → 25% of rows (4 qtypes, round-robin).
+    let filtered = ts_scan_filtered(
+        &mut core,
+        &mut tx,
+        &mut rx,
+        "dns_filt",
+        Vec::new(),
+        vec![("count".into(), "*".into())],
+        0,
+        vec![nodedb::bridge::scan_filter::ScanFilter {
+            field: "qtype".into(),
+            op: "eq".into(),
+            value: serde_json::json!("A"),
+            clauses: vec![],
+        }],
+    );
+    let filtered_count = filtered[0]["count_all"].as_u64().unwrap();
+    assert_eq!(filtered_count, 250, "WHERE qtype='A' should return 25%");
 }
 
 // ---------------------------------------------------------------------------
