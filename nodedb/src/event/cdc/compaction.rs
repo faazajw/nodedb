@@ -93,6 +93,7 @@ mod tests {
             tenant_id: 1,
             new_value: Some(serde_json::json!({"id": key_val, "name": format!("v{seq}")})),
             old_value: None,
+            schema_version: 0,
         }
     }
 

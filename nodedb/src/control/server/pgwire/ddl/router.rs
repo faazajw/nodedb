@@ -163,6 +163,13 @@ pub async fn dispatch(
         ));
     }
 
+    // Streaming materialized views: CREATE MATERIALIZED VIEW ... STREAMING AS ...
+    if upper.starts_with("CREATE MATERIALIZED VIEW ") && upper.contains(" STREAMING ") {
+        return Some(super::streaming_mv::create_streaming_mv(
+            state, identity, sql,
+        ));
+    }
+
     // Topics: CREATE/DROP/SHOW TOPIC + PUBLISH TO
     if upper.starts_with("CREATE TOPIC ") {
         return Some(super::topic::create_topic(state, identity, &parts, sql));

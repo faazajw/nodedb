@@ -75,6 +75,10 @@ impl CdcRouter {
                 tenant_id: event.tenant_id.as_u32(),
                 new_value: new_value.clone(),
                 old_value: old_value.clone(),
+                // Schema version: 0 = unversioned. A full schema version system
+                // (ALTER TABLE bumps version, emits SchemaChangeEvent) is future work.
+                // The field is present so consumers can detect changes when implemented.
+                schema_version: 0,
             };
 
             let buffer = self.get_or_create_buffer(def.tenant_id, &def.name, &def.retention);

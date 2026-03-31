@@ -29,6 +29,8 @@ pub struct NodeDbSchemaProvider {
     stream_registry: Arc<crate::event::cdc::StreamRegistry>,
     /// CDC router for accessing stream buffers.
     cdc_router: Arc<crate::event::cdc::CdcRouter>,
+    /// Streaming MV registry for resolving MV names as virtual tables.
+    mv_registry: Arc<crate::event::streaming_mv::MvRegistry>,
 }
 
 impl std::fmt::Debug for NodeDbSchemaProvider {
@@ -45,12 +47,14 @@ impl NodeDbSchemaProvider {
         tenant_id: u32,
         stream_registry: Arc<crate::event::cdc::StreamRegistry>,
         cdc_router: Arc<crate::event::cdc::CdcRouter>,
+        mv_registry: Arc<crate::event::streaming_mv::MvRegistry>,
     ) -> Self {
         Self {
             credentials,
             tenant_id,
             stream_registry,
             cdc_router,
+            mv_registry,
         }
     }
 
@@ -81,13 +85,21 @@ impl SchemaProvider for NodeDbSchemaProvider {
         for stream in self.stream_registry.list_for_tenant(self.tenant_id) {
             names.push(stream.name);
         }
+        // Include streaming MV names as virtual tables.
+        for mv in self.mv_registry.list_for_tenant(self.tenant_id) {
+            names.push(mv.name);
+        }
         names
     }
 
     fn table_exist(&self, name: &str) -> bool {
         let name = name.to_lowercase();
         let name = name.as_str();
-        // Check change streams first.
+        // Check streaming MVs.
+        if self.mv_registry.get_def(self.tenant_id, name).is_some() {
+            return true;
+        }
+        // Check change streams.
         if self.stream_registry.get(self.tenant_id, name).is_some() {
             return true;
         }
@@ -106,6 +118,19 @@ impl SchemaProvider for NodeDbSchemaProvider {
     async fn table(&self, name: &str) -> datafusion::error::Result<Option<Arc<dyn TableProvider>>> {
         let name = name.to_lowercase();
         let name = name.as_str();
+
+        // Check if this is a streaming MV — return a MemTable with aggregate results.
+        if let Some(mv_state) = self.mv_registry.get_state(self.tenant_id, name) {
+            let schema = crate::event::streaming_mv::query::mv_result_schema(&mv_state);
+            let batches =
+                match crate::event::streaming_mv::query::mv_state_to_record_batch(&mv_state) {
+                    Some(batch) => vec![vec![batch]],
+                    None => vec![vec![]],
+                };
+            let mem_table = datafusion::datasource::MemTable::try_new(schema, batches)
+                .map_err(|e| DataFusionError::External(Box::new(e)))?;
+            return Ok(Some(Arc::new(mem_table)));
+        }
 
         // Check if this is a change stream — return a MemTable backed by buffer events.
         if self.stream_registry.get(self.tenant_id, name).is_some()

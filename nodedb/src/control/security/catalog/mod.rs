@@ -15,6 +15,7 @@ pub mod procedures;
 pub mod schedules;
 pub mod scopes;
 pub mod security;
+pub mod streaming_mvs;
 pub mod topics;
 pub mod trigger_types;
 pub mod triggers;

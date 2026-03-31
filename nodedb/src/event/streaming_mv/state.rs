@@ -1,0 +1,170 @@
+//! Per-MV, per-group-key partial aggregate state.
+//!
+//! Supports incremental updates: each incoming event updates only the
+//! affected group key's state. O(1) per event, not O(N) rescan.
+//!
+//! State is stored in-memory (HashMap) and persisted to redb periodically.
+
+use std::collections::HashMap;
+use std::sync::RwLock;
+
+use serde::{Deserialize, Serialize};
+
+use super::types::{AggDef, AggFunction};
+
+/// Partial aggregate state for one group key.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GroupState {
+    pub count: u64,
+    pub sum: f64,
+    pub min: Option<f64>,
+    pub max: Option<f64>,
+}
+
+impl GroupState {
+    /// Update this state with a new value.
+    pub fn update(&mut self, value: f64) {
+        self.count += 1;
+        self.sum += value;
+        self.min = Some(self.min.map_or(value, |m| m.min(value)));
+        self.max = Some(self.max.map_or(value, |m| m.max(value)));
+    }
+
+    /// Compute a specific aggregate from this state.
+    pub fn compute(&self, func: AggFunction) -> f64 {
+        match func {
+            AggFunction::Count => self.count as f64,
+            AggFunction::Sum => self.sum,
+            AggFunction::Min => self.min.unwrap_or(0.0),
+            AggFunction::Max => self.max.unwrap_or(0.0),
+            AggFunction::Avg => {
+                if self.count > 0 {
+                    self.sum / self.count as f64
+                } else {
+                    0.0
+                }
+            }
+        }
+    }
+}
+
+/// In-memory aggregate state for one streaming MV.
+///
+/// Maps group_key (concatenated GROUP BY values) → per-aggregate-column state.
+pub struct MvState {
+    /// MV name.
+    pub name: String,
+    /// GROUP BY column names.
+    pub group_by_columns: Vec<String>,
+    /// Aggregate definitions.
+    pub aggregates: Vec<AggDef>,
+    /// group_key → { agg_index → GroupState }.
+    groups: RwLock<HashMap<String, Vec<GroupState>>>,
+}
+
+impl MvState {
+    pub fn new(name: String, group_by_columns: Vec<String>, aggregates: Vec<AggDef>) -> Self {
+        Self {
+            name,
+            group_by_columns,
+            aggregates,
+            groups: RwLock::new(HashMap::new()),
+        }
+    }
+
+    /// Update the MV state with a new event.
+    ///
+    /// `group_key` is the concatenated GROUP BY values (e.g., "INSERT" or "orders:INSERT").
+    /// `agg_values` is one value per aggregate definition (NaN if not applicable).
+    pub fn update(&self, group_key: &str, agg_values: &[f64]) {
+        let mut groups = self.groups.write().unwrap_or_else(|p| p.into_inner());
+        let states = groups
+            .entry(group_key.to_string())
+            .or_insert_with(|| vec![GroupState::default(); self.aggregates.len()]);
+
+        for (i, &value) in agg_values.iter().enumerate() {
+            if i < states.len() && !value.is_nan() {
+                states[i].update(value);
+            }
+        }
+    }
+
+    /// Read the current aggregate results.
+    ///
+    /// Returns: Vec<(group_key, Vec<(agg_name, value)>)>
+    pub fn read_results(&self) -> Vec<(String, Vec<(String, f64)>)> {
+        let groups = self.groups.read().unwrap_or_else(|p| p.into_inner());
+        let mut results: Vec<(String, Vec<(String, f64)>)> = groups
+            .iter()
+            .map(|(key, states)| {
+                let values: Vec<(String, f64)> = self
+                    .aggregates
+                    .iter()
+                    .enumerate()
+                    .map(|(i, agg)| {
+                        let val = if i < states.len() {
+                            states[i].compute(agg.function)
+                        } else {
+                            0.0
+                        };
+                        (agg.output_name.clone(), val)
+                    })
+                    .collect();
+                (key.clone(), values)
+            })
+            .collect();
+        results.sort_by(|a, b| a.0.cmp(&b.0));
+        results
+    }
+
+    /// Number of distinct group keys.
+    pub fn group_count(&self) -> usize {
+        let groups = self.groups.read().unwrap_or_else(|p| p.into_inner());
+        groups.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn group_state_incremental() {
+        let mut gs = GroupState::default();
+        gs.update(10.0);
+        gs.update(20.0);
+        gs.update(5.0);
+
+        assert_eq!(gs.count, 3);
+        assert_eq!(gs.sum, 35.0);
+        assert_eq!(gs.min, Some(5.0));
+        assert_eq!(gs.max, Some(20.0));
+        assert!((gs.compute(AggFunction::Avg) - 11.666666).abs() < 0.01);
+    }
+
+    #[test]
+    fn mv_state_update_and_read() {
+        let state = MvState::new(
+            "test_mv".into(),
+            vec!["event_type".into()],
+            vec![AggDef {
+                output_name: "cnt".into(),
+                function: AggFunction::Count,
+                input_expr: String::new(),
+            }],
+        );
+
+        state.update("INSERT", &[1.0]);
+        state.update("INSERT", &[1.0]);
+        state.update("UPDATE", &[1.0]);
+
+        let results = state.read_results();
+        assert_eq!(results.len(), 2);
+
+        let insert_row = results.iter().find(|(k, _)| k == "INSERT").unwrap();
+        assert_eq!(insert_row.1[0].1, 2.0); // COUNT = 2
+
+        let update_row = results.iter().find(|(k, _)| k == "UPDATE").unwrap();
+        assert_eq!(update_row.1[0].1, 1.0); // COUNT = 1
+    }
+}

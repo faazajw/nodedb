@@ -52,6 +52,7 @@ pub fn publish_to_topic(
         tenant_id,
         new_value: Some(value),
         old_value: None,
+        schema_version: 0,
     };
 
     buffer.push(event);

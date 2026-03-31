@@ -63,6 +63,10 @@ pub(super) const SCHEDULES: TableDefinition<&str, &[u8]> =
 pub(super) const TOPICS_EP: TableDefinition<&str, &[u8]> =
     TableDefinition::new("_system.topics_ep");
 
+/// Table: "{tenant_id}:{mv_name}" -> MessagePack-serialized StreamingMvDef.
+pub(super) const STREAMING_MVS: TableDefinition<&str, &[u8]> =
+    TableDefinition::new("_system.streaming_mvs");
+
 /// Table: "{tenant_id}:{name}" -> MessagePack-serialized stored procedure definition.
 pub(super) const PROCEDURES: TableDefinition<&str, &[u8]> =
     TableDefinition::new("_system.procedures");
@@ -485,6 +489,9 @@ impl SystemCatalog {
             let _ = write_txn
                 .open_table(TOPICS_EP)
                 .map_err(|e| catalog_err("init topics_ep table", e))?;
+            let _ = write_txn
+                .open_table(STREAMING_MVS)
+                .map_err(|e| catalog_err("init streaming_mvs table", e))?;
         }
         write_txn
             .commit()

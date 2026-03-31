@@ -4,6 +4,7 @@ pub mod consumer;
 pub mod metrics;
 pub mod plane;
 pub mod scheduler;
+pub mod streaming_mv;
 #[cfg(test)]
 mod test_utils;
 pub mod topic;

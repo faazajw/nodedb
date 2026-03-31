@@ -79,10 +79,11 @@ impl QueryContext {
             tenant_id,
             Arc::clone(&state.stream_registry),
             Arc::clone(&state.cdc_router),
+            Arc::clone(&state.mv_registry),
         )
     }
 
-    /// Create a query context with catalog + stream integration.
+    /// Create a query context with catalog + stream + MV integration.
     ///
     /// Prefer `for_state()` when SharedState is available.
     pub fn with_catalog(
@@ -90,6 +91,7 @@ impl QueryContext {
         tenant_id: u32,
         stream_registry: Arc<crate::event::cdc::StreamRegistry>,
         cdc_router: Arc<crate::event::cdc::CdcRouter>,
+        mv_registry: Arc<crate::event::streaming_mv::MvRegistry>,
     ) -> Self {
         let config = SessionConfig::new()
             .with_information_schema(false)
@@ -108,6 +110,7 @@ impl QueryContext {
             tenant_id,
             stream_registry,
             cdc_router,
+            mv_registry,
         ));
         let catalog = MemoryCatalogProvider::new();
         catalog

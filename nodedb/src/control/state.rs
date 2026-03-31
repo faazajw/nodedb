@@ -190,6 +190,9 @@ pub struct SharedState {
     /// Webhook delivery manager for CDC change streams.
     pub webhook_manager: crate::event::webhook::WebhookManager,
 
+    /// Streaming materialized view registry.
+    pub mv_registry: Arc<crate::event::streaming_mv::MvRegistry>,
+
     /// Total connections rejected due to max_connections limit (monotonic counter).
     pub connections_rejected: AtomicU64,
 
@@ -328,6 +331,7 @@ impl SharedState {
                 std::mem::forget(_tx);
                 crate::event::webhook::WebhookManager::new(rx)
             },
+            mv_registry: Arc::new(crate::event::streaming_mv::MvRegistry::new()),
             connections_rejected: AtomicU64::new(0),
             connections_accepted: AtomicU64::new(0),
             system_metrics: Some(Arc::new(crate::control::metrics::SystemMetrics::new())),
@@ -365,6 +369,7 @@ impl SharedState {
         let group_registry = crate::event::cdc::GroupRegistry::new();
         let schedule_registry = Arc::new(crate::event::scheduler::ScheduleRegistry::new());
         let ep_topic_registry = crate::event::topic::EpTopicRegistry::new();
+        let mv_registry = Arc::new(crate::event::streaming_mv::MvRegistry::new());
         let mut audit_start_seq = 1u64;
         if let Some(catalog) = credentials.catalog() {
             api_keys.load_from(catalog)?;
@@ -376,6 +381,7 @@ impl SharedState {
             group_registry.load_from_catalog(catalog);
             schedule_registry.load_from_catalog(catalog);
             ep_topic_registry.load_from_catalog(catalog);
+            mv_registry.load_from_catalog(catalog);
             let max_seq = catalog.load_audit_max_seq()?;
             if max_seq > 0 {
                 audit_start_seq = max_seq + 1;
@@ -414,6 +420,7 @@ impl SharedState {
                 std::mem::forget(_tx);
                 crate::event::webhook::WebhookManager::new(rx)
             },
+            mv_registry,
             tenants: Mutex::new(TenantIsolation::new(TenantQuota::default())),
             cluster_topology: None,
             cluster_routing: None,

@@ -236,6 +236,7 @@ mod tests {
             tenant_id: 1,
             new_value: None,
             old_value: None,
+            schema_version: 0,
         }
     }
 

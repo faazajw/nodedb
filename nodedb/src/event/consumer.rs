@@ -168,6 +168,18 @@ async fn consumer_loop(config: ConsumerConfig, metrics: Arc<CoreMetrics>) {
                         )
                         .await;
                         cdc_router.route_event(event);
+                        // Update streaming MVs: find streams that matched this event,
+                        // then process MVs sourced from those streams.
+                        let matching_streams = shared_state
+                            .stream_registry
+                            .find_matching(event.tenant_id.as_u32(), &event.collection);
+                        for stream_def in &matching_streams {
+                            super::streaming_mv::processor::process_write_event_for_mvs(
+                                event,
+                                &shared_state.mv_registry,
+                                &stream_def.name,
+                            );
+                        }
                     }
 
                     trace!(core_id, batch_count, "event batch processed");

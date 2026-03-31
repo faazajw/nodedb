@@ -31,6 +31,11 @@ pub struct CdcEvent {
     /// Old row value (for UPDATE and DELETE). JSON bytes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub old_value: Option<serde_json::Value>,
+    /// Schema version of the collection at the time of the event.
+    /// Incremented on ALTER TABLE / schema changes. Consumers can detect
+    /// schema changes by watching this field.
+    #[serde(default)]
+    pub schema_version: u64,
 }
 
 impl CdcEvent {
@@ -62,6 +67,7 @@ mod tests {
             tenant_id: 1,
             new_value: Some(serde_json::json!({"id": 1, "total": 99.99})),
             old_value: None,
+            schema_version: 0,
         };
 
         let bytes = event.to_json_bytes();
@@ -84,6 +90,7 @@ mod tests {
             tenant_id: 1,
             new_value: Some(serde_json::json!({"name": "Alice"})),
             old_value: Some(serde_json::json!({"name": "Bob"})),
+            schema_version: 0,
         };
 
         let bytes = event.to_msgpack_bytes();

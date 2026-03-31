@@ -23,6 +23,7 @@ pub fn stream_event_schema() -> SchemaRef {
         Field::new("tenant_id", DataType::UInt32, false),
         Field::new("new_value", DataType::Utf8, true),
         Field::new("old_value", DataType::Utf8, true),
+        Field::new("schema_version", DataType::UInt64, false),
     ]))
 }
 
@@ -61,6 +62,7 @@ pub fn events_to_record_batch(events: &[CdcEvent]) -> Option<RecordBatch> {
                 .map(|v| serde_json::to_string(v).unwrap_or_default())
         })
         .collect();
+    let schema_versions: Vec<u64> = events.iter().map(|e| e.schema_version).collect();
 
     RecordBatch::try_new(
         schema,
@@ -75,6 +77,7 @@ pub fn events_to_record_batch(events: &[CdcEvent]) -> Option<RecordBatch> {
             Arc::new(UInt32Array::from(tenant_ids)),
             Arc::new(StringArray::from(new_values)),
             Arc::new(StringArray::from(old_values)),
+            Arc::new(UInt64Array::from(schema_versions)),
         ],
     )
     .ok()
@@ -87,7 +90,7 @@ mod tests {
     #[test]
     fn schema_has_expected_fields() {
         let schema = stream_event_schema();
-        assert_eq!(schema.fields().len(), 10);
+        assert_eq!(schema.fields().len(), 11);
         assert_eq!(schema.field(0).name(), "sequence");
         assert_eq!(schema.field(3).name(), "event_type");
         assert_eq!(schema.field(8).name(), "new_value");
@@ -113,6 +116,7 @@ mod tests {
                 tenant_id: 1,
                 new_value: Some(serde_json::json!({"total": 99})),
                 old_value: None,
+                schema_version: 0,
             },
             CdcEvent {
                 sequence: 2,
@@ -125,12 +129,13 @@ mod tests {
                 tenant_id: 1,
                 new_value: Some(serde_json::json!({"total": 50})),
                 old_value: Some(serde_json::json!({"total": 40})),
+                schema_version: 0,
             },
         ];
 
         let batch = events_to_record_batch(&events).unwrap();
         assert_eq!(batch.num_rows(), 2);
-        assert_eq!(batch.num_columns(), 10);
+        assert_eq!(batch.num_columns(), 11);
 
         let sequences = batch
             .column(0)
