@@ -265,6 +265,83 @@ WHERE ST_DWithin(geom, ST_Point(-73.98, 40.75), 1000)
 ORDER BY dist;
 ```
 
+### Triggers
+
+```sql
+-- Fire asynchronously after each insert (default, zero write-latency impact)
+CREATE TRIGGER notify_on_order AFTER INSERT ON orders FOR EACH ROW
+BEGIN
+    INSERT INTO notifications { user_id: NEW.customer_id, message: 'Order received' };
+END;
+
+-- Fire synchronously in the same transaction (ACID, adds trigger latency to writes)
+CREATE TRIGGER enforce_balance AFTER UPDATE ON accounts FOR EACH ROW
+WITH (EXECUTION = SYNC)
+BEGIN
+    IF NEW.balance < 0 THEN
+        RAISE EXCEPTION 'Balance cannot go negative';
+    END IF;
+END;
+```
+
+### User-Defined Functions
+
+```sql
+-- SQL expression function (inlined into query plans by the optimizer)
+CREATE FUNCTION full_name(first VARCHAR, last VARCHAR) RETURNS VARCHAR
+LANGUAGE SQL IMMUTABLE AS $$ first || ' ' || last $$;
+
+-- Use in queries
+SELECT full_name(first_name, last_name) AS name FROM users;
+
+-- Procedural function with BEGIN...END body
+CREATE FUNCTION tier_label(amount DECIMAL) RETURNS VARCHAR
+LANGUAGE SQL STABLE
+BEGIN
+    IF amount > 1000 THEN
+        RETURN 'premium';
+    ELSIF amount > 100 THEN
+        RETURN 'standard';
+    ELSE
+        RETURN 'basic';
+    END IF;
+END;
+```
+
+### Change Streams
+
+```sql
+-- Create a change stream with webhook delivery
+CREATE CHANGE STREAM order_changes
+ON orders
+WITH (
+    WEBHOOK_URL = 'https://hooks.example.com/orders',
+    WEBHOOK_SECRET = 'whsec_abc123'
+);
+
+-- Create a consumer group to track read offsets
+CREATE CONSUMER GROUP processors FOR STREAM order_changes;
+
+-- Commit an offset after processing
+COMMIT OFFSET FOR STREAM order_changes GROUP processors TO 42;
+
+-- Show all streams
+SHOW CHANGE STREAMS;
+```
+
+### Backup and Restore
+
+```sql
+-- Backup a tenant's data to a path (encrypted with AES-256-GCM)
+BACKUP TENANT acme TO '/backups/acme-2026-03-31.bak';
+
+-- Validate a backup without restoring
+RESTORE TENANT acme FROM '/backups/acme-2026-03-31.bak' DRY RUN;
+
+-- Restore
+RESTORE TENANT acme FROM '/backups/acme-2026-03-31.bak';
+```
+
 ## What's Next
 
 - [Architecture](architecture.md) — understand how the hybrid execution model works

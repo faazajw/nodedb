@@ -74,6 +74,14 @@ LEFT JOIN orders o ON u.id = o.user_id;
 
 -- Cross join
 SELECT * FROM sizes CROSS JOIN colors;
+
+-- Semi join (rows from left that have a match on the right)
+SELECT * FROM users u
+WHERE EXISTS (SELECT 1 FROM orders o WHERE o.user_id = u.id);
+
+-- Anti join (rows from left with no match on the right)
+SELECT * FROM users u
+WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.user_id = u.id);
 ```
 
 ### Window Functions
@@ -102,6 +110,16 @@ SELECT * FROM (SELECT id, name FROM users WHERE age > 30) AS mature_users;
 -- EXISTS
 SELECT * FROM users u
 WHERE EXISTS (SELECT 1 FROM orders o WHERE o.user_id = u.id);
+
+-- Recursive CTE (iterative fixed-point execution)
+WITH RECURSIVE subordinates AS (
+    SELECT id, name, manager_id FROM employees WHERE id = 'emp_root'
+    UNION ALL
+    SELECT e.id, e.name, e.manager_id
+    FROM employees e
+    JOIN subordinates s ON e.manager_id = s.id
+)
+SELECT * FROM subordinates;
 ```
 
 ### Set Operations
@@ -270,6 +288,174 @@ CONVERT COLLECTION metrics TO STORAGE='columnar' WITH (profile = 'timeseries');
 ```
 
 `CONVERT COLLECTION` works for document, strict, and kv targets. Columnar conversions re-encode existing data into compressed segments.
+
+### Triggers
+
+```sql
+-- ASYNC (default): fires after commit via the Event Plane, zero write-latency impact
+CREATE TRIGGER notify_shipped AFTER INSERT ON orders FOR EACH ROW
+BEGIN
+    INSERT INTO notifications { user_id: NEW.customer_id, message: 'Order placed' };
+END;
+
+-- SYNC: fires in the same transaction on the Data Plane (ACID, adds trigger latency)
+CREATE TRIGGER enforce_balance AFTER UPDATE ON accounts FOR EACH ROW
+WITH (EXECUTION = SYNC)
+BEGIN
+    IF NEW.balance < 0 THEN
+        RAISE EXCEPTION 'Balance cannot go negative';
+    END IF;
+END;
+
+-- DEFERRED: fires at COMMIT time, batched (ACID)
+CREATE TRIGGER validate_totals AFTER INSERT ON line_items FOR EACH ROW
+WITH (EXECUTION = DEFERRED)
+BEGIN
+    -- validation logic
+END;
+
+DROP TRIGGER notify_shipped ON orders;
+SHOW TRIGGERS;
+```
+
+| Execution mode | Where | Atomicity | Write latency impact | Rollback on failure |
+| -------------- | ----- | --------- | -------------------- | ------------------- |
+| `ASYNC` (default) | Event Plane | Eventually consistent | None | No — original write committed |
+| `SYNC` | Data Plane | Same transaction (ACID) | Trigger time added | Yes |
+| `DEFERRED` | Data Plane at COMMIT | Same transaction, batched | At COMMIT time | Yes |
+
+### Stored Procedures
+
+```sql
+-- Create or replace
+CREATE OR REPLACE PROCEDURE transfer_funds(from_id UUID, to_id UUID, amount DECIMAL)
+WITH (TIMEOUT = '5s', MAX_ITERATIONS = 1000)
+SECURITY DEFINER
+BEGIN
+    DECLARE balance DECIMAL;
+    SELECT balance INTO balance FROM accounts WHERE id = from_id;
+    IF balance < amount THEN
+        RAISE EXCEPTION 'Insufficient funds';
+    END IF;
+    UPDATE accounts SET balance = balance - amount WHERE id = from_id;
+    UPDATE accounts SET balance = balance + amount WHERE id = to_id;
+END;
+
+-- Call
+CALL transfer_funds('acc_a', 'acc_b', 50.00);
+
+-- Drop
+DROP PROCEDURE transfer_funds;
+
+-- List
+SHOW PROCEDURES;
+```
+
+### User-Defined Functions
+
+```sql
+-- SQL expression body (inlined into query plans by the optimizer — zero overhead)
+CREATE OR REPLACE FUNCTION full_name(first VARCHAR, last VARCHAR)
+RETURNS VARCHAR LANGUAGE SQL IMMUTABLE
+AS $$ first || ' ' || last $$;
+
+-- Procedural body
+CREATE OR REPLACE FUNCTION tier_label(amount DECIMAL)
+RETURNS VARCHAR LANGUAGE SQL STABLE
+BEGIN
+    IF amount > 1000 THEN
+        RETURN 'premium';
+    ELSIF amount > 100 THEN
+        RETURN 'standard';
+    ELSE
+        RETURN 'basic';
+    END IF;
+END;
+
+-- Volatility levels
+-- IMMUTABLE: same inputs always produce same output (safe to fold at plan time)
+-- STABLE: consistent within a single query (safe to push down)
+-- VOLATILE: may change on each call (default)
+
+-- Grant execute permission
+GRANT EXECUTE ON FUNCTION full_name TO analyst;
+
+-- Drop
+DROP FUNCTION full_name;
+
+-- List
+SHOW FUNCTIONS;
+```
+
+### Change Streams
+
+```sql
+-- Basic change stream
+CREATE CHANGE STREAM order_changes ON orders;
+
+-- With webhook delivery
+CREATE CHANGE STREAM order_events ON orders
+WITH (
+    WEBHOOK_URL = 'https://hooks.example.com/orders',
+    WEBHOOK_SECRET = 'whsec_abc123'
+);
+
+-- With log compaction (keeps only the latest value per key field)
+CREATE CHANGE STREAM user_state ON users
+WITH (COMPACTION = 'key', KEY = 'id');
+
+DROP CHANGE STREAM order_changes;
+SHOW CHANGE STREAMS;
+```
+
+### Consumer Groups
+
+```sql
+-- Create a consumer group to track read position in a change stream
+CREATE CONSUMER GROUP processors FOR STREAM order_changes;
+
+-- Acknowledge processed offset
+COMMIT OFFSET FOR STREAM order_changes GROUP processors TO 42;
+
+DROP CONSUMER GROUP processors FOR STREAM order_changes;
+```
+
+### Durable Topics
+
+```sql
+-- Create a durable topic backed by a change stream
+CREATE TOPIC order_events ON STREAM order_changes;
+
+DROP TOPIC order_events;
+```
+
+### Cron Scheduler
+
+```sql
+-- Run a SQL block on a cron schedule
+CREATE SCHEDULE nightly_cleanup
+CRON '0 2 * * *'
+AS BEGIN
+    DELETE FROM sessions WHERE expires_at < now();
+    INSERT INTO maintenance_log { task: 'nightly_cleanup', ran_at: now() };
+END;
+
+DROP SCHEDULE nightly_cleanup;
+SHOW SCHEDULES;
+```
+
+### Backup and Restore
+
+```sql
+-- Backup a tenant (encrypted with AES-256-GCM, serialized as MessagePack)
+BACKUP TENANT acme TO '/backups/acme-2026-03-31.bak';
+
+-- Validate without restoring
+RESTORE TENANT acme FROM '/backups/acme-2026-03-31.bak' DRY RUN;
+
+-- Restore
+RESTORE TENANT acme FROM '/backups/acme-2026-03-31.bak';
+```
 
 ### Indexes
 
@@ -591,7 +777,7 @@ SHOW USERS;
 
 | Feature                       | Status        | Reason                                                                                                                                                                                                                                                                                                                              |
 | ----------------------------- | ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `WITH RECURSIVE`              | Not supported | NodeDB has a native graph engine with `GRAPH TRAVERSE`, `GRAPH PATH`, and 13 built-in algorithms (PageRank, SSSP, etc.) that handle recursive traversal far more efficiently than SQL recursion. Use those instead.                                                                                                                 |
+| `WITH RECURSIVE`              | Supported     | Iterative fixed-point execution. For graph traversal, the native `GRAPH TRAVERSE`, `GRAPH PATH`, and algorithm functions remain more efficient.                                                                                                                                                                                      |
 | `UPDATE/DELETE ... JOIN`      | Not supported | The Data Plane executes mutations as single-collection atomic operations through the SPSC bridge. Multi-collection mutations would require cross-engine coordination that breaks the isolation model. Rewrite as a subquery: `DELETE FROM orders WHERE user_id IN (SELECT id FROM users WHERE ...)`.                                |
 | `FOREIGN KEY`                 | Not enforced  | In a distributed system with CRDT sync and eventual consistency at the edge, enforcing FK constraints across collections would require cross-shard coordination on every write — killing write throughput. CRDT constraint validation (UNIQUE, FK) is enforced at Raft commit time for synced collections, but not for general SQL. |
 | `COPY TO` (export)            | Not supported | The Data Plane is write-optimized with io_uring for ingest, but export requires serialization across all shards and cores. Use the HTTP API (`/query/stream`) for NDJSON export or query into Parquet via L2 cold storage.                                                                                                          |

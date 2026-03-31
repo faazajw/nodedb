@@ -130,6 +130,18 @@ DROP CONTINUOUS AGGREGATE cpu_hourly;
 
 The `refresh_interval` controls how often the engine checks for new data since the last watermark. Out-of-order data within the watermark window is handled automatically.
 
+Continuous aggregate refreshes can also be triggered from the cron scheduler:
+
+```sql
+CREATE SCHEDULE refresh_cpu_hourly
+CRON '*/5 * * * *'
+AS BEGIN
+    REFRESH CONTINUOUS AGGREGATE cpu_hourly;
+END;
+```
+
+This is useful when you want deterministic refresh timing rather than relying on the `refresh_interval` background timer. See [Real-Time Features](real-time.md#cron-scheduler) for the full cron scheduler reference.
+
 ## ILP Ingest (InfluxDB Line Protocol)
 
 NodeDB accepts metrics via the InfluxDB Line Protocol over TCP. ILP is **disabled by default** — enable it by setting a port:

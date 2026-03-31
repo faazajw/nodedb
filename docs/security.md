@@ -28,6 +28,35 @@ DEFINE RLS ON projects WHERE org_id = $auth.org_id;
 EXPLAIN PERMISSION SELECT ON orders FOR CURRENT USER;
 ```
 
+### Function and Procedure Permissions
+
+User-defined functions and stored procedures require an explicit `EXECUTE` grant before non-owner roles can call them.
+
+```sql
+-- Grant execute permission on a function
+GRANT EXECUTE ON FUNCTION full_name TO analyst;
+
+-- Grant execute permission on a procedure
+GRANT EXECUTE ON PROCEDURE transfer_funds TO accountant;
+
+-- Revoke
+REVOKE EXECUTE ON FUNCTION full_name FROM analyst;
+```
+
+Functions created with `SECURITY DEFINER` execute with the permissions of the function owner, not the caller. Use this only when the privilege escalation is intentional and the function body is fully trusted.
+
+### Tenant Backup and Restore
+
+`BACKUP TENANT` and `RESTORE TENANT` require the `BACKUP` privilege on the target tenant. Backups are encrypted with AES-256-GCM using the tenant's WAL key — restoring a backup to a different tenant requires re-keying.
+
+```sql
+-- Grant backup privilege
+GRANT BACKUP ON TENANT acme TO ops_user;
+
+-- Validate a backup before restoring (no data written)
+RESTORE TENANT acme FROM '/backups/acme.bak' DRY RUN;
+```
+
 ## Scopes and Organizations
 
 - **Scopes** — Define and grant fine-grained permissions with time-bound expiry and grace periods
