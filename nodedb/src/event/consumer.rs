@@ -202,6 +202,10 @@ async fn consumer_loop(config: ConsumerConfig, metrics: Arc<CoreMetrics>) {
                                 &stream_def.name,
                             );
                         }
+                        // CRDT sync: package outbound deltas for connected Lite devices.
+                        shared_state
+                            .delta_packager
+                            .package_and_enqueue(event, &shared_state.crdt_sync_delivery);
                     }
 
                     trace!(core_id, batch_count, "event batch processed");

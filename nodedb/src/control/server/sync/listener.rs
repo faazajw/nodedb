@@ -159,6 +159,12 @@ async fn handle_sync_session(
     let jwt_validator =
         crate::control::security::jwt::JwtValidator::new(state.config.jwt_config.clone());
 
+    // CRDT sync delivery: register after authentication, unregister on disconnect.
+    let mut crdt_delivery_rx: Option<
+        tokio::sync::mpsc::Receiver<crate::event::crdt_sync::types::OutboundDelta>,
+    > = None;
+    let mut crdt_registered = false;
+
     while let Some(msg_result) = ws.next().await {
         match msg_result {
             Ok(Message::Binary(data)) => {
@@ -265,10 +271,62 @@ async fn handle_sync_session(
             _ => {}
         }
 
+        // Register for CRDT sync delivery once authenticated.
+        if session.authenticated && !crdt_registered
+            && let Some(shared) = shared
+        {
+            let tenant_id = session.tenant_id.map(|t| t.as_u32()).unwrap_or(0);
+            let peer_id = session.device_metadata.peer_id;
+            let config = crate::event::crdt_sync::types::DeliveryConfig::default();
+            crdt_delivery_rx = Some(shared.crdt_sync_delivery.register(
+                session_id.clone(),
+                peer_id,
+                tenant_id,
+                Vec::new(), // All collections — shape filtering done at delivery level.
+                &config,
+            ));
+            crdt_registered = true;
+        }
+
+        // Drain outbound CRDT deltas and push to Lite device.
+        if let Some(ref mut rx) = crdt_delivery_rx {
+            while let Ok(delta) = rx.try_recv() {
+                let push_msg = nodedb_types::sync::wire::DeltaPushMsg {
+                    collection: delta.collection,
+                    document_id: delta.document_id,
+                    delta: delta.payload,
+                    peer_id: delta.peer_id,
+                    mutation_id: delta.sequence,
+                    checksum: 0,
+                };
+                if let Some(frame) = nodedb_types::sync::wire::SyncFrame::new_msgpack(
+                    nodedb_types::sync::wire::SyncMessageType::DeltaPush,
+                    &push_msg,
+                ) {
+                    use futures::SinkExt;
+                    use tokio_tungstenite::tungstenite::Message;
+                    if ws
+                        .send(Message::Binary(frame.to_bytes().into()))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            }
+        }
+
         if session.idle_secs() > state.config.idle_timeout_secs {
             info!(session = %session_id, "sync: idle timeout, closing");
             break;
         }
+    }
+
+    // Unregister from CRDT sync delivery.
+    if crdt_registered
+        && let Some(shared) = shared
+    {
+        shared.crdt_sync_delivery.unregister(&session_id);
     }
 
     info!(

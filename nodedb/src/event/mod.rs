@@ -2,6 +2,7 @@ pub mod budget;
 pub mod bus;
 pub mod cdc;
 pub mod consumer;
+pub mod crdt_sync;
 pub mod cross_shard;
 pub mod metrics;
 pub mod plane;

@@ -112,6 +112,15 @@ impl EventPlane {
             info!("cross-shard dispatcher task started");
         }
 
+        // Spawn CRDT sync delivery maintenance task.
+        let _crdt_sync_handle = super::crdt_sync::delivery::spawn_delivery_task(
+            Arc::clone(&shared_state.crdt_sync_delivery),
+            shutdown_rx.clone(),
+        );
+
+        // Set the origin peer ID for CRDT delta packaging.
+        super::crdt_sync::packager::set_origin_peer_id(shared_state.node_id);
+
         let plane = Self {
             consumers,
             watermark_store,

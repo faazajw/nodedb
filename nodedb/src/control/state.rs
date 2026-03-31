@@ -214,6 +214,12 @@ pub struct SharedState {
     /// Cross-shard high-water-mark dedup store (None in single-node mode).
     pub hwm_store: Option<Arc<crate::event::cross_shard::HwmStore>>,
 
+    /// CRDT sync delivery: pushes outbound deltas to connected Lite sessions.
+    pub crdt_sync_delivery: Arc<crate::event::crdt_sync::CrdtSyncDelivery>,
+
+    /// CRDT delta packager: converts WriteEvents to outbound deltas.
+    pub delta_packager: Arc<crate::event::crdt_sync::DeltaPackager>,
+
     /// Streaming MV state persistence (redb).
     pub mv_persistence: Arc<crate::event::streaming_mv::MvPersistence>,
 
@@ -367,6 +373,8 @@ impl SharedState {
             cross_shard_dlq: None,
             cross_shard_metrics: None,
             hwm_store: None,
+            crdt_sync_delivery: Arc::new(crate::event::crdt_sync::CrdtSyncDelivery::new()),
+            delta_packager: Arc::new(crate::event::crdt_sync::DeltaPackager::new()),
             mv_persistence: {
                 let dir = std::env::temp_dir().join(format!(
                     "nodedb-test-mvstate-{}-{}",
@@ -478,6 +486,8 @@ impl SharedState {
             cross_shard_dlq: None,
             cross_shard_metrics: None,
             hwm_store: None,
+            crdt_sync_delivery: Arc::new(crate::event::crdt_sync::CrdtSyncDelivery::new()),
+            delta_packager: Arc::new(crate::event::crdt_sync::DeltaPackager::new()),
             mv_persistence: Arc::new(crate::event::streaming_mv::MvPersistence::open(
                 catalog_path.parent().unwrap_or(std::path::Path::new(".")),
             )?),
