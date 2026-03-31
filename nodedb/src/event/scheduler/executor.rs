@@ -99,7 +99,7 @@ async fn scheduler_loop(
             // Check if this second matches the cron expression.
             // We check at second-level granularity but cron is minute-level,
             // so only fire at second 0 of each minute to prevent duplicate fires.
-            if now_secs % 60 != 0 {
+            if !now_secs.is_multiple_of(60) {
                 continue;
             }
 
