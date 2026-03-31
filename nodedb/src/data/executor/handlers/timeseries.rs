@@ -957,6 +957,17 @@ impl CoreLoop {
                         .get(collection)
                         .is_some_and(|mt| mt.schema().columns.len() != cols_before);
 
+                // Pre-flush: flush BEFORE ingesting if memtable is at the soft
+                // limit. Without this, the batch pushes the memtable past
+                // the hard_memory_limit (80MB), rows are rejected mid-batch,
+                // and end up in WAL but never in the memtable — causing
+                // silent undercounting on all queries until restart.
+                if let Some(mt) = self.columnar_memtables.get(collection)
+                    && mt.memory_bytes() >= 64 * 1024 * 1024
+                {
+                    self.flush_ts_collection(collection, now_ms);
+                }
+
                 let Some(mt) = self.columnar_memtables.get_mut(collection) else {
                     return self.response_error(
                         task,
@@ -969,7 +980,7 @@ impl CoreLoop {
                 let (accepted, rejected) =
                     ilp_ingest::ingest_batch(mt, &lines, &mut series_keys, now_ms);
 
-                // Check if memtable needs flushing.
+                // Post-flush: standard 64MB threshold check.
                 let Some(mt) = self.columnar_memtables.get(collection) else {
                     return self.response_error(
                         task,
@@ -1057,7 +1068,11 @@ impl CoreLoop {
             crate::engine::timeseries::columnar_segment::ColumnarSegmentWriter::new(&segment_dir);
         let partition_name = format!("ts-{}_{}", drain.min_ts, drain.max_ts);
 
-        match writer.write_partition(&partition_name, &drain, 0, 0) {
+        // Pass the current WAL watermark LSN so the partition records which
+        // WAL records have been flushed. This enables WAL GC: the checkpoint
+        // coordinator can safely truncate segments whose max LSN ≤ this value.
+        let flush_wal_lsn = self.watermark.as_u64();
+        match writer.write_partition(&partition_name, &drain, 0, flush_wal_lsn) {
             Ok(meta) => {
                 tracing::info!(
                     collection,

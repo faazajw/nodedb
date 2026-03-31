@@ -13,15 +13,21 @@ use crate::helpers::*;
 // ---------------------------------------------------------------------------
 
 /// Build an ILP payload with `count` lines for a given collection.
+///
+/// Generates wide rows (~10 columns, ~80 bytes each) to trigger memtable
+/// flushes faster. Each 64MB memtable holds ~840K wide rows.
 fn ilp_lines(collection: &str, count: usize, start_ts_ns: i64) -> String {
     let mut lines = String::new();
     let qtypes = ["A", "AAAA", "MX", "CNAME"];
+    let rcodes = ["NOERROR", "NXDOMAIN", "SERVFAIL", "REFUSED"];
     for i in 0..count {
         let ts_ns = start_ts_ns + i as i64 * 1_000_000; // 1ms apart
         let qtype = qtypes[i % qtypes.len()];
+        let rcode = rcodes[i % rcodes.len()];
         let qname = format!("host-{}.example.com", i % 50);
+        let client_ip = format!("10.0.{}.{}", (i / 256) % 256, i % 256);
         lines.push_str(&format!(
-            "{collection},qtype={qtype},qname={qname} elapsed_ms={}.0 {ts_ns}\n",
+            "{collection},qtype={qtype},rcode={rcode},qname={qname},client_ip={client_ip} elapsed_ms={}.0 {ts_ns}\n",
             (i % 1000) as f64
         ));
     }
@@ -118,18 +124,36 @@ fn ts_scan_filtered(
 fn count_star_sees_flushed_partitions() {
     let (mut core, mut tx, mut rx) = make_core();
 
-    // Ingest enough data to trigger a flush (>64 MiB).
-    // Use many small batches to stay under the hard limit.
-    let batch_size = 5_000;
-    let num_batches = 10;
-    let total_rows = batch_size * num_batches;
+    // Ingest enough wide rows to force multiple memtable flushes.
+    // Each row is ~7 columns × ~8 bytes = ~56 bytes of column data.
+    // 64MB / 56 = ~1.2M rows per flush. We send 3M rows to guarantee
+    // at least 2 flush cycles. Each batch is 10K rows.
+    let batch_size = 10_000;
+    let num_batches = 300;
+    let mut total_accepted: u64 = 0;
+    let mut total_rejected: u64 = 0;
+
     for b in 0..num_batches {
-        let start_ns = (b * batch_size) as i64 * 1_000_000_000;
+        let start_ns = (b * batch_size) as i64 * 1_000_000;
         let payload = ilp_lines("metrics", batch_size, start_ns);
-        ingest_ilp(&mut core, &mut tx, &mut rx, "metrics", &payload);
+        let resp = ingest_ilp(&mut core, &mut tx, &mut rx, "metrics", &payload);
+        total_accepted += resp["accepted"].as_u64().unwrap_or(0);
+        total_rejected += resp["rejected"].as_u64().unwrap_or(0);
     }
 
-    // COUNT(*) should return total rows (memtable + any flushed partitions).
+    let total_sent = (batch_size * num_batches) as u64;
+    assert_eq!(
+        total_rejected, 0,
+        "no rows should be rejected — pre-flush must prevent hard-limit rejections"
+    );
+    assert_eq!(
+        total_accepted, total_sent,
+        "all sent rows should be accepted by the Data Plane"
+    );
+
+    // COUNT(*) must equal total accepted (memtable + ALL flushed partitions).
+    // This catches: partition registry not populated, flush losing drain data,
+    // or query path not reading from all sources.
     let results = ts_scan(
         &mut core,
         &mut tx,
@@ -142,8 +166,9 @@ fn count_star_sees_flushed_partitions() {
     assert_eq!(results.len(), 1, "expected single aggregate row");
     let count = results[0]["count_all"].as_u64().unwrap_or(0);
     assert_eq!(
-        count, total_rows as u64,
-        "COUNT(*) should see all rows including flushed partitions"
+        count, total_accepted,
+        "COUNT(*) must see every accepted row — found {count}, expected {total_accepted}. \
+         If count < accepted, rows were lost during flush or partitions are invisible."
     );
 }
 
