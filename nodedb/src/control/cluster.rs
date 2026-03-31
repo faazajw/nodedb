@@ -259,6 +259,7 @@ impl nodedb_cluster::CommitApplier for SpscCommitApplier {
                         trace_id: 0,
                         consistency: crate::types::ReadConsistency::Strong,
                         idempotency_key: Some(entry.index),
+                        event_source: crate::event::EventSource::RaftFollower,
                     };
 
                     match self.shared.dispatcher.lock() {

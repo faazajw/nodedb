@@ -169,6 +169,7 @@ impl NodeDbPgHandler {
             trace_id: 0,
             consistency: ReadConsistency::Strong,
             idempotency_key: None,
+            event_source: crate::event::EventSource::User,
         };
 
         let rx = self.state.tracker.register_oneshot(request_id);

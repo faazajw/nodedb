@@ -76,6 +76,7 @@ impl From<Arc<[u8]>> for Payload {
         Self::Heap(a)
     }
 }
+use crate::event::types::EventSource;
 use crate::types::{Lsn, ReadConsistency, RequestId, TenantId, VShardId};
 
 /// Request envelope: Control Plane -> Data Plane.
@@ -112,6 +113,11 @@ pub struct Request {
     /// when the same key has already been processed (returns the
     /// cached response status).
     pub idempotency_key: Option<u64>,
+
+    /// Origin of this DML request. Propagated to the Data Plane so that
+    /// emitted WriteEvents carry the correct source tag. Trigger-generated
+    /// writes use `EventSource::Trigger` to prevent cascade re-triggering.
+    pub event_source: EventSource,
 }
 
 /// Response envelope: Data Plane -> Control Plane.
@@ -241,6 +247,7 @@ mod tests {
             trace_id: 0xABCD,
             consistency: ReadConsistency::Strong,
             idempotency_key: None,
+            event_source: crate::event::EventSource::User,
         }
     }
 
@@ -303,6 +310,7 @@ mod tests {
             trace_id: 0,
             consistency: ReadConsistency::Eventual,
             idempotency_key: None,
+            event_source: crate::event::EventSource::User,
         };
         match req.plan {
             PhysicalPlan::Meta(MetaOp::Cancel { target_request_id }) => {

@@ -39,6 +39,30 @@ pub async fn dispatch_to_data_plane(
     plan: PhysicalPlan,
     trace_id: u64,
 ) -> crate::Result<Response> {
+    dispatch_to_data_plane_with_source(
+        shared,
+        tenant_id,
+        vshard_id,
+        plan,
+        trace_id,
+        crate::event::EventSource::User,
+    )
+    .await
+}
+
+/// Dispatch a physical plan to the Data Plane with an explicit event source.
+///
+/// Trigger-generated writes pass `EventSource::Trigger` so the Data Plane
+/// emits WriteEvents with the correct source tag (preventing cascade
+/// re-triggering in the Event Plane).
+pub async fn dispatch_to_data_plane_with_source(
+    shared: &SharedState,
+    tenant_id: TenantId,
+    vshard_id: VShardId,
+    plan: PhysicalPlan,
+    trace_id: u64,
+    event_source: crate::event::EventSource,
+) -> crate::Result<Response> {
     // Extract write metadata before the plan is moved into the request.
     let is_columnar_collection = matches!(
         &plan,
@@ -59,6 +83,7 @@ pub async fn dispatch_to_data_plane(
         trace_id,
         consistency: ReadConsistency::Strong,
         idempotency_key: None,
+        event_source,
     };
 
     let mut rx = shared.tracker.register(request_id);

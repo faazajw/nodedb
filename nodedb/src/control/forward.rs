@@ -82,6 +82,7 @@ impl RequestForwarder for LocalForwarder {
                 trace_id: req.trace_id,
                 consistency: ReadConsistency::Strong,
                 idempotency_key: None,
+                event_source: crate::event::EventSource::User,
             };
 
             let rx = self.state.tracker.register_oneshot(request_id);

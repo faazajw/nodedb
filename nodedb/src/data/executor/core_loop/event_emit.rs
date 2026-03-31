@@ -38,7 +38,7 @@ impl CoreLoop {
             lsn: self.watermark,
             tenant_id: task.request.tenant_id,
             vshard_id: task.request.vshard_id,
-            source: crate::event::EventSource::User,
+            source: task.request.event_source,
             new_value: new_value.map(Arc::from),
             old_value: old_value.map(Arc::from),
         };

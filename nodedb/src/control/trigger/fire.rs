@@ -217,7 +217,13 @@ pub async fn fire_sql(
         }
     })?;
 
-    let executor = StatementExecutor::new(state, identity.clone(), tenant_id, cascade_depth);
+    let executor = StatementExecutor::with_source(
+        state,
+        identity.clone(),
+        tenant_id,
+        cascade_depth,
+        crate::event::EventSource::Trigger,
+    );
     let bindings = RowBindings::empty();
 
     executor
@@ -258,8 +264,13 @@ async fn fire_triggers(
             }
         };
 
-        let executor =
-            StatementExecutor::new(state, identity.clone(), tenant_id, cascade_depth + 1);
+        let executor = StatementExecutor::with_source(
+            state,
+            identity.clone(),
+            tenant_id,
+            cascade_depth + 1,
+            crate::event::EventSource::Trigger,
+        );
 
         if let Err(e) = executor.execute_block(&block, bindings).await {
             return Err(crate::Error::BadRequest {

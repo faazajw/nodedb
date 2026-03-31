@@ -184,6 +184,7 @@ impl CoreLoop {
             trace_id: 0,
             consistency: crate::types::ReadConsistency::Strong,
             idempotency_key: None,
+            event_source: crate::event::EventSource::User,
         });
 
         match plan {
@@ -356,6 +357,7 @@ impl CoreLoop {
                     trace_id: 0,
                     consistency: crate::types::ReadConsistency::Strong,
                     idempotency_key: None,
+                    event_source: crate::event::EventSource::User,
                 }));
                 if resp.status == Status::Error {
                     return Err(resp.error_code.unwrap_or(ErrorCode::Internal {
