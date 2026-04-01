@@ -1,4 +1,5 @@
 mod cursor;
+pub mod cursor_spill;
 mod live;
 mod params;
 mod state;

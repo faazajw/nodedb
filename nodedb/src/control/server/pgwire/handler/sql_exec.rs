@@ -260,6 +260,15 @@ impl NodeDbPgHandler {
                     .await
                 {
                     Ok(rows) => {
+                        // Enforce cursor memory limit.
+                        let spill_config =
+                            super::super::session::cursor_spill::CursorSpillConfig::default();
+                        let (rows, _truncated) =
+                            super::super::session::cursor_spill::enforce_cursor_limit(
+                                rows,
+                                &spill_config,
+                            );
+
                         self.sessions.declare_cursor(
                             addr,
                             cursor_name,
