@@ -40,6 +40,16 @@ impl NodeDbPgHandler {
         // Build the final SQL by substituting parameter values.
         let final_sql = substitute_params(&stmt.sql, &portal.parameters, &stmt.param_types)?;
 
+        // Bind-time specialization: detect partition-prunable patterns in the
+        // substituted SQL. These hints are logged as trace spans and can be used
+        // by the planner for optimization (e.g., timeseries partition pruning).
+        if final_sql.contains(" > ") || final_sql.contains(" >= ") || final_sql.contains(" < ") {
+            tracing::trace!(
+                sql = %final_sql,
+                "bind-time specialization: range predicate detected — partition pruning candidate"
+            );
+        }
+
         // Execute through the standard path (DDL dispatch, transaction handling,
         // permission checks, quota, plan, dispatch).
         let mut results = self.execute_sql(&identity, &addr, &final_sql).await?;
