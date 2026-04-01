@@ -1,3 +1,4 @@
+pub mod batch_distance;
 pub mod build;
 pub mod distance;
 pub mod error;

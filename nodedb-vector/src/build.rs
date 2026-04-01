@@ -1,6 +1,5 @@
 //! HNSW insert algorithm (Malkov & Yashunin, Algorithm 1).
 
-use crate::distance::distance;
 use crate::error::VectorError;
 use crate::hnsw::{Candidate, HnswIndex, Node};
 use crate::search::search_layer;
@@ -121,15 +120,21 @@ fn select_neighbors_heuristic(
             break;
         }
 
-        let dist_to_query = candidate.dist;
-        let is_diverse = selected.iter().all(|s| {
-            let dist_to_selected = distance(
-                &index.nodes[candidate.id as usize].vector,
-                &index.nodes[s.id as usize].vector,
-                index.params.metric,
-            );
-            dist_to_query <= dist_to_selected
-        });
+        // Batch diversity check: compute distances from candidate to all
+        // selected neighbors and check if candidate is closer to query
+        // than to every selected neighbor.
+        let candidate_vec = &index.nodes[candidate.id as usize].vector;
+        let selected_vecs: Vec<&[f32]> = selected
+            .iter()
+            .map(|s| index.nodes[s.id as usize].vector.as_slice())
+            .collect();
+
+        let is_diverse = crate::batch_distance::is_diverse_batched(
+            candidate_vec,
+            candidate.dist,
+            &selected_vecs,
+            index.params.metric,
+        );
 
         if is_diverse {
             selected.push(*candidate);
