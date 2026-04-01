@@ -27,11 +27,9 @@ pub(super) fn validate_function_body(parsed: &ParsedCreateFunction) -> PgWireRes
         .with_default_catalog_and_schema("nodedb", "public");
     let ctx = SessionContext::new_with_config(config);
 
-    // Use a runtime to drive the async DataFusion call.
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| sqlstate_error("XX000", &format!("runtime: {e}")))?;
+    // Use the current tokio runtime handle to drive async DataFusion calls.
+    // block_in_place allows blocking the current thread inside a multi-thread runtime.
+    let handle = tokio::runtime::Handle::try_current().ok();
 
     // Register system UDFs so body can reference them.
     crate::control::planner::context::register_udfs_on(&ctx);
@@ -49,7 +47,7 @@ pub(super) fn validate_function_body(parsed: &ParsedCreateFunction) -> PgWireRes
             default_values_for_params(&parsed.parameters),
         );
 
-        rt.block_on(async {
+        run_async(&handle, async {
             ctx.sql(&create_sql)
                 .await
                 .map_err(|e| sqlstate_error("42601", &format!("invalid parameter types: {e}")))
@@ -70,7 +68,7 @@ pub(super) fn validate_function_body(parsed: &ParsedCreateFunction) -> PgWireRes
         format!("SELECT {body} FROM __params")
     };
 
-    rt.block_on(async {
+    run_async(&handle, async {
         let df = ctx
             .sql(&test_sql)
             .await
@@ -96,6 +94,23 @@ pub(super) fn validate_function_body(parsed: &ParsedCreateFunction) -> PgWireRes
         }
         Ok(())
     })
+}
+
+/// Run an async block, either on the existing tokio runtime (via block_in_place)
+/// or by creating a new one-shot runtime if no runtime is active.
+fn run_async<F, T>(handle: &Option<tokio::runtime::Handle>, fut: F) -> PgWireResult<T>
+where
+    F: std::future::Future<Output = PgWireResult<T>>,
+{
+    if let Some(h) = handle {
+        tokio::task::block_in_place(|| h.block_on(fut))
+    } else {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| sqlstate_error("XX000", &format!("validation runtime: {e}")))?;
+        rt.block_on(fut)
+    }
 }
 
 #[cfg(test)]

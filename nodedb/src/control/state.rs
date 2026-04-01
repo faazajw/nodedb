@@ -283,8 +283,26 @@ impl SharedState {
         COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     }
 
+    /// Create shared state with a pre-built credential store (for tests that need catalog).
+    pub fn new_with_credentials(
+        dispatcher: Dispatcher,
+        wal: Arc<WalManager>,
+        credentials: Arc<crate::control::security::credential::store::CredentialStore>,
+    ) -> Arc<Self> {
+        let mut state = Self::new_inner(dispatcher, wal);
+        // Safe: Arc was just created in new_inner() — we hold the only reference.
+        if let Some(s) = Arc::get_mut(&mut state) {
+            s.credentials = credentials;
+        }
+        state
+    }
+
     /// Create shared state with in-memory credential store (for tests).
     pub fn new(dispatcher: Dispatcher, wal: Arc<WalManager>) -> Arc<Self> {
+        Self::new_inner(dispatcher, wal)
+    }
+
+    fn new_inner(dispatcher: Dispatcher, wal: Arc<WalManager>) -> Arc<Self> {
         let mut shutdown_senders: Vec<tokio::sync::watch::Sender<bool>> = Vec::new();
         let test_id = Self::unique_test_id();
         Arc::new(Self {

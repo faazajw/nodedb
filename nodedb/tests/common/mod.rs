@@ -1,4 +1,6 @@
-//! Shared helpers for Event Plane integration tests.
+//! Shared helpers for integration tests.
+
+pub mod pgwire_harness;
 
 use nodedb::event::cdc::event::CdcEvent;
 

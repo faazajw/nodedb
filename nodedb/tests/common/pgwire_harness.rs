@@ -1,0 +1,161 @@
+//! Shared pgwire end-to-end test harness.
+//!
+//! Spawns a full NodeDB server (Data Plane core + pgwire listener + response poller)
+//! and provides a connected `tokio_postgres::Client` for SQL execution.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use nodedb::bridge::dispatch::Dispatcher;
+use nodedb::config::auth::AuthMode;
+use nodedb::control::server::pgwire::listener::PgListener;
+use nodedb::control::state::SharedState;
+use nodedb::data::executor::core_loop::CoreLoop;
+use nodedb::wal::WalManager;
+
+/// A running test server with a connected pgwire client.
+pub struct TestServer {
+    pub client: tokio_postgres::Client,
+    _conn_handle: tokio::task::JoinHandle<()>,
+    shutdown_tx: tokio::sync::watch::Sender<bool>,
+    poller_shutdown_tx: tokio::sync::watch::Sender<bool>,
+    core_stop_tx: std::sync::mpsc::Sender<()>,
+    _pg_handle: tokio::task::JoinHandle<()>,
+    _poller_handle: tokio::task::JoinHandle<()>,
+    _core_handle: tokio::task::JoinHandle<()>,
+    _dir: tempfile::TempDir,
+}
+
+#[allow(dead_code)]
+impl TestServer {
+    /// Spawn a single-core NodeDB server and connect via pgwire.
+    pub async fn start() -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let wal_path = dir.path().join("test.wal");
+        let wal = Arc::new(WalManager::open_for_testing(&wal_path).unwrap());
+
+        let (dispatcher, data_sides) = Dispatcher::new(1, 64);
+        let shared = SharedState::new(dispatcher, wal);
+
+        // Data Plane core.
+        let data_side = data_sides.into_iter().next().unwrap();
+        let core_dir = dir.path().to_path_buf();
+        let (core_stop_tx, core_stop_rx) = std::sync::mpsc::channel::<()>();
+        let core_handle = tokio::task::spawn_blocking(move || {
+            let mut core =
+                CoreLoop::open(0, data_side.request_rx, data_side.response_tx, &core_dir).unwrap();
+            while core_stop_rx.try_recv().is_err() {
+                core.tick();
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        });
+
+        // Response poller.
+        let shared_poller = Arc::clone(&shared);
+        let (poller_shutdown_tx, mut poller_shutdown_rx) = tokio::sync::watch::channel(false);
+        let poller_handle = tokio::spawn(async move {
+            loop {
+                shared_poller.poll_and_route_responses();
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_millis(1)) => {}
+                    _ = poller_shutdown_rx.changed() => break,
+                }
+            }
+        });
+
+        // PgWire listener.
+        let pg_listener = PgListener::bind("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+        let pg_addr = pg_listener.local_addr();
+
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let shared_pg = Arc::clone(&shared);
+        let pg_handle = tokio::spawn(async move {
+            pg_listener
+                .run(
+                    shared_pg,
+                    AuthMode::Trust,
+                    None,
+                    Arc::new(tokio::sync::Semaphore::new(128)),
+                    shutdown_rx,
+                )
+                .await
+                .unwrap();
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Connect client.
+        let conn_str = format!(
+            "host=127.0.0.1 port={} user=nodedb dbname=nodedb",
+            pg_addr.port()
+        );
+        let (client, connection) = tokio_postgres::connect(&conn_str, tokio_postgres::NoTls)
+            .await
+            .expect("pgwire connect failed");
+
+        let conn_handle = tokio::spawn(async move {
+            let _ = connection.await;
+        });
+
+        Self {
+            client,
+            _conn_handle: conn_handle,
+            shutdown_tx,
+            poller_shutdown_tx,
+            core_stop_tx,
+            _pg_handle: pg_handle,
+            _poller_handle: poller_handle,
+            _core_handle: core_handle,
+            _dir: dir,
+        }
+    }
+
+    /// Execute a SQL statement, returning the text of each row's first column.
+    pub async fn query_text(&self, sql: &str) -> Result<Vec<String>, String> {
+        match self.client.simple_query(sql).await {
+            Ok(msgs) => {
+                let mut rows = Vec::new();
+                for msg in msgs {
+                    if let tokio_postgres::SimpleQueryMessage::Row(row) = msg {
+                        rows.push(row.get(0).unwrap_or("").to_string());
+                    }
+                }
+                Ok(rows)
+            }
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    /// Execute a SQL statement expecting success (no result needed).
+    pub async fn exec(&self, sql: &str) -> Result<(), String> {
+        match self.client.simple_query(sql).await {
+            Ok(_) => Ok(()),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    /// Execute a SQL statement expecting an error containing the given substring.
+    pub async fn expect_error(&self, sql: &str, expected_substring: &str) {
+        match self.client.simple_query(sql).await {
+            Ok(_) => panic!("expected error containing '{expected_substring}', got success"),
+            Err(e) => {
+                let msg = e.to_string();
+                assert!(
+                    msg.to_lowercase()
+                        .contains(&expected_substring.to_lowercase()),
+                    "expected error containing '{expected_substring}', got: {msg}"
+                );
+            }
+        }
+    }
+}
+
+impl Drop for TestServer {
+    fn drop(&mut self) {
+        let _ = self.shutdown_tx.send(true);
+        let _ = self.poller_shutdown_tx.send(true);
+        let _ = self.core_stop_tx.send(());
+    }
+}
