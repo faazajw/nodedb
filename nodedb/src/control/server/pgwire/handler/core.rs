@@ -11,9 +11,11 @@ use futures::SinkExt;
 use futures::sink::Sink;
 
 use pgwire::api::auth::noop::NoopStartupHandler;
+use pgwire::api::portal::Portal;
 use pgwire::api::query::{ExtendedQueryHandler, SimpleQueryHandler};
-use pgwire::api::results::Response;
-use pgwire::api::stmt::NoopQueryParser;
+use pgwire::api::results::{DescribePortalResponse, DescribeStatementResponse, Response};
+use pgwire::api::stmt::StoredStatement;
+use pgwire::api::store::PortalStore;
 use pgwire::api::{ClientInfo, ClientPortalStore};
 use pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
 use pgwire::messages::PgWireBackendMessage;
@@ -31,6 +33,7 @@ use crate::types::{RequestId, TenantId};
 use super::super::session::{SessionStore, TransactionState};
 use super::super::types::notice_warning;
 use super::plan::extract_collection;
+use super::prepared::{NodeDbQueryParser, ParsedStatement};
 
 /// PostgreSQL wire protocol handler for NodeDB.
 ///
@@ -44,7 +47,7 @@ pub struct NodeDbPgHandler {
     pub(crate) state: Arc<SharedState>,
     pub(super) query_ctx: QueryContext,
     next_request_id: AtomicU64,
-    query_parser: Arc<NoopQueryParser>,
+    query_parser: Arc<NodeDbQueryParser>,
     auth_mode: AuthMode,
     /// Per-connection session state (transaction blocks, parameters).
     pub(crate) sessions: SessionStore,
@@ -53,11 +56,12 @@ pub struct NodeDbPgHandler {
 impl NodeDbPgHandler {
     pub fn new(state: Arc<SharedState>, auth_mode: AuthMode) -> Self {
         let query_ctx = QueryContext::for_state(&state, 1); // default tenant for name resolution
+        let query_parser = Arc::new(NodeDbQueryParser::new(Arc::clone(&state)));
         Self {
             state,
             query_ctx,
             next_request_id: AtomicU64::new(1_000_000),
-            query_parser: Arc::new(NoopQueryParser::new()),
+            query_parser,
             auth_mode,
             sessions: SessionStore::new(),
         }
@@ -68,7 +72,10 @@ impl NodeDbPgHandler {
     }
 
     /// Resolve the authenticated identity from pgwire client metadata.
-    fn resolve_identity<C: ClientInfo>(&self, client: &C) -> PgWireResult<AuthenticatedIdentity> {
+    pub(crate) fn resolve_identity<C: ClientInfo>(
+        &self,
+        client: &C,
+    ) -> PgWireResult<AuthenticatedIdentity> {
         let username = client
             .metadata()
             .get("user")
@@ -246,8 +253,8 @@ impl SimpleQueryHandler for NodeDbPgHandler {
 
 #[async_trait]
 impl ExtendedQueryHandler for NodeDbPgHandler {
-    type Statement = String;
-    type QueryParser = NoopQueryParser;
+    type Statement = ParsedStatement;
+    type QueryParser = NodeDbQueryParser;
 
     fn query_parser(&self) -> Arc<Self::QueryParser> {
         self.query_parser.clone()
@@ -256,19 +263,44 @@ impl ExtendedQueryHandler for NodeDbPgHandler {
     async fn do_query<C>(
         &self,
         client: &mut C,
-        portal: &pgwire::api::portal::Portal<Self::Statement>,
-        _max_rows: usize,
+        portal: &Portal<Self::Statement>,
+        max_rows: usize,
     ) -> PgWireResult<Response>
     where
         C: ClientInfo + ClientPortalStore + Sink<PgWireBackendMessage> + Unpin + Send + Sync,
+        C::PortalStore: PortalStore<Statement = Self::Statement>,
         C::Error: Debug,
         PgWireError: From<<C as Sink<PgWireBackendMessage>>::Error>,
     {
-        let addr = client.socket_addr();
-        let identity = self.resolve_identity(client)?;
-        let query = &portal.statement.statement;
-        let mut results = self.execute_sql(&identity, &addr, query).await?;
-        Ok(results.pop().unwrap_or(Response::EmptyQuery))
+        self.execute_prepared(client, portal, max_rows).await
+    }
+
+    async fn do_describe_statement<C>(
+        &self,
+        client: &mut C,
+        target: &StoredStatement<Self::Statement>,
+    ) -> PgWireResult<DescribeStatementResponse>
+    where
+        C: ClientInfo + ClientPortalStore + Sink<PgWireBackendMessage> + Unpin + Send + Sync,
+        C::PortalStore: PortalStore<Statement = Self::Statement>,
+        C::Error: Debug,
+        PgWireError: From<<C as Sink<PgWireBackendMessage>>::Error>,
+    {
+        self.describe_statement_impl(client, target).await
+    }
+
+    async fn do_describe_portal<C>(
+        &self,
+        client: &mut C,
+        target: &Portal<Self::Statement>,
+    ) -> PgWireResult<DescribePortalResponse>
+    where
+        C: ClientInfo + ClientPortalStore + Sink<PgWireBackendMessage> + Unpin + Send + Sync,
+        C::PortalStore: PortalStore<Statement = Self::Statement>,
+        C::Error: Debug,
+        PgWireError: From<<C as Sink<PgWireBackendMessage>>::Error>,
+    {
+        self.describe_portal_impl(client, target).await
     }
 }
 

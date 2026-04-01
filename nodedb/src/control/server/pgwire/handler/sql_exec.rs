@@ -414,6 +414,17 @@ impl NodeDbPgHandler {
             return Ok(vec![Response::Execution(Tag::new("DISCARD ALL"))]);
         }
 
+        // SQL-level prepared statements: PREPARE / EXECUTE / DEALLOCATE.
+        if upper.starts_with("PREPARE ") {
+            return self.handle_prepare(addr, sql_trimmed);
+        }
+        if upper.starts_with("EXECUTE ") {
+            return self.handle_execute(identity, addr, sql_trimmed).await;
+        }
+        if upper.starts_with("DEALLOCATE ") {
+            return self.handle_deallocate(addr, sql_trimmed);
+        }
+
         if upper.starts_with("EXPLAIN ") {
             return self.handle_explain(identity, sql_trimmed).await;
         }
