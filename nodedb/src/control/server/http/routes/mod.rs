@@ -12,4 +12,5 @@ pub mod status;
 pub mod stream_poll;
 pub mod stream_sse;
 pub mod subscribe;
+pub mod wasm_upload;
 pub mod ws_rpc;
