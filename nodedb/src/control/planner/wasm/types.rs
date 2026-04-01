@@ -3,17 +3,40 @@
 use wasmtime::ValType;
 
 /// Map a SQL type string to a WASM value type.
+///
+/// Scalar types map directly. Composite types (ROW) map to i32 pointer
+/// into WASM linear memory where the struct is serialized as MessagePack.
+/// FLOAT[] (vector) maps to i32 pointer + i32 length pair.
 pub fn sql_type_to_wasm(sql_type: &str) -> Option<ValType> {
-    match sql_type.to_uppercase().as_str() {
+    let upper = sql_type.to_uppercase();
+    match upper.as_str() {
         "INT" | "INTEGER" | "INT4" => Some(ValType::I32),
         "BIGINT" | "INT8" => Some(ValType::I64),
         "FLOAT" | "REAL" | "FLOAT4" => Some(ValType::F32),
         "DOUBLE" | "FLOAT8" | "DOUBLE PRECISION" => Some(ValType::F64),
         "BOOLEAN" | "BOOL" => Some(ValType::I32),
-        "TEXT" | "VARCHAR" | "STRING" => Some(ValType::I32),
+        "TEXT" | "VARCHAR" | "STRING" => Some(ValType::I32), // ptr to linear memory
         "BYTEA" | "BLOB" => Some(ValType::I32),
-        _ => None,
+        _ => {
+            // ROW/RECORD composites + array types → i32 pointer to linear memory.
+            if upper.starts_with("ROW(") || upper.starts_with("RECORD") || upper.ends_with("[]") {
+                Some(ValType::I32)
+            } else {
+                None
+            }
+        }
     }
+}
+
+/// Check if a SQL type is a composite ROW type.
+pub fn is_composite_type(sql_type: &str) -> bool {
+    let upper = sql_type.to_uppercase();
+    upper.starts_with("ROW(") || upper.starts_with("RECORD")
+}
+
+/// Check if a SQL type is an array type.
+pub fn is_array_type(sql_type: &str) -> bool {
+    sql_type.to_uppercase().ends_with("[]")
 }
 
 /// Map a WASM value type back to a SQL type string.

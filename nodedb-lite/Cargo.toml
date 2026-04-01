@@ -31,6 +31,7 @@ rmp-serde = { workspace = true }
 serde_json = { workspace = true }
 sonic-rs = { workspace = true }
 loro = { workspace = true }
+wasmtime = { workspace = true }
 redb = { workspace = true }
 datafusion = { workspace = true }
 crc32c = { workspace = true }

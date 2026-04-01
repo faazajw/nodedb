@@ -13,9 +13,12 @@ use wasmtime::{Engine, Instance, Module, Store};
 ///
 /// Keyed by function name. Each function has a bounded pool of pre-created
 /// instances. When the pool is empty, a new instance is created on-demand.
+/// Pool key: (tenant_id, function_name) for tenant isolation.
+type PoolKey = (u32, String);
+
 pub struct WasmInstancePool {
     engine: Engine,
-    pools: Mutex<HashMap<String, Vec<PooledInstance>>>,
+    pools: Mutex<HashMap<PoolKey, Vec<PooledInstance>>>,
     pool_size: usize,
 }
 
@@ -36,42 +39,42 @@ impl WasmInstancePool {
         }
     }
 
-    /// Acquire an instance for the given function. Takes from pool or creates new.
+    /// Acquire an instance for the given tenant+function. Takes from pool or creates new.
     pub fn acquire(
         &self,
+        tenant_id: u32,
         func_name: &str,
         module: &Module,
         fuel: u64,
         memory_bytes: usize,
     ) -> crate::Result<PooledInstance> {
-        // Try to take from pool.
+        let key = (tenant_id, func_name.to_string());
         {
             let mut pools = self.pools.lock().unwrap_or_else(|p| p.into_inner());
-            if let Some(pool) = pools.get_mut(func_name)
+            if let Some(pool) = pools.get_mut(&key)
                 && let Some(mut inst) = pool.pop()
             {
                 let _ = inst.store.set_fuel(fuel);
                 return Ok(inst);
             }
         }
-
-        // Create a new instance.
         self.create_instance(module, fuel, memory_bytes)
     }
 
     /// Return an instance to the pool after use.
-    pub fn release(&self, func_name: &str, instance: PooledInstance) {
+    pub fn release(&self, tenant_id: u32, func_name: &str, instance: PooledInstance) {
+        let key = (tenant_id, func_name.to_string());
         let mut pools = self.pools.lock().unwrap_or_else(|p| p.into_inner());
-        let pool = pools.entry(func_name.to_string()).or_default();
+        let pool = pools.entry(key).or_default();
         if pool.len() < self.pool_size {
             pool.push(instance);
         }
-        // If pool is full, drop the instance (no recycle).
     }
 
-    /// Pre-warm the pool for a function.
+    /// Pre-warm the pool for a tenant+function.
     pub fn warm(
         &self,
+        tenant_id: u32,
         func_name: &str,
         module: &Module,
         fuel: u64,
@@ -82,18 +85,18 @@ impl WasmInstancePool {
         for _ in 0..count {
             instances.push(self.create_instance(module, fuel, memory_bytes)?);
         }
-
+        let key = (tenant_id, func_name.to_string());
         let mut pools = self.pools.lock().unwrap_or_else(|p| p.into_inner());
-        let pool = pools.entry(func_name.to_string()).or_default();
+        let pool = pools.entry(key).or_default();
         pool.extend(instances);
-
         Ok(())
     }
 
-    /// Remove all pooled instances for a function (on DROP FUNCTION).
-    pub fn evict(&self, func_name: &str) {
+    /// Remove all pooled instances for a tenant+function (on DROP FUNCTION).
+    pub fn evict(&self, tenant_id: u32, func_name: &str) {
+        let key = (tenant_id, func_name.to_string());
         let mut pools = self.pools.lock().unwrap_or_else(|p| p.into_inner());
-        pools.remove(func_name);
+        pools.remove(&key);
     }
 
     fn create_instance(
