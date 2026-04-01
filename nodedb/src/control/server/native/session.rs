@@ -11,7 +11,9 @@ use std::time::Duration;
 use tokio::net::TcpStream;
 use tracing::{debug, instrument};
 
-use nodedb_types::protocol::{NativeResponse, OpCode, RequestFields};
+use nodedb_types::protocol::{
+    MAX_FRAME_SIZE, NativeResponse, OpCode, RequestFields, ResponseStatus,
+};
 
 use crate::config::auth::AuthMode;
 use crate::control::planner::context::QueryContext;
@@ -125,9 +127,17 @@ impl NativeSession {
                 Err(e) => NativeResponse::error(0, "42601", format!("{e}")),
             };
 
-            // Encode and write response.
+            // Encode and write response — chunk if it exceeds frame limit.
             let resp_bytes = codec::encode_response(&response, format)?;
-            codec::write_frame(&mut self.stream, &resp_bytes).await?;
+            if resp_bytes.len() <= MAX_FRAME_SIZE as usize {
+                codec::write_frame(&mut self.stream, &resp_bytes).await?;
+            } else {
+                // Response too large for a single frame — split rows.
+                let frames = chunk_large_response(response, format)?;
+                for frame in &frames {
+                    codec::write_frame(&mut self.stream, frame).await?;
+                }
+            }
         }
     }
 
@@ -352,4 +362,90 @@ impl NativeSession {
             Err(e) => NativeResponse::error(seq, "28P01", format!("{e}")),
         }
     }
+}
+
+/// Split a large `NativeResponse` into multiple encoded frames that each
+/// fit within `MAX_FRAME_SIZE`. Intermediate frames use `Partial` status;
+/// the last frame uses the original status.
+///
+/// Only responses with `rows` data are split. Error or auth responses
+/// that somehow exceed the frame limit are returned as-is (best effort).
+fn chunk_large_response(
+    response: NativeResponse,
+    format: codec::FrameFormat,
+) -> crate::Result<Vec<Vec<u8>>> {
+    let rows = match response.rows {
+        Some(ref rows) if !rows.is_empty() => rows,
+        _ => {
+            // No rows to split — send as-is (shouldn't happen, but safe).
+            return Ok(vec![codec::encode_response(&response, format)?]);
+        }
+    };
+
+    // Estimate how many rows per chunk: target ~12 MiB per frame (75% of max)
+    // to leave headroom for envelope overhead.
+    let target_size = (MAX_FRAME_SIZE as usize) * 3 / 4;
+    let total_rows = rows.len();
+
+    // Estimate per-row size from a sample of the first rows.
+    let sample_resp = NativeResponse {
+        seq: response.seq,
+        status: ResponseStatus::Ok,
+        columns: response.columns.clone(),
+        rows: Some(rows[..total_rows.min(100)].to_vec()),
+        rows_affected: None,
+        watermark_lsn: response.watermark_lsn,
+        error: None,
+        auth: None,
+    };
+    let sample_bytes = codec::encode_response(&sample_resp, format)?;
+    let sample_count = total_rows.min(100);
+    let per_row_estimate = if sample_count > 0 {
+        sample_bytes.len() / sample_count
+    } else {
+        256 // fallback
+    };
+
+    let rows_per_chunk = if per_row_estimate > 0 {
+        (target_size / per_row_estimate).max(1)
+    } else {
+        1000
+    };
+
+    let mut frames = Vec::new();
+    let chunks: Vec<_> = rows.chunks(rows_per_chunk).collect();
+    let last_idx = chunks.len().saturating_sub(1);
+
+    for (i, chunk) in chunks.iter().enumerate() {
+        let is_last = i == last_idx;
+        let frame_resp = NativeResponse {
+            seq: response.seq,
+            status: if is_last {
+                response.status
+            } else {
+                ResponseStatus::Partial
+            },
+            columns: if i == 0 {
+                response.columns.clone()
+            } else {
+                None
+            },
+            rows: Some(chunk.to_vec()),
+            rows_affected: if is_last {
+                response.rows_affected
+            } else {
+                None
+            },
+            watermark_lsn: response.watermark_lsn,
+            error: if is_last {
+                response.error.clone()
+            } else {
+                None
+            },
+            auth: None,
+        };
+        frames.push(codec::encode_response(&frame_resp, format)?);
+    }
+
+    Ok(frames)
 }

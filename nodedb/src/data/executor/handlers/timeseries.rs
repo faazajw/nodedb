@@ -352,7 +352,7 @@ impl CoreLoop {
 
     /// Raw scan mode: emit rows from memtable + partitions.
     fn execute_ts_raw_scan(
-        &self,
+        &mut self,
         task: &ExecutionTask,
         collection: &str,
         time_range: (i64, i64),
@@ -519,16 +519,7 @@ impl CoreLoop {
             }
         }
 
-        let json = serde_json::to_vec(&results).unwrap_or_default();
-        Response {
-            request_id: task.request.request_id,
-            status: Status::Ok,
-            attempt: 1,
-            partial: false,
-            payload: Payload::from_vec(json),
-            watermark_lsn: self.watermark,
-            error_code: None,
-        }
+        self.emit_chunked_json_response(task, &results)
     }
 
     /// Aggregate mode: time-bucket or generic GROUP BY across memtable + partitions.
@@ -537,7 +528,7 @@ impl CoreLoop {
     /// JSON constructed once at the end.
     #[allow(clippy::too_many_arguments)]
     fn execute_ts_aggregate(
-        &self,
+        &mut self,
         task: &ExecutionTask,
         collection: &str,
         time_range: (i64, i64),
@@ -813,16 +804,39 @@ impl CoreLoop {
             emit_aggregate_results(&group_map, group_by, aggregates, limit)
         };
 
-        let json = serde_json::to_vec(&results).unwrap_or_default();
-        Response {
-            request_id: task.request.request_id,
-            status: Status::Ok,
-            attempt: 1,
-            partial: false,
-            payload: Payload::from_vec(json),
-            watermark_lsn: self.watermark,
-            error_code: None,
+        self.emit_chunked_json_response(task, &results)
+    }
+
+    /// Emit a JSON response, chunking into partial responses if the result
+    /// set is large. Follows the same pattern as document scan streaming.
+    fn emit_chunked_json_response(
+        &mut self,
+        task: &ExecutionTask,
+        results: &[serde_json::Value],
+    ) -> Response {
+        let chunk_size = self.query_tuning.stream_chunk_size;
+
+        if results.len() <= chunk_size {
+            let json = serde_json::to_vec(results).unwrap_or_default();
+            return self.response_with_payload(task, json);
         }
+
+        // Large result: stream in chunks via partial responses.
+        let chunks: Vec<_> = results.chunks(chunk_size).collect();
+        let last_idx = chunks.len().saturating_sub(1);
+        for (i, chunk) in chunks.iter().enumerate() {
+            let json = serde_json::to_vec(chunk).unwrap_or_default();
+            if i == last_idx {
+                return self.response_with_payload(task, json);
+            }
+            let partial = self.response_partial(task, json);
+            let _ = self
+                .response_tx
+                .try_push(crate::bridge::dispatch::BridgeResponse { inner: partial });
+        }
+
+        // Unreachable: chunks is non-empty so the loop always returns.
+        self.response_ok(task)
     }
 
     /// Ensure the partition registry is loaded for a timeseries collection.
@@ -881,13 +895,69 @@ impl CoreLoop {
     }
 
     /// Execute a timeseries ingest.
+    ///
+    /// `wal_lsn` is set by the WAL catch-up task to enable deduplication:
+    /// if the record has already been ingested (LSN <= max ingested) or
+    /// flushed to disk (LSN <= max flushed), the ingest is skipped.
     pub(in crate::data::executor) fn execute_timeseries_ingest(
         &mut self,
         task: &ExecutionTask,
         collection: &str,
         payload: &[u8],
         format: &str,
+        wal_lsn: Option<u64>,
     ) -> Response {
+        // LSN-based deduplication for WAL catch-up replays.
+        if let Some(lsn) = wal_lsn {
+            // Skip if already ingested into memtable.
+            if let Some(&max_lsn) = self.ts_max_ingested_lsn.get(collection)
+                && lsn <= max_lsn
+            {
+                let result = serde_json::json!({
+                    "accepted": 0,
+                    "rejected": 0,
+                    "collection": collection,
+                    "dedup_skipped": true,
+                });
+                let json = serde_json::to_vec(&result).unwrap_or_default();
+                return Response {
+                    request_id: task.request.request_id,
+                    status: Status::Ok,
+                    attempt: 1,
+                    partial: false,
+                    payload: Payload::from_vec(json),
+                    watermark_lsn: self.watermark,
+                    error_code: None,
+                };
+            }
+            // Skip if already flushed to disk partitions.
+            if let Some(registry) = self.ts_registries.get(collection) {
+                let max_flushed = registry
+                    .iter()
+                    .map(|(_, e)| e.meta.last_flushed_wal_lsn)
+                    .max()
+                    .unwrap_or(0);
+                if lsn <= max_flushed {
+                    let result = serde_json::json!({
+                        "accepted": 0,
+                        "rejected": 0,
+                        "collection": collection,
+                        "dedup_skipped": true,
+                    });
+                    let json = serde_json::to_vec(&result).unwrap_or_default();
+                    return Response {
+                        request_id: task.request.request_id,
+                        status: Status::Ok,
+                        attempt: 1,
+                        partial: false,
+                        payload: Payload::from_vec(json),
+                        watermark_lsn: self.watermark,
+                        error_code: None,
+                    };
+                }
+            }
+        }
+
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
@@ -989,6 +1059,18 @@ impl CoreLoop {
                     self.flush_ts_collection(collection, now_ms);
                 }
 
+                // Track WAL LSN and last ingest time for dedup + idle flush.
+                if accepted > 0 {
+                    if let Some(lsn) = wal_lsn {
+                        let entry = self
+                            .ts_max_ingested_lsn
+                            .entry(collection.to_string())
+                            .or_insert(0);
+                        *entry = (*entry).max(lsn);
+                    }
+                    self.last_ts_ingest = Some(std::time::Instant::now());
+                }
+
                 self.checkpoint_coordinator
                     .mark_dirty("timeseries", accepted);
                 // Include schema_columns when schema is new OR evolved,
@@ -1048,7 +1130,7 @@ impl CoreLoop {
     /// Drains the columnar memtable, writes segments via `ColumnarSegmentWriter`,
     /// registers the new partition in `ts_registries`, and fires the continuous
     /// aggregate hook.
-    fn flush_ts_collection(&mut self, collection: &str, now_ms: i64) {
+    pub(in crate::data::executor) fn flush_ts_collection(&mut self, collection: &str, now_ms: i64) {
         let Some(mt) = self.columnar_memtables.get_mut(collection) else {
             return;
         };
