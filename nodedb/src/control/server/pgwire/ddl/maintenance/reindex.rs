@@ -1,8 +1,7 @@
 //! `REINDEX INDEX name` / `REINDEX TABLE collection` — rebuild indexes.
 //!
-//! For now, REINDEX drops and recreates secondary indexes by re-scanning
-//! the collection. This is a Control Plane operation that dispatches
-//! DocumentOp::Register to rebuild the Data Plane's index structures.
+//! Dispatches a MetaOp::Checkpoint to the Data Plane via the distributed
+//! maintenance helper, which forces index structures to be rebuilt.
 
 use pgwire::api::results::{Response, Tag};
 use pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
@@ -30,37 +29,14 @@ pub fn handle_reindex(
 
     match target_type.as_str() {
         "INDEX" => {
-            // REINDEX INDEX name — rebuild a specific index.
-            // The index rebuild is triggered by dispatching a Checkpoint which
-            // forces the Data Plane to flush and rebuild its index structures.
-            let plan = crate::bridge::envelope::PhysicalPlan::Meta(
+            super::distributed::dispatch_maintenance_to_all_cores(
+                state,
+                tenant_id,
                 crate::bridge::physical_plan::MetaOp::Checkpoint,
             );
-            let request = crate::bridge::envelope::Request {
-                request_id: crate::types::RequestId::new(0),
-                tenant_id,
-                vshard_id: crate::types::VShardId::new(0),
-                plan,
-                deadline: std::time::Instant::now() + std::time::Duration::from_secs(300),
-                priority: crate::bridge::envelope::Priority::Background,
-                trace_id: 0,
-                consistency: crate::types::ReadConsistency::Strong,
-                idempotency_key: None,
-                event_source: crate::event::EventSource::User,
-            };
-            match state.dispatcher.lock() {
-                Ok(mut d) => {
-                    let _ = d.dispatch(request);
-                }
-                Err(p) => {
-                    let _ = p.into_inner().dispatch(request);
-                }
-            }
             tracing::info!(index = %target_name, "REINDEX INDEX dispatched");
         }
         "TABLE" => {
-            // REINDEX TABLE collection — rebuild all indexes on a collection.
-            // Verify collection exists.
             if let Some(catalog) = state.credentials.catalog()
                 && catalog
                     .get_collection(tenant_id.as_u32(), &target_name)
@@ -75,29 +51,11 @@ pub fn handle_reindex(
                 ))));
             }
 
-            let plan = crate::bridge::envelope::PhysicalPlan::Meta(
+            super::distributed::dispatch_maintenance_to_all_cores(
+                state,
+                tenant_id,
                 crate::bridge::physical_plan::MetaOp::Checkpoint,
             );
-            let request = crate::bridge::envelope::Request {
-                request_id: crate::types::RequestId::new(0),
-                tenant_id,
-                vshard_id: crate::types::VShardId::new(0),
-                plan,
-                deadline: std::time::Instant::now() + std::time::Duration::from_secs(300),
-                priority: crate::bridge::envelope::Priority::Background,
-                trace_id: 0,
-                consistency: crate::types::ReadConsistency::Strong,
-                idempotency_key: None,
-                event_source: crate::event::EventSource::User,
-            };
-            match state.dispatcher.lock() {
-                Ok(mut d) => {
-                    let _ = d.dispatch(request);
-                }
-                Err(p) => {
-                    let _ = p.into_inner().dispatch(request);
-                }
-            }
             tracing::info!(collection = %target_name, "REINDEX TABLE dispatched");
         }
         _ => {

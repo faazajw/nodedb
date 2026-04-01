@@ -41,31 +41,12 @@ pub fn handle_compact(
         ))));
     }
 
-    // Dispatch MetaOp::Compact to the Data Plane.
-    let plan =
-        crate::bridge::envelope::PhysicalPlan::Meta(crate::bridge::physical_plan::MetaOp::Compact);
-
-    let request = crate::bridge::envelope::Request {
-        request_id: crate::types::RequestId::new(0),
+    // Dispatch MetaOp::Compact to all Data Plane cores via distributed helper.
+    super::distributed::dispatch_maintenance_to_all_cores(
+        state,
         tenant_id,
-        vshard_id: crate::types::VShardId::new(0),
-        plan,
-        deadline: std::time::Instant::now() + std::time::Duration::from_secs(300),
-        priority: crate::bridge::envelope::Priority::Background,
-        trace_id: 0,
-        consistency: crate::types::ReadConsistency::Strong,
-        idempotency_key: None,
-        event_source: crate::event::EventSource::User,
-    };
-
-    match state.dispatcher.lock() {
-        Ok(mut d) => {
-            let _ = d.dispatch(request);
-        }
-        Err(p) => {
-            let _ = p.into_inner().dispatch(request);
-        }
-    }
+        crate::bridge::physical_plan::MetaOp::Compact,
+    );
 
     tracing::info!(%collection, "COMPACT dispatched");
 

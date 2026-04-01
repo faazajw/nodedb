@@ -46,9 +46,10 @@ impl NodeDbPgHandler {
             crate::control::server::session_auth::extract_and_apply_on_deny(sql, &mut auth_ctx);
 
         // Register session temp tables in the DataFusion context (name shadowing).
+        // These are registered before planning and deregistered after to prevent
+        // cross-session contamination (DataFusion's SessionContext is shared).
         let temp_tables = self.sessions.temp_mem_tables(addr);
         for (name, mem_table) in &temp_tables {
-            // Overrides any permanent table with the same name for this query.
             let _ = self
                 .query_ctx
                 .session()
@@ -90,6 +91,12 @@ impl NodeDbPgHandler {
 
             planned
         };
+
+        // Deregister temp tables from the shared DataFusion context to prevent
+        // cross-session visibility. The tables were only needed during planning.
+        for (name, _) in &temp_tables {
+            let _ = self.query_ctx.session().deregister_table(name);
+        }
 
         if tasks.is_empty() {
             return Ok(vec![Response::Execution(Tag::new("OK"))]);

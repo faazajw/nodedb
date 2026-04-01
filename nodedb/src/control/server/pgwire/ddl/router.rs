@@ -239,7 +239,7 @@ pub async fn dispatch(
 
     // Maintenance: ANALYZE, COMPACT, REINDEX, SHOW STORAGE, SHOW COMPACTION
     if upper.starts_with("ANALYZE ") {
-        return Some(super::maintenance::handle_analyze(state, identity, sql));
+        return Some(super::maintenance::handle_analyze(state, identity, sql).await);
     }
     if upper.starts_with("COMPACT ") {
         return Some(super::maintenance::handle_compact(state, identity, &parts));

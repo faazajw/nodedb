@@ -4,7 +4,7 @@
 //! When the schema version changes (CREATE/DROP/ALTER), cached entries are invalidated.
 //! This avoids re-parsing and re-planning identical SQL on every Execute.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -55,8 +55,8 @@ struct CachedEntry {
 pub struct PlanCache {
     entries: HashMap<u64, CachedEntry>,
     max_entries: usize,
-    /// Insertion order for LRU eviction (oldest first).
-    order: Vec<u64>,
+    /// Insertion order for LRU eviction (oldest at front). VecDeque for O(1) pop_front.
+    order: VecDeque<u64>,
 }
 
 impl PlanCache {
@@ -65,7 +65,7 @@ impl PlanCache {
         Self {
             entries: HashMap::new(),
             max_entries,
-            order: Vec::new(),
+            order: VecDeque::new(),
         }
     }
 
@@ -108,11 +108,10 @@ impl PlanCache {
             return;
         }
 
-        // Evict oldest if at capacity.
+        // Evict oldest if at capacity (O(1) via VecDeque::pop_front).
         while self.entries.len() >= self.max_entries {
-            if let Some(oldest_key) = self.order.first().copied() {
+            if let Some(oldest_key) = self.order.pop_front() {
                 self.entries.remove(&oldest_key);
-                self.order.remove(0);
             } else {
                 break;
             }
@@ -125,7 +124,7 @@ impl PlanCache {
                 schema_version,
             },
         );
-        self.order.push(key);
+        self.order.push_back(key);
     }
 
     /// Invalidate all entries (called on DISCARD ALL, session reset, etc.).

@@ -103,7 +103,8 @@ impl SessionStore {
 
             let end = cursor.position;
             let start = end.saturating_sub(count);
-            let rows: Vec<String> = cursor.rows[start..end].to_vec();
+            let mut rows: Vec<String> = cursor.rows[start..end].to_vec();
+            rows.reverse(); // PostgreSQL FETCH BACKWARD returns rows in reverse order.
             cursor.position = start;
             Ok(rows)
         })

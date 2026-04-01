@@ -110,11 +110,29 @@ pub fn alter_schedule(
 }
 
 /// Extract the content between single quotes after "CRON" in the SQL.
+///
+/// Handles standard SQL quoting. Cron expressions don't contain quotes,
+/// but we properly find the closing unescaped quote ('' counts as escaped).
 fn extract_quoted_cron(sql: &str) -> Option<String> {
     let upper = sql.to_uppercase();
     let cron_idx = upper.find("CRON")?;
     let rest = &sql[cron_idx + 4..];
     let start = rest.find('\'')?;
-    let end = rest[start + 1..].find('\'')?;
-    Some(rest[start + 1..start + 1 + end].to_string())
+    let inner = &rest[start + 1..];
+    // Find closing quote that isn't doubled ('').
+    let mut i = 0;
+    let bytes = inner.as_bytes();
+    while i < bytes.len() {
+        if bytes[i] == b'\'' {
+            // Check for escaped quote ('').
+            if i + 1 < bytes.len() && bytes[i + 1] == b'\'' {
+                i += 2; // Skip escaped pair.
+                continue;
+            }
+            // Found the closing quote.
+            return Some(inner[..i].replace("''", "'"));
+        }
+        i += 1;
+    }
+    None
 }
