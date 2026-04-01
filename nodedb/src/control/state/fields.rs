@@ -258,6 +258,10 @@ pub struct SharedState {
     /// Arc-wrapped for sharing with DataFusion UDFs (nextval, currval, setval).
     pub sequence_registry: Arc<crate::control::sequence::SequenceRegistry>,
 
+    /// Per-collection DML counter for auto-ANALYZE triggering.
+    /// Incremented after each successful write dispatch.
+    pub dml_counter: crate::control::server::pgwire::ddl::maintenance::auto_analyze::DmlCounter,
+
     /// Highest WAL LSN confirmed delivered to Data Plane for timeseries catch-up.
     pub wal_catchup_lsn: AtomicU64,
 }

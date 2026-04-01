@@ -1,6 +1,8 @@
 //! Query routing: consistency selection, leader detection, SQL forwarding,
 //! and the execute_planned_sql entry point for DML/query dispatch.
 
+use std::sync::Arc;
+
 use pgwire::api::results::{Response, Tag};
 use pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
 
@@ -42,6 +44,16 @@ impl NodeDbPgHandler {
         // Extract per-query ON DENY override.
         let clean_sql =
             crate::control::server::session_auth::extract_and_apply_on_deny(sql, &mut auth_ctx);
+
+        // Register session temp tables in the DataFusion context (name shadowing).
+        let temp_tables = self.sessions.temp_mem_tables(addr);
+        for (name, mem_table) in &temp_tables {
+            // Overrides any permanent table with the same name for this query.
+            let _ = self
+                .query_ctx
+                .session()
+                .register_table(name, Arc::clone(mem_table) as _);
+        }
 
         let sec = crate::control::planner::context::PlanSecurityContext {
             identity,
@@ -198,6 +210,11 @@ impl NodeDbPgHandler {
                         message,
                     )))
                 })?;
+
+                // Track DML for auto-ANALYZE threshold.
+                self.state
+                    .dml_counter
+                    .record_dml(tenant_id.as_u32(), &info.collection);
             }
 
             // Track reads for snapshot isolation conflict detection.

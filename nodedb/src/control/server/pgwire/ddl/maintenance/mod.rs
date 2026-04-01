@@ -1,4 +1,5 @@
 pub mod analyze;
+pub mod auto_analyze;
 pub mod compact;
 pub mod reindex;
 pub mod storage_info;

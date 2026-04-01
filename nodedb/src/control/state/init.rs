@@ -171,6 +171,8 @@ impl SharedState {
             tuning: TuningConfig::default(),
             schema_version: crate::control::server::pgwire::handler::prepared::SchemaVersion::new(),
             sequence_registry: Arc::new(crate::control::sequence::SequenceRegistry::new()),
+            dml_counter:
+                crate::control::server::pgwire::ddl::maintenance::auto_analyze::DmlCounter::new(),
             wal_catchup_lsn: AtomicU64::new(0),
             _shutdown_senders: shutdown_senders,
         })
@@ -326,6 +328,8 @@ impl SharedState {
             tuning,
             schema_version: crate::control::server::pgwire::handler::prepared::SchemaVersion::new(),
             sequence_registry,
+            dml_counter:
+                crate::control::server::pgwire::ddl::maintenance::auto_analyze::DmlCounter::new(),
             wal_catchup_lsn: AtomicU64::new(0),
             _shutdown_senders: shutdown_senders,
         }))
