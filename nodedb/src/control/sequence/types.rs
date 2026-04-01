@@ -102,39 +102,57 @@ impl SequenceHandle {
         let last = values[n - 1];
         if increment > 0 && last > self.def.max_value {
             if self.def.cycle {
-                // Wrap: reset counter to min_value + remainder.
-                self.counter.store(self.def.min_value, Ordering::Relaxed);
-                // Regenerate values from min_value.
-                values.clear();
-                for i in 0..n {
-                    values.push(self.def.min_value + increment * i as i64);
-                }
-                self.counter.store(
-                    self.def.min_value + increment * (n as i64 - 1),
+                // CAS loop to atomically wrap around — prevents race with concurrent nextval.
+                let new_base = self.def.min_value;
+                let new_counter = new_base + increment * (n as i64 - 1);
+                let overflowed = prev + total_advance;
+                let _ = self.counter.compare_exchange(
+                    overflowed,
+                    new_counter,
+                    Ordering::AcqRel,
                     Ordering::Relaxed,
                 );
+                values.clear();
+                for i in 0..n {
+                    values.push(new_base + increment * i as i64);
+                }
                 return Ok(values);
             }
-            // Rollback.
-            self.counter.store(prev, Ordering::Relaxed);
+            // Rollback via CAS (only if no concurrent modification).
+            let _ = self.counter.compare_exchange(
+                prev + total_advance,
+                prev,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            );
             return Err(SequenceError::Exhausted {
                 name: self.def.name.clone(),
             });
         }
         if increment < 0 && last < self.def.min_value {
             if self.def.cycle {
-                self.counter.store(self.def.max_value, Ordering::Relaxed);
-                values.clear();
-                for i in 0..n {
-                    values.push(self.def.max_value + increment * i as i64);
-                }
-                self.counter.store(
-                    self.def.max_value + increment * (n as i64 - 1),
+                let new_base = self.def.max_value;
+                let new_counter = new_base + increment * (n as i64 - 1);
+                let overflowed = prev + total_advance;
+                let _ = self.counter.compare_exchange(
+                    overflowed,
+                    new_counter,
+                    Ordering::AcqRel,
                     Ordering::Relaxed,
                 );
+                values.clear();
+                for i in 0..n {
+                    values.push(new_base + increment * i as i64);
+                }
                 return Ok(values);
             }
-            self.counter.store(prev, Ordering::Relaxed);
+            // Rollback via CAS (only if no concurrent modification).
+            let _ = self.counter.compare_exchange(
+                prev + total_advance,
+                prev,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            );
             return Err(SequenceError::Exhausted {
                 name: self.def.name.clone(),
             });
