@@ -1,0 +1,333 @@
+//! SharedState constructors: new (test), new_with_credentials (test+catalog), open (production).
+
+use std::sync::atomic::AtomicU64;
+use std::sync::{Arc, Mutex};
+
+use nodedb_types::config::TuningConfig;
+
+use crate::bridge::dispatch::Dispatcher;
+use crate::control::request_tracker::RequestTracker;
+use crate::control::security::apikey::ApiKeyStore;
+use crate::control::security::audit::AuditLog;
+use crate::control::security::credential::CredentialStore;
+use crate::control::security::permission::PermissionStore;
+use crate::control::security::rls::RlsPolicyStore;
+use crate::control::security::role::RoleStore;
+use crate::control::security::tenant::{TenantIsolation, TenantQuota};
+use crate::control::server::sync::dlq::{DlqConfig, SyncDlq};
+use crate::wal::WalManager;
+
+use super::SharedState;
+
+impl SharedState {
+    /// Monotonic counter for unique test temp dirs (prevents redb lock collisions).
+    fn unique_test_id() -> u64 {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Create shared state with a pre-built credential store (for tests that need catalog).
+    pub fn new_with_credentials(
+        dispatcher: Dispatcher,
+        wal: Arc<WalManager>,
+        credentials: Arc<CredentialStore>,
+    ) -> Arc<Self> {
+        let mut state = Self::new_inner(dispatcher, wal);
+        if let Some(s) = Arc::get_mut(&mut state) {
+            s.credentials = credentials;
+        }
+        state
+    }
+
+    /// Create shared state with in-memory credential store (for tests).
+    pub fn new(dispatcher: Dispatcher, wal: Arc<WalManager>) -> Arc<Self> {
+        Self::new_inner(dispatcher, wal)
+    }
+
+    fn new_inner(dispatcher: Dispatcher, wal: Arc<WalManager>) -> Arc<Self> {
+        let mut shutdown_senders: Vec<tokio::sync::watch::Sender<bool>> = Vec::new();
+        let test_id = Self::unique_test_id();
+        Arc::new(Self {
+            dispatcher: Mutex::new(dispatcher),
+            tracker: RequestTracker::new(),
+            wal,
+            credentials: Arc::new(CredentialStore::new()),
+            audit: Mutex::new(AuditLog::new(10_000)),
+            api_keys: ApiKeyStore::new(),
+            roles: RoleStore::new(),
+            permissions: PermissionStore::new(),
+            tenants: Mutex::new(TenantIsolation::new(TenantQuota::default())),
+            cluster_topology: None,
+            cluster_routing: None,
+            cluster_transport: None,
+            node_id: 0,
+            propose_tracker: None,
+            raft_proposer: None,
+            raft_status_fn: None,
+            migration_tracker: None,
+            rls: RlsPolicyStore::new(),
+            blacklist: crate::control::security::blacklist::store::BlacklistStore::new(),
+            auth_users: crate::control::security::jit::auth_user::AuthUserStore::new(),
+            orgs: crate::control::security::org::store::OrgStore::new(),
+            scope_defs: crate::control::security::scope::store::ScopeStore::new(),
+            scope_grants: crate::control::security::scope::grant::ScopeGrantStore::new(),
+            rate_limiter: crate::control::security::ratelimit::limiter::RateLimiter::default(),
+            session_handles: crate::control::security::session_handle::SessionHandleStore::default(
+            ),
+            session_registry: crate::control::security::session_registry::SessionRegistry::new(),
+            escalation: crate::control::security::escalation::EscalationEngine::default(),
+            usage_counter: Arc::new(
+                crate::control::security::metering::counter::UsageCounter::new(),
+            ),
+            usage_store: Arc::new(crate::control::security::metering::store::UsageStore::default()),
+            quota_manager: crate::control::security::metering::quota::QuotaManager::new(),
+            auth_api_keys: crate::control::security::auth_apikey::AuthApiKeyStore::new(),
+            impersonation: crate::control::security::impersonation::ImpersonationStore::default(),
+            emergency: crate::control::security::emergency::EmergencyState::default(),
+            auth_metrics: crate::control::security::observability::AuthMetrics::new(),
+            ceilings: crate::control::security::ceiling::CeilingStore::new(),
+            redaction: crate::control::security::redaction::RedactionStore::new(),
+            risk_scorer: crate::control::security::risk::RiskScorer::default(),
+            tls_policy: crate::control::security::tls_policy::TlsPolicy::default(),
+            siem: crate::control::security::siem::SiemExporter::default(),
+            jwks_registry: None,
+            sync_dlq: Mutex::new(SyncDlq::new(DlqConfig::default())),
+            audit_retention_days: 0,
+            idle_timeout_secs: 0,
+            ws_sessions: std::sync::RwLock::new(std::collections::HashMap::new()),
+            topic_registry: crate::control::pubsub::TopicRegistry::new(10_000),
+            shape_registry: crate::control::server::sync::shape::ShapeRegistry::new(),
+            change_stream: crate::control::change_stream::ChangeStream::new(4096),
+            trigger_registry: crate::control::trigger::TriggerRegistry::new(),
+            block_cache: crate::control::planner::procedural::executor::ProcedureBlockCache::new(
+                4096,
+            ),
+            stream_registry: Arc::new(crate::event::cdc::StreamRegistry::new()),
+            cdc_router: Arc::new(crate::event::cdc::CdcRouter::new(Arc::new(
+                crate::event::cdc::StreamRegistry::new(),
+            ))),
+            group_registry: crate::event::cdc::GroupRegistry::new(),
+            offset_store: {
+                let dir = std::env::temp_dir().join(format!(
+                    "nodedb-test-offsets-{}-{test_id}",
+                    std::process::id(),
+                ));
+                Arc::new(
+                    crate::event::cdc::OffsetStore::open(&dir)
+                        .expect("failed to open test offset store"),
+                )
+            },
+            schedule_registry: Arc::new(crate::event::scheduler::ScheduleRegistry::new()),
+            job_history: {
+                let dir = std::env::temp_dir().join(format!(
+                    "nodedb-test-history-{}-{test_id}",
+                    std::process::id(),
+                ));
+                Arc::new(
+                    crate::event::scheduler::JobHistoryStore::open(&dir)
+                        .expect("failed to open test job history"),
+                )
+            },
+            ep_topic_registry: crate::event::topic::EpTopicRegistry::new(),
+            webhook_manager: {
+                let (tx, rx) = tokio::sync::watch::channel(false);
+                shutdown_senders.push(tx);
+                crate::event::webhook::WebhookManager::new(rx)
+            },
+            mv_registry: Arc::new(crate::event::streaming_mv::MvRegistry::new()),
+            consumer_assignments: crate::event::cdc::consumer_group::ConsumerAssignments::new(),
+            watermark_tracker: Arc::new(crate::event::watermark_tracker::WatermarkTracker::new()),
+            event_plane_budget: Arc::new(crate::event::budget::EventPlaneBudget::new()),
+            cross_shard_dispatcher: None,
+            cross_shard_dlq: None,
+            cross_shard_metrics: None,
+            hwm_store: None,
+            kafka_manager: {
+                let (tx, rx) = tokio::sync::watch::channel(false);
+                shutdown_senders.push(tx);
+                crate::event::kafka::KafkaManager::new(rx)
+            },
+            crdt_sync_delivery: Arc::new(crate::event::crdt_sync::CrdtSyncDelivery::new()),
+            delta_packager: Arc::new(crate::event::crdt_sync::DeltaPackager::new()),
+            mv_persistence: {
+                let dir = std::env::temp_dir().join(format!(
+                    "nodedb-test-mvstate-{}-{test_id}",
+                    std::process::id(),
+                ));
+                Arc::new(
+                    crate::event::streaming_mv::MvPersistence::open(&dir)
+                        .expect("failed to open test MV persistence"),
+                )
+            },
+            connections_rejected: AtomicU64::new(0),
+            connections_accepted: AtomicU64::new(0),
+            system_metrics: Some(Arc::new(crate::control::metrics::SystemMetrics::new())),
+            epoch_tracker: Mutex::new(std::collections::HashMap::new()),
+            ts_partition_registries: Some(Mutex::new(std::collections::HashMap::new())),
+            cold_storage: None,
+            cluster_version_state: Mutex::new(
+                crate::control::rolling_upgrade::ClusterVersionState::new(),
+            ),
+            tuning: TuningConfig::default(),
+            schema_version: crate::control::server::pgwire::handler::prepared::SchemaVersion::new(),
+            sequence_registry: Arc::new(crate::control::sequence::SequenceRegistry::new()),
+            wal_catchup_lsn: AtomicU64::new(0),
+            _shutdown_senders: shutdown_senders,
+        })
+    }
+
+    /// Create shared state with persistent credential store (for production).
+    pub fn open(
+        dispatcher: Dispatcher,
+        wal: Arc<WalManager>,
+        catalog_path: &std::path::Path,
+        auth_config: &crate::config::auth::AuthConfig,
+        tuning: TuningConfig,
+    ) -> crate::Result<Arc<Self>> {
+        let mut credentials = CredentialStore::open(catalog_path)?;
+        credentials.set_lockout_policy(
+            auth_config.max_failed_logins,
+            auth_config.lockout_duration_secs,
+            auth_config.password_expiry_days,
+        );
+
+        let api_keys = ApiKeyStore::new();
+        let roles = RoleStore::new();
+        let permissions = PermissionStore::new();
+        let blacklist = crate::control::security::blacklist::store::BlacklistStore::new();
+        let trigger_registry = crate::control::trigger::TriggerRegistry::new();
+        let stream_registry = Arc::new(crate::event::cdc::StreamRegistry::new());
+        let group_registry = crate::event::cdc::GroupRegistry::new();
+        let schedule_registry = Arc::new(crate::event::scheduler::ScheduleRegistry::new());
+        let ep_topic_registry = crate::event::topic::EpTopicRegistry::new();
+        let mv_registry = Arc::new(crate::event::streaming_mv::MvRegistry::new());
+        let sequence_registry = Arc::new(crate::control::sequence::SequenceRegistry::new());
+        let mut audit_start_seq = 1u64;
+        if let Some(catalog) = credentials.catalog() {
+            api_keys.load_from(catalog)?;
+            roles.load_from(catalog)?;
+            permissions.load_from(catalog)?;
+            blacklist.load_from(catalog)?;
+            trigger_registry.load_all(catalog);
+            stream_registry.load_from_catalog(catalog);
+            group_registry.load_from_catalog(catalog);
+            schedule_registry.load_from_catalog(catalog);
+            ep_topic_registry.load_from_catalog(catalog);
+            mv_registry.load_from_catalog(catalog);
+            sequence_registry.load_from_catalog(catalog);
+            let max_seq = catalog.load_audit_max_seq()?;
+            if max_seq > 0 {
+                audit_start_seq = max_seq + 1;
+            }
+        }
+
+        let mut audit_log = AuditLog::new(10_000);
+        audit_log.set_next_seq(audit_start_seq);
+
+        let mut shutdown_senders: Vec<tokio::sync::watch::Sender<bool>> = Vec::new();
+        Ok(Arc::new(Self {
+            dispatcher: Mutex::new(dispatcher),
+            tracker: RequestTracker::new(),
+            wal,
+            credentials: Arc::new(credentials),
+            audit: Mutex::new(audit_log),
+            api_keys,
+            roles,
+            permissions,
+            trigger_registry,
+            block_cache: crate::control::planner::procedural::executor::ProcedureBlockCache::new(
+                4096,
+            ),
+            stream_registry: Arc::clone(&stream_registry),
+            cdc_router: Arc::new(crate::event::cdc::CdcRouter::new(stream_registry)),
+            group_registry,
+            offset_store: Arc::new(crate::event::cdc::OffsetStore::open(
+                catalog_path.parent().unwrap_or(std::path::Path::new(".")),
+            )?),
+            schedule_registry,
+            job_history: Arc::new(crate::event::scheduler::JobHistoryStore::open(
+                catalog_path.parent().unwrap_or(std::path::Path::new(".")),
+            )?),
+            ep_topic_registry,
+            webhook_manager: {
+                let (tx, rx) = tokio::sync::watch::channel(false);
+                shutdown_senders.push(tx);
+                crate::event::webhook::WebhookManager::new(rx)
+            },
+            mv_registry,
+            consumer_assignments: crate::event::cdc::consumer_group::ConsumerAssignments::new(),
+            watermark_tracker: Arc::new(crate::event::watermark_tracker::WatermarkTracker::new()),
+            event_plane_budget: Arc::new(crate::event::budget::EventPlaneBudget::new()),
+            cross_shard_dispatcher: None,
+            cross_shard_dlq: None,
+            cross_shard_metrics: None,
+            hwm_store: None,
+            kafka_manager: {
+                let (tx, rx) = tokio::sync::watch::channel(false);
+                shutdown_senders.push(tx);
+                crate::event::kafka::KafkaManager::new(rx)
+            },
+            crdt_sync_delivery: Arc::new(crate::event::crdt_sync::CrdtSyncDelivery::new()),
+            delta_packager: Arc::new(crate::event::crdt_sync::DeltaPackager::new()),
+            mv_persistence: Arc::new(crate::event::streaming_mv::MvPersistence::open(
+                catalog_path.parent().unwrap_or(std::path::Path::new(".")),
+            )?),
+            tenants: Mutex::new(TenantIsolation::new(TenantQuota::default())),
+            cluster_topology: None,
+            cluster_routing: None,
+            cluster_transport: None,
+            node_id: 0,
+            propose_tracker: None,
+            raft_proposer: None,
+            raft_status_fn: None,
+            migration_tracker: None,
+            rls: RlsPolicyStore::new(),
+            blacklist,
+            auth_users: crate::control::security::jit::auth_user::AuthUserStore::new(),
+            orgs: crate::control::security::org::store::OrgStore::new(),
+            scope_defs: crate::control::security::scope::store::ScopeStore::new(),
+            scope_grants: crate::control::security::scope::grant::ScopeGrantStore::new(),
+            rate_limiter: crate::control::security::ratelimit::limiter::RateLimiter::default(),
+            session_handles: crate::control::security::session_handle::SessionHandleStore::default(
+            ),
+            session_registry: crate::control::security::session_registry::SessionRegistry::new(),
+            escalation: crate::control::security::escalation::EscalationEngine::default(),
+            usage_counter: Arc::new(
+                crate::control::security::metering::counter::UsageCounter::new(),
+            ),
+            usage_store: Arc::new(crate::control::security::metering::store::UsageStore::default()),
+            quota_manager: crate::control::security::metering::quota::QuotaManager::new(),
+            auth_api_keys: crate::control::security::auth_apikey::AuthApiKeyStore::new(),
+            impersonation: crate::control::security::impersonation::ImpersonationStore::default(),
+            emergency: crate::control::security::emergency::EmergencyState::default(),
+            auth_metrics: crate::control::security::observability::AuthMetrics::new(),
+            ceilings: crate::control::security::ceiling::CeilingStore::new(),
+            redaction: crate::control::security::redaction::RedactionStore::new(),
+            risk_scorer: crate::control::security::risk::RiskScorer::default(),
+            tls_policy: crate::control::security::tls_policy::TlsPolicy::default(),
+            siem: crate::control::security::siem::SiemExporter::default(),
+            jwks_registry: None,
+            sync_dlq: Mutex::new(SyncDlq::new(DlqConfig::default())),
+            audit_retention_days: auth_config.audit_retention_days,
+            idle_timeout_secs: auth_config.idle_timeout_secs,
+            ws_sessions: std::sync::RwLock::new(std::collections::HashMap::new()),
+            topic_registry: crate::control::pubsub::TopicRegistry::new(10_000),
+            shape_registry: crate::control::server::sync::shape::ShapeRegistry::new(),
+            change_stream: crate::control::change_stream::ChangeStream::new(4096),
+            connections_rejected: AtomicU64::new(0),
+            connections_accepted: AtomicU64::new(0),
+            system_metrics: Some(Arc::new(crate::control::metrics::SystemMetrics::new())),
+            epoch_tracker: Mutex::new(std::collections::HashMap::new()),
+            ts_partition_registries: Some(Mutex::new(std::collections::HashMap::new())),
+            cold_storage: None,
+            cluster_version_state: Mutex::new(
+                crate::control::rolling_upgrade::ClusterVersionState::new(),
+            ),
+            tuning,
+            schema_version: crate::control::server::pgwire::handler::prepared::SchemaVersion::new(),
+            sequence_registry,
+            wal_catchup_lsn: AtomicU64::new(0),
+            _shutdown_senders: shutdown_senders,
+        }))
+    }
+}
