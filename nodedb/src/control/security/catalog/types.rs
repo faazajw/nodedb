@@ -84,6 +84,10 @@ pub(super) const SEQUENCES: TableDefinition<&str, &[u8]> =
 pub(super) const SEQUENCE_STATE: TableDefinition<&str, &[u8]> =
     TableDefinition::new("_system.sequence_state");
 
+/// Table: "{tenant_id}:{collection}:{column}" -> MessagePack-serialized column statistics.
+pub(super) const COLUMN_STATS: TableDefinition<&str, &[u8]> =
+    TableDefinition::new("_system.column_stats");
+
 /// Table: metadata key -> value bytes (counters, config).
 pub(super) const METADATA: TableDefinition<&str, &[u8]> = TableDefinition::new("_system.metadata");
 
