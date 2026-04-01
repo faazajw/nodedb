@@ -214,6 +214,20 @@ pub async fn dispatch(
         return Some(super::schedule::show_schedules(state, identity));
     }
 
+    // Sequences: CREATE/DROP/ALTER/SHOW SEQUENCE
+    if upper.starts_with("CREATE SEQUENCE ") {
+        return Some(super::sequence::create_sequence(state, identity, sql));
+    }
+    if upper.starts_with("DROP SEQUENCE ") {
+        return Some(super::sequence::drop_sequence(state, identity, &parts));
+    }
+    if upper.starts_with("ALTER SEQUENCE ") {
+        return Some(super::sequence::alter_sequence(state, identity, sql));
+    }
+    if upper == "SHOW SEQUENCES" || upper.starts_with("SHOW SEQUENCES ") {
+        return Some(super::sequence::show_sequences(state, identity));
+    }
+
     // Triggers: CREATE [OR REPLACE] [SYNC|DEFERRED] TRIGGER ...
     if upper.starts_with("CREATE TRIGGER ")
         || upper.starts_with("CREATE OR REPLACE TRIGGER ")

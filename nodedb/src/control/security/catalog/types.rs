@@ -76,6 +76,14 @@ pub(super) const PROCEDURES: TableDefinition<&str, &[u8]> =
 pub(super) const DEPENDENCIES: TableDefinition<&str, &[u8]> =
     TableDefinition::new("_system.dependencies");
 
+/// Table: "{tenant_id}:{name}" -> MessagePack-serialized sequence definition.
+pub(super) const SEQUENCES: TableDefinition<&str, &[u8]> =
+    TableDefinition::new("_system.sequences");
+
+/// Table: "{tenant_id}:{name}" -> MessagePack-serialized sequence runtime state.
+pub(super) const SEQUENCE_STATE: TableDefinition<&str, &[u8]> =
+    TableDefinition::new("_system.sequence_state");
+
 /// Table: metadata key -> value bytes (counters, config).
 pub(super) const METADATA: TableDefinition<&str, &[u8]> = TableDefinition::new("_system.metadata");
 

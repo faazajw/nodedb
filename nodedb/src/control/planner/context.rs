@@ -74,13 +74,20 @@ impl QueryContext {
     /// Collections and change streams are visible to DataFusion as tables.
     /// This is the standard constructor — all query paths should use this.
     pub fn for_state(state: &crate::control::state::SharedState, tenant_id: u32) -> Self {
-        Self::with_catalog(
+        let ctx = Self::with_catalog(
             Arc::clone(&state.credentials),
             tenant_id,
             Arc::clone(&state.stream_registry),
             Arc::clone(&state.cdc_router),
             Arc::clone(&state.mv_registry),
-        )
+        );
+        // Register sequence UDFs (nextval, currval, setval) with this tenant's context.
+        register_sequence_udfs(
+            &ctx.session,
+            Arc::clone(&state.sequence_registry),
+            tenant_id,
+        );
+        ctx
     }
 
     /// Create a query context with catalog + stream + MV integration.
@@ -346,6 +353,10 @@ pub const SYSTEM_FUNCTION_NAMES: &[&str] = &[
     "approx_percentile",
     "approx_topk",
     "approx_count",
+    // Sequence functions (registered per-tenant in for_state).
+    "nextval",
+    "currval",
+    "setval",
 ];
 
 fn register_udfs(session: &SessionContext) {
@@ -374,6 +385,28 @@ fn register_udfs(session: &SessionContext) {
     session.register_udf(ScalarUDF::new_from_impl(GeoDistance::new()));
     // Timeseries UDFs (window + aggregate).
     nodedb_query::ts_udfs::register_timeseries_udfs(session);
+}
+
+/// Register sequence UDFs (nextval, currval, setval) bound to a specific
+/// tenant and SequenceRegistry. Called from `for_state()` which has access
+/// to SharedState.
+fn register_sequence_udfs(
+    session: &SessionContext,
+    registry: Arc<crate::control::sequence::SequenceRegistry>,
+    tenant_id: u32,
+) {
+    use super::udf::sequence::{CurrVal, NextVal, SetVal};
+    use datafusion::logical_expr::ScalarUDF;
+
+    session.register_udf(ScalarUDF::new_from_impl(NextVal::new(
+        Arc::clone(&registry),
+        tenant_id,
+    )));
+    session.register_udf(ScalarUDF::new_from_impl(CurrVal::new(
+        Arc::clone(&registry),
+        tenant_id,
+    )));
+    session.register_udf(ScalarUDF::new_from_impl(SetVal::new(registry, tenant_id)));
 }
 
 #[cfg(test)]

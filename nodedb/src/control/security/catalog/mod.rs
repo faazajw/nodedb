@@ -15,6 +15,8 @@ pub mod procedures;
 pub mod schedules;
 pub mod scopes;
 pub mod security;
+pub mod sequence_types;
+pub mod sequences;
 pub mod streaming_mvs;
 pub mod topics;
 pub mod trigger_types;
@@ -28,6 +30,7 @@ pub use function_types::{
 pub use orgs::{StoredOrg, StoredOrgMember};
 pub use procedure_types::StoredProcedure;
 pub use scopes::{StoredScope, StoredScopeGrant};
+pub use sequence_types::{SequenceState, StoredSequence};
 pub use trigger_types::StoredTrigger;
 pub use types::{
     StoredApiKey, StoredAuditEntry, StoredAuthUser, StoredBlacklistEntry, StoredCollection,

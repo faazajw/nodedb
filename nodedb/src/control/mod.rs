@@ -20,6 +20,7 @@ pub mod rolling_upgrade;
 pub mod router;
 pub mod scatter_gather;
 pub mod security;
+pub mod sequence;
 pub mod server;
 pub mod state;
 pub mod trace_context;

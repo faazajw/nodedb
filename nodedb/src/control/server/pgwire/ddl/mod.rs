@@ -37,6 +37,7 @@ pub mod schedule;
 pub mod schema_validation;
 pub mod scope_ddl;
 pub mod scope_query_ddl;
+pub mod sequence;
 pub mod service_account;
 pub mod session_ddl;
 pub mod spatial;

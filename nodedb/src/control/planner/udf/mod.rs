@@ -6,6 +6,7 @@ pub mod inline_rewrite;
 pub mod multi_vector_search;
 pub(crate) mod nav;
 pub mod rrf_score;
+pub mod sequence;
 pub mod spatial;
 pub mod text_match;
 pub mod user_function;
