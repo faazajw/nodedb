@@ -4,9 +4,36 @@
 //! The parser produces these types; the compiler consumes them.
 
 /// A complete procedural block: `BEGIN ... END`.
+///
+/// Optionally contains exception handlers that catch errors raised during
+/// statement execution (similar to PL/pgSQL's `EXCEPTION WHEN ... THEN ...`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProceduralBlock {
     pub statements: Vec<Statement>,
+    /// Exception handlers, evaluated in order. If a statement raises an error,
+    /// the first matching handler executes. If no handler matches, the error
+    /// propagates. Empty if no EXCEPTION clause.
+    pub exception_handlers: Vec<ExceptionHandler>,
+}
+
+/// An exception handler: catches errors matching a condition and executes a body.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExceptionHandler {
+    /// The condition to match.
+    pub condition: ExceptionCondition,
+    /// Statements to execute when this handler matches.
+    pub body: Vec<Statement>,
+}
+
+/// Exception condition for matching errors.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ExceptionCondition {
+    /// `WHEN OTHERS THEN` — catches any error.
+    Others,
+    /// `WHEN SQLSTATE '<code>' THEN` — matches a specific SQLSTATE code.
+    SqlState(String),
+    /// `WHEN <name> THEN` — matches a named condition (e.g., `UNIQUE_VIOLATION`).
+    Named(String),
 }
 
 /// A single statement in a procedural block.
@@ -74,6 +101,15 @@ pub enum Statement {
 
     /// `ROLLBACK;` — rollback current transaction (Tier 4 only).
     Rollback,
+
+    /// `SAVEPOINT name;` — record a savepoint (Tier 4 only).
+    Savepoint { name: String },
+
+    /// `ROLLBACK TO [SAVEPOINT] name;` — rollback to a savepoint (Tier 4 only).
+    RollbackTo { name: String },
+
+    /// `RELEASE [SAVEPOINT] name;` — release a savepoint (Tier 4 only).
+    ReleaseSavepoint { name: String },
 }
 
 /// An ELSIF branch: condition + body.

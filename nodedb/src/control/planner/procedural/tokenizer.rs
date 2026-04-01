@@ -4,6 +4,8 @@
 //! between procedural keywords are captured as opaque `SqlFragment` tokens
 //! — DataFusion parses them later during compilation.
 
+use super::error::ProceduralError;
+
 /// A token in the procedural SQL stream.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
@@ -48,6 +50,9 @@ pub enum Token {
     Delete,
     Commit,
     Rollback,
+    Savepoint,
+    Release,
+    To,
 
     // ── Structure ──
     Semicolon,
@@ -71,7 +76,7 @@ pub enum Token {
 /// The tokenizer is keyword-aware: it recognizes procedural keywords and
 /// captures everything else as `SqlFragment` tokens. String literals are
 /// preserved (not split on keywords inside strings).
-pub fn tokenize(input: &str) -> Result<Vec<Token>, String> {
+pub fn tokenize(input: &str) -> Result<Vec<Token>, ProceduralError> {
     let mut tokens = Vec::new();
     let bytes = input.as_bytes();
     let len = bytes.len();
@@ -197,6 +202,9 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>, String> {
                 "DELETE" => tokens.push(Token::Delete),
                 "COMMIT" => tokens.push(Token::Commit),
                 "ROLLBACK" => tokens.push(Token::Rollback),
+                "SAVEPOINT" => tokens.push(Token::Savepoint),
+                "RELEASE" => tokens.push(Token::Release),
+                "TO" => tokens.push(Token::To),
                 _ => tokens.push(Token::Ident(word.to_string())),
             }
             continue;
@@ -212,7 +220,7 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>, String> {
 }
 
 /// Read a single-quoted string literal, handling escaped quotes ('').
-fn read_string_literal(input: &str, start: usize) -> Result<(String, usize), String> {
+fn read_string_literal(input: &str, start: usize) -> Result<(String, usize), ProceduralError> {
     let bytes = input.as_bytes();
     let mut i = start + 1; // skip opening quote
     let mut result = String::new();
@@ -232,7 +240,7 @@ fn read_string_literal(input: &str, start: usize) -> Result<(String, usize), Str
             i += 1;
         }
     }
-    Err("unterminated string literal".to_string())
+    Err(ProceduralError::tokenize("unterminated string literal"))
 }
 
 /// Check if the current word + next word form a two-word keyword.

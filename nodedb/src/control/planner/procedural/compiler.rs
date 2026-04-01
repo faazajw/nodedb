@@ -14,6 +14,7 @@
 use std::collections::HashMap;
 
 use super::ast::*;
+use super::error::ProceduralError;
 use super::validate::MAX_LOOP_UNROLL;
 
 /// Compile a procedural block into a single SQL expression string.
@@ -23,7 +24,7 @@ use super::validate::MAX_LOOP_UNROLL;
 ///
 /// Returns the compiled SQL expression, or an error if the block cannot be
 /// compiled to a single expression.
-pub fn compile_to_sql(block: &ProceduralBlock) -> Result<String, String> {
+pub fn compile_to_sql(block: &ProceduralBlock) -> Result<String, ProceduralError> {
     let mut ctx = CompileContext::new();
     compile_statements(&block.statements, &mut ctx)
 }
@@ -56,7 +57,10 @@ impl CompileContext {
 ///
 /// The last RETURN in the control flow determines the expression's value.
 /// If no RETURN is reached, the expression evaluates to NULL.
-fn compile_statements(stmts: &[Statement], ctx: &mut CompileContext) -> Result<String, String> {
+fn compile_statements(
+    stmts: &[Statement],
+    ctx: &mut CompileContext,
+) -> Result<String, ProceduralError> {
     // Strategy: process statements sequentially. DECLARE and ASSIGN update
     // the variable context. IF and FOR produce CASE WHEN expressions.
     // RETURN sets the final expression value.
@@ -109,34 +113,40 @@ fn compile_statements(stmts: &[Statement], ctx: &mut CompileContext) -> Result<S
                 // RAISE EXCEPTION in a branch terminates that path.
                 // We can't represent this directly in a CASE WHEN expression.
                 // For now, raise in a non-branching position → compile error.
-                return Err(
+                return Err(ProceduralError::compile(
                     "RAISE EXCEPTION outside an IF branch cannot be compiled to an expression. \
-                     Move it inside an IF block or use CREATE PROCEDURE"
-                        .into(),
-                );
+                     Move it inside an IF block or use CREATE PROCEDURE",
+                ));
             }
             Statement::ReturnQuery { .. } => {
-                return Err(
+                return Err(ProceduralError::compile(
                     "RETURN QUERY in procedural functions is not yet supported. \
-                     Use a plain RETURN with a subquery expression"
-                        .into(),
-                );
+                     Use a plain RETURN with a subquery expression",
+                ));
             }
             // LOOP/WHILE rejected by validator for function bodies.
             Statement::Loop { .. } | Statement::While { .. } => {
-                return Err("LOOP/WHILE cannot be compiled to an expression. \
-                     Use FOR with literal bounds or CREATE PROCEDURE"
-                    .into());
+                return Err(ProceduralError::compile(
+                    "LOOP/WHILE cannot be compiled to an expression. \
+                     Use FOR with literal bounds or CREATE PROCEDURE",
+                ));
             }
             // Break/Continue should not appear outside loops (validator catches this).
             Statement::Break | Statement::Continue => {
-                return Err("BREAK/CONTINUE outside of a loop".into());
+                return Err(ProceduralError::compile("BREAK/CONTINUE outside of a loop"));
             }
             // Raise NOTICE/WARNING — informational, skip (no expression effect).
             Statement::Raise { .. } => {}
-            // DML/Commit/Rollback — should be caught by validator before we get here.
-            Statement::Dml { .. } | Statement::Commit | Statement::Rollback => {
-                return Err("DML/transaction control not allowed in function bodies".into());
+            // DML/transaction control — should be caught by validator before we get here.
+            Statement::Dml { .. }
+            | Statement::Commit
+            | Statement::Rollback
+            | Statement::Savepoint { .. }
+            | Statement::RollbackTo { .. }
+            | Statement::ReleaseSavepoint { .. } => {
+                return Err(ProceduralError::compile(
+                    "DML/transaction control not allowed in function bodies",
+                ));
             }
         }
     }
@@ -152,7 +162,7 @@ fn compile_if(
     elsif_branches: &[ElsIfBranch],
     else_block: &Option<Vec<Statement>>,
     ctx: &mut CompileContext,
-) -> Result<String, String> {
+) -> Result<String, ProceduralError> {
     let mut parts = Vec::new();
 
     // WHEN condition THEN result
@@ -197,17 +207,13 @@ fn compile_for(
     reverse: bool,
     body: &[Statement],
     ctx: &mut CompileContext,
-) -> Result<String, String> {
-    let start_val = start
-        .sql
-        .trim()
-        .parse::<i64>()
-        .map_err(|_| "FOR loop start must be integer literal in function bodies")?;
-    let end_val = end
-        .sql
-        .trim()
-        .parse::<i64>()
-        .map_err(|_| "FOR loop end must be integer literal in function bodies")?;
+) -> Result<String, ProceduralError> {
+    let start_val = start.sql.trim().parse::<i64>().map_err(|_| {
+        ProceduralError::compile("FOR loop start must be integer literal in function bodies")
+    })?;
+    let end_val = end.sql.trim().parse::<i64>().map_err(|_| {
+        ProceduralError::compile("FOR loop end must be integer literal in function bodies")
+    })?;
 
     let iterations: Vec<i64> = if reverse {
         (end_val..=start_val).rev().collect()
@@ -216,10 +222,10 @@ fn compile_for(
     };
 
     if iterations.len() as u64 > MAX_LOOP_UNROLL {
-        return Err(format!(
+        return Err(ProceduralError::compile(format!(
             "FOR loop has {} iterations, exceeds unrolling threshold ({MAX_LOOP_UNROLL})",
             iterations.len()
-        ));
+        )));
     }
 
     if iterations.is_empty() {
@@ -335,7 +341,10 @@ mod tests {
     use super::*;
 
     fn make_block(stmts: Vec<Statement>) -> ProceduralBlock {
-        ProceduralBlock { statements: stmts }
+        ProceduralBlock {
+            statements: stmts,
+            exception_handlers: Vec::new(),
+        }
     }
 
     #[test]

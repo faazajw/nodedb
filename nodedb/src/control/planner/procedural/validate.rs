@@ -7,6 +7,7 @@
 //! - No unsupported patterns (dynamic SQL, unbounded recursion)
 
 use super::ast::*;
+use super::error::ProceduralError;
 
 /// Maximum iterations a loop can be unrolled to during plan compilation.
 /// Loops exceeding this threshold are rejected at CREATE FUNCTION time.
@@ -17,25 +18,33 @@ pub const MAX_LOOP_UNROLL: u64 = 16;
 ///
 /// Returns `Ok(())` if the block is valid, or `Err(message)` with a clear
 /// error message if it contains forbidden constructs.
-pub fn validate_function_block(block: &ProceduralBlock) -> Result<(), String> {
+pub fn validate_function_block(block: &ProceduralBlock) -> Result<(), ProceduralError> {
     for stmt in &block.statements {
         validate_statement(stmt, 0)?;
     }
     Ok(())
 }
 
-fn validate_statement(stmt: &Statement, loop_depth: usize) -> Result<(), String> {
+fn validate_statement(stmt: &Statement, loop_depth: usize) -> Result<(), ProceduralError> {
     match stmt {
-        Statement::Dml { sql } => Err(format!(
+        Statement::Dml { sql } => Err(ProceduralError::validate(format!(
             "DML is not allowed in function bodies: '{sql}'. \
                  Use CREATE PROCEDURE for side-effecting logic"
+        ))),
+        Statement::Commit => Err(ProceduralError::validate(
+            "COMMIT is not allowed in function bodies. \
+                 Use CREATE PROCEDURE for transaction control",
         )),
-        Statement::Commit => Err("COMMIT is not allowed in function bodies. \
-                 Use CREATE PROCEDURE for transaction control"
-            .into()),
-        Statement::Rollback => Err("ROLLBACK is not allowed in function bodies. \
-                 Use CREATE PROCEDURE for transaction control"
-            .into()),
+        Statement::Rollback | Statement::RollbackTo { .. } => Err(ProceduralError::validate(
+            "ROLLBACK is not allowed in function bodies. \
+                 Use CREATE PROCEDURE for transaction control",
+        )),
+        Statement::Savepoint { .. } | Statement::ReleaseSavepoint { .. } => {
+            Err(ProceduralError::validate(
+                "SAVEPOINT is not allowed in function bodies. \
+                 Use CREATE PROCEDURE for transaction control",
+            ))
+        }
         Statement::If {
             then_block,
             elsif_branches,
@@ -61,11 +70,12 @@ fn validate_statement(stmt: &Statement, loop_depth: usize) -> Result<(), String>
             // Bare LOOP and WHILE in functions are rejected — we can't determine
             // bound at compile time without analyzing the condition + body.
             // Use FOR with known bounds instead.
-            Err("LOOP/WHILE is not supported in function bodies \
+            Err(ProceduralError::validate(
+                "LOOP/WHILE is not supported in function bodies \
                  (loop bounds cannot be determined at compile time). \
                  Use FOR i IN start..end LOOP for bounded iteration, \
-                 or CREATE PROCEDURE for unbounded loops"
-                .into())
+                 or CREATE PROCEDURE for unbounded loops",
+            ))
         }
         Statement::For {
             body, start, end, ..
@@ -76,19 +86,18 @@ fn validate_statement(stmt: &Statement, loop_depth: usize) -> Result<(), String>
             if let (Some(s), Some(e)) = (start_val, end_val) {
                 let iterations = if e >= s { e - s + 1 } else { 0 };
                 if iterations > MAX_LOOP_UNROLL as i64 {
-                    return Err(format!(
+                    return Err(ProceduralError::validate(format!(
                         "FOR loop has {iterations} iterations, exceeds unrolling \
                          threshold ({MAX_LOOP_UNROLL}). Reduce range or use \
                          CREATE PROCEDURE for large iterations"
-                    ));
+                    )));
                 }
             } else {
-                return Err(
+                return Err(ProceduralError::validate(
                     "FOR loop bounds must be integer literals in function bodies \
                      (required for compile-time unrolling). Use CREATE PROCEDURE \
-                     for dynamic loop bounds"
-                        .into(),
-                );
+                     for dynamic loop bounds",
+                ));
             }
             for s in body {
                 validate_statement(s, loop_depth + 1)?;
@@ -97,7 +106,9 @@ fn validate_statement(stmt: &Statement, loop_depth: usize) -> Result<(), String>
         }
         Statement::Break | Statement::Continue => {
             if loop_depth == 0 {
-                Err("BREAK/CONTINUE outside of a loop".into())
+                Err(ProceduralError::validate(
+                    "BREAK/CONTINUE outside of a loop",
+                ))
             } else {
                 Ok(())
             }
@@ -120,7 +131,10 @@ mod tests {
     use super::*;
 
     fn make_block(stmts: Vec<Statement>) -> ProceduralBlock {
-        ProceduralBlock { statements: stmts }
+        ProceduralBlock {
+            statements: stmts,
+            exception_handlers: Vec::new(),
+        }
     }
 
     #[test]
