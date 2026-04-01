@@ -1,26 +1,53 @@
 //! Per-session temporary table registry.
 //!
 //! Temporary tables are stored as DataFusion MemTables, registered in
-//! the session's DataFusion context. They are invisible to other sessions
-//! and auto-dropped on disconnect.
+//! the session's DataFusion context per-query. They shadow permanent
+//! tables with the same name. Auto-dropped on disconnect.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::datasource::MemTable;
 
 use super::store::SessionStore;
 
-/// Metadata about a temporary table in this session.
-#[derive(Debug, Clone)]
-pub struct TempTableMeta {
-    /// Arrow schema of the table.
+/// A session-local temporary table entry.
+///
+/// Holds the Arrow schema, ON COMMIT behavior, and the backing DataFusion
+/// `MemTable` that stores the actual data as Arrow RecordBatches. The MemTable
+/// supports SELECT scans and INSERT INTO appends (via DataFusion's `insert_into`).
+///
+/// Registered per-query in the DataFusion context by `execute_planned_sql` to
+/// shadow permanent tables with the same name. Auto-dropped on session disconnect
+/// via `TempTableRegistry::clear()`.
+pub struct TempTableEntry {
+    /// Arrow schema of the table columns.
     pub schema: SchemaRef,
-    /// ON COMMIT behavior.
+    /// Transaction-end behavior for this temp table's data.
     pub on_commit: OnCommitAction,
+    /// DataFusion MemTable backing this temp table.
+    /// Supports SELECT reads and INSERT INTO appends.
+    pub mem_table: Arc<MemTable>,
 }
 
-/// What happens to temp table data on COMMIT.
+// MemTable is Debug but we need a manual impl since Arc<MemTable> isn't Clone-Debug-friendly everywhere.
+impl std::fmt::Debug for TempTableEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TempTableEntry")
+            .field("schema", &self.schema)
+            .field("on_commit", &self.on_commit)
+            .finish()
+    }
+}
+
+/// Transaction-end behavior for temporary table data.
+///
+/// PostgreSQL-compatible semantics:
+/// - `PreserveRows` (default): data persists across transactions.
+/// - `DeleteRows`: rows are deleted on COMMIT, table remains.
+/// - `Drop`: table is dropped entirely on COMMIT.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OnCommitAction {
     /// Keep rows (default).
@@ -33,8 +60,8 @@ pub enum OnCommitAction {
 
 /// Per-session temp table registry.
 pub struct TempTableRegistry {
-    /// Table name → metadata.
-    tables: HashMap<String, TempTableMeta>,
+    /// Table name → entry (metadata + MemTable).
+    tables: HashMap<String, TempTableEntry>,
 }
 
 impl TempTableRegistry {
@@ -44,14 +71,27 @@ impl TempTableRegistry {
         }
     }
 
-    /// Register a temp table.
-    pub fn register(&mut self, name: String, meta: TempTableMeta) {
-        self.tables.insert(name, meta);
+    /// Register a temp table with a backing MemTable.
+    pub fn register(&mut self, name: String, entry: TempTableEntry) {
+        self.tables.insert(name, entry);
     }
 
     /// Check if a temp table exists.
     pub fn exists(&self, name: &str) -> bool {
         self.tables.contains_key(name)
+    }
+
+    /// Get a temp table's MemTable for registration in a query context.
+    pub fn get_mem_table(&self, name: &str) -> Option<Arc<MemTable>> {
+        self.tables.get(name).map(|e| Arc::clone(&e.mem_table))
+    }
+
+    /// Get all temp table names and their MemTables (for query context registration).
+    pub fn all_mem_tables(&self) -> Vec<(String, Arc<MemTable>)> {
+        self.tables
+            .iter()
+            .map(|(name, entry)| (name.clone(), Arc::clone(&entry.mem_table)))
+            .collect()
     }
 
     /// Remove a temp table.
@@ -64,24 +104,12 @@ impl TempTableRegistry {
         self.tables.keys().cloned().collect()
     }
 
-    /// Get metadata for a temp table.
-    pub fn get(&self, name: &str) -> Option<&TempTableMeta> {
-        self.tables.get(name)
-    }
-
     /// Apply ON COMMIT actions. Returns names of tables to drop.
     pub fn on_commit(&mut self) -> Vec<String> {
         let mut to_drop = Vec::new();
-        for (name, meta) in &self.tables {
-            match meta.on_commit {
-                OnCommitAction::Drop => {
-                    to_drop.push(name.clone());
-                }
-                OnCommitAction::DeleteRows => {
-                    // Data clearing would need to re-register an empty MemTable.
-                    // For now, mark for the caller to handle.
-                }
-                OnCommitAction::PreserveRows => {}
+        for (name, entry) in &self.tables {
+            if entry.on_commit == OnCommitAction::Drop {
+                to_drop.push(name.clone());
             }
         }
         for name in &to_drop {
@@ -106,9 +134,9 @@ impl Default for TempTableRegistry {
 
 impl SessionStore {
     /// Register a temporary table in the session.
-    pub fn register_temp_table(&self, addr: &SocketAddr, name: String, meta: TempTableMeta) {
+    pub fn register_temp_table(&self, addr: &SocketAddr, name: String, entry: TempTableEntry) {
         self.write_session(addr, |session| {
-            session.temp_tables.register(name, meta);
+            session.temp_tables.register(name, entry);
         });
     }
 
@@ -127,6 +155,12 @@ impl SessionStore {
     /// Get all temp table names for the session.
     pub fn temp_table_names(&self, addr: &SocketAddr) -> Vec<String> {
         self.read_session(addr, |s| s.temp_tables.names())
+            .unwrap_or_default()
+    }
+
+    /// Get all temp table MemTables for query context registration.
+    pub fn temp_mem_tables(&self, addr: &SocketAddr) -> Vec<(String, Arc<MemTable>)> {
+        self.read_session(addr, |s| s.temp_tables.all_mem_tables())
             .unwrap_or_default()
     }
 }

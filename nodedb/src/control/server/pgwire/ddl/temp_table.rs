@@ -6,16 +6,18 @@
 
 use std::sync::Arc;
 
+use datafusion::datasource::MemTable;
 use pgwire::api::results::{Response, Tag};
 use pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
 
 use crate::control::security::identity::AuthenticatedIdentity;
 use crate::control::server::pgwire::session::SessionStore;
-use crate::control::server::pgwire::session::temp_tables::{OnCommitAction, TempTableMeta};
+use crate::control::server::pgwire::session::temp_tables::{OnCommitAction, TempTableEntry};
 
 /// Handle `CREATE TEMPORARY TABLE name (col1 type1, ...) [ON COMMIT ...]`.
 ///
 /// Also handles `CREATE TEMP TABLE` (alias).
+/// Creates a DataFusion MemTable and stores it in the session for query access.
 pub fn create_temp_table(
     sessions: &SessionStore,
     identity: &AuthenticatedIdentity,
@@ -24,23 +26,17 @@ pub fn create_temp_table(
 ) -> PgWireResult<Vec<Response>> {
     let upper = sql.to_uppercase();
 
-    // Parse table name.
-    // CREATE TEMPORARY TABLE name ... or CREATE TEMP TABLE name ...
     let parts: Vec<&str> = sql.split_whitespace().collect();
-    let name_idx = if upper.starts_with("CREATE TEMPORARY TABLE ")
-        || upper.starts_with("CREATE TEMP TABLE ")
-    {
-        3
-    } else {
+    if !upper.starts_with("CREATE TEMPORARY TABLE ") && !upper.starts_with("CREATE TEMP TABLE ") {
         return Err(PgWireError::UserError(Box::new(ErrorInfo::new(
             "ERROR".to_owned(),
             "42601".to_owned(),
             "syntax: CREATE TEMPORARY TABLE <name> (columns...)".to_owned(),
         ))));
-    };
+    }
 
     let name = parts
-        .get(name_idx)
+        .get(3)
         .ok_or_else(|| {
             PgWireError::UserError(Box::new(ErrorInfo::new(
                 "ERROR".to_owned(),
@@ -50,7 +46,6 @@ pub fn create_temp_table(
         })?
         .to_lowercase();
 
-    // Check if already exists in this session.
     if sessions.has_temp_table(addr, &name) {
         return Err(PgWireError::UserError(Box::new(ErrorInfo::new(
             "ERROR".to_owned(),
@@ -59,7 +54,6 @@ pub fn create_temp_table(
         ))));
     }
 
-    // Parse ON COMMIT behavior.
     let on_commit = if upper.contains("ON COMMIT DROP") {
         OnCommitAction::Drop
     } else if upper.contains("ON COMMIT DELETE ROWS") {
@@ -68,44 +62,35 @@ pub fn create_temp_table(
         OnCommitAction::PreserveRows
     };
 
-    // Detect `AS SELECT ...` vs explicit column definitions.
-    let is_as_select = upper.contains(" AS ");
+    // Parse schema from column definitions.
+    let schema = Arc::new(parse_temp_table_schema(sql)?);
 
-    let schema = if is_as_select {
-        // CREATE TEMP TABLE name AS SELECT ... — schema inferred from query.
-        // We store an empty schema; the actual data will be populated when
-        // the AS SELECT is executed through the normal query path.
-        datafusion::arrow::datatypes::Schema::empty()
-    } else {
-        // Explicit column definitions.
-        parse_temp_table_schema(sql)?
-    };
+    // Create a DataFusion MemTable with the schema (empty initially).
+    let mem_table = MemTable::try_new(Arc::clone(&schema), vec![vec![]]).map_err(|e| {
+        PgWireError::UserError(Box::new(ErrorInfo::new(
+            "ERROR".to_owned(),
+            "XX000".to_owned(),
+            format!("failed to create temp table: {e}"),
+        )))
+    })?;
 
-    // Register in session metadata (name shadowing: this temp table will
-    // be preferred over any permanent collection with the same name).
     sessions.register_temp_table(
         addr,
         name.clone(),
-        TempTableMeta {
-            schema: Arc::new(schema),
+        TempTableEntry {
+            schema,
             on_commit,
+            mem_table: Arc::new(mem_table),
         },
     );
 
-    tracing::info!(
-        table = %name,
-        user = %identity.username,
-        is_as_select,
-        "created temporary table"
-    );
-
+    tracing::info!(table = %name, user = %identity.username, "created temporary table");
     Ok(vec![Response::Execution(Tag::new("CREATE TABLE"))])
 }
 
 /// Handle `DROP TABLE name` for temp tables.
 ///
-/// Returns `Some(response)` if the table was a temp table, `None` otherwise
-/// (caller should fall through to permanent table drop).
+/// Returns `Some(response)` if the table was a temp table, `None` otherwise.
 pub fn drop_temp_table_if_exists(
     sessions: &SessionStore,
     addr: &std::net::SocketAddr,
@@ -119,7 +104,7 @@ pub fn drop_temp_table_if_exists(
     }
 }
 
-/// Parse column definitions from `CREATE TEMPORARY TABLE name (col1 type1, col2 type2, ...)`.
+/// Parse column definitions from `CREATE TEMPORARY TABLE name (col1 type1, ...)`.
 fn parse_temp_table_schema(sql: &str) -> PgWireResult<datafusion::arrow::datatypes::Schema> {
     use datafusion::arrow::datatypes::{Field, Schema};
 
@@ -131,7 +116,6 @@ fn parse_temp_table_schema(sql: &str) -> PgWireResult<datafusion::arrow::datatyp
         )))
     })?;
 
-    // Find matching close paren (skip nested parens for DEFAULT expressions).
     let inner = &sql[paren_start + 1..];
     let paren_end = inner.rfind(')').unwrap_or(inner.len());
     let cols_str = &inner[..paren_end];
@@ -143,24 +127,26 @@ fn parse_temp_table_schema(sql: &str) -> PgWireResult<datafusion::arrow::datatyp
             continue;
         }
         let mut tokens = col_def.split_whitespace();
-        let col_name = tokens.next().ok_or_else(|| {
-            PgWireError::UserError(Box::new(ErrorInfo::new(
-                "ERROR".to_owned(),
-                "42601".to_owned(),
-                "column name expected in column definition".to_owned(),
-            )))
-        })?;
-        let type_str = tokens
-            .next()
-            .ok_or_else(|| {
-                PgWireError::UserError(Box::new(ErrorInfo::new(
+        let col_name = match tokens.next() {
+            Some(n) => n,
+            None => {
+                return Err(PgWireError::UserError(Box::new(ErrorInfo::new(
                     "ERROR".to_owned(),
                     "42601".to_owned(),
-                    format!("column type expected for column \"{col_name}\""),
-                )))
-            })?
-            .to_uppercase();
-
+                    format!("missing column name in definition: '{col_def}'"),
+                ))));
+            }
+        };
+        let type_str = match tokens.next() {
+            Some(t) => t.to_uppercase(),
+            None => {
+                return Err(PgWireError::UserError(Box::new(ErrorInfo::new(
+                    "ERROR".to_owned(),
+                    "42601".to_owned(),
+                    format!("missing type for column '{col_name}'"),
+                ))));
+            }
+        };
         let data_type = sql_type_to_arrow(&type_str);
         let nullable = !col_def.to_uppercase().contains("NOT NULL");
         fields.push(Field::new(col_name, data_type, nullable));
@@ -193,6 +179,6 @@ fn sql_type_to_arrow(type_str: &str) -> datafusion::arrow::datatypes::DataType {
             DataType::Timestamp(datafusion::arrow::datatypes::TimeUnit::Microsecond, None)
         }
         "DATE" => DataType::Date32,
-        _ => DataType::Utf8, // fallback to text
+        _ => DataType::Utf8,
     }
 }
