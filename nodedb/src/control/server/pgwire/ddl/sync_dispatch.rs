@@ -19,6 +19,30 @@ pub async fn dispatch_async(
     plan: PhysicalPlan,
     timeout: Duration,
 ) -> crate::Result<Vec<u8>> {
+    dispatch_async_with_source(
+        state,
+        tenant_id,
+        collection,
+        plan,
+        timeout,
+        crate::event::EventSource::User,
+    )
+    .await
+}
+
+/// Send `plan` to the Data Plane with an explicit event source.
+///
+/// CRDT sync paths pass `EventSource::CrdtSync` so that the Data Plane
+/// emits WriteEvents with the correct source tag — preventing the Event Plane
+/// from firing triggers on replicated deltas.
+pub async fn dispatch_async_with_source(
+    state: &SharedState,
+    tenant_id: TenantId,
+    collection: &str,
+    plan: PhysicalPlan,
+    timeout: Duration,
+    event_source: crate::event::EventSource,
+) -> crate::Result<Vec<u8>> {
     let vshard_id = VShardId::from_collection(collection);
     let request_id = RequestId::new(
         std::time::SystemTime::now()
@@ -37,7 +61,7 @@ pub async fn dispatch_async(
         trace_id: 0,
         consistency: ReadConsistency::Strong,
         idempotency_key: None,
-        event_source: crate::event::EventSource::User,
+        event_source,
     };
 
     let rx = state.tracker.register_oneshot(request_id);

@@ -204,9 +204,11 @@ async fn handle_sync_session(
                                         format: "ilp".to_string(),
                                     },
                                 );
+                                // Use CrdtSync source to prevent triggers on synced data.
                                 let _ =
-                                    crate::control::server::dispatch_utils::dispatch_to_data_plane(
+                                    crate::control::server::dispatch_utils::dispatch_to_data_plane_with_source(
                                         shared, tenant_id, vshard, plan, 0,
+                                        crate::event::EventSource::CrdtSync,
                                     )
                                     .await;
                             }

@@ -111,11 +111,12 @@ pub(super) async fn validate_delta_constraints(
 ) -> SyncFrame {
     use crate::bridge::envelope::PhysicalPlan;
     use crate::bridge::physical_plan::CrdtOp;
-    use crate::control::server::pgwire::ddl::sync_dispatch::dispatch_async;
+    use crate::control::server::pgwire::ddl::sync_dispatch::dispatch_async_with_source;
     use crate::types::TenantId;
 
     // Dispatch a CrdtApply plan to the Data Plane. If the CRDT engine
     // rejects it (constraint violation), we get an error back.
+    // Uses EventSource::CrdtSync so triggers are NOT fired on replicated deltas.
     let tenant_id = TenantId::new(0); // Trust mode default tenant.
     let plan = PhysicalPlan::Crdt(CrdtOp::Apply {
         collection: delta_msg.collection.clone(),
@@ -125,12 +126,13 @@ pub(super) async fn validate_delta_constraints(
         mutation_id: delta_msg.mutation_id,
     });
 
-    match dispatch_async(
+    match dispatch_async_with_source(
         shared,
         tenant_id,
         &delta_msg.collection,
         plan,
         Duration::from_secs(10),
+        crate::event::EventSource::CrdtSync,
     )
     .await
     {
