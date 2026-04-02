@@ -11,6 +11,8 @@ pub mod compound_filter;
 pub mod compress;
 pub mod continuous_agg;
 pub mod gorilla;
+pub mod grouped_filter;
+pub mod grouped_scan;
 pub mod ilp;
 pub mod ilp_ingest;
 pub mod manager;

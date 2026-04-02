@@ -14,7 +14,7 @@
 use crate::bridge::envelope::{ErrorCode, Payload, Response, Status};
 use crate::data::executor::core_loop::CoreLoop;
 use crate::data::executor::task::ExecutionTask;
-use crate::engine::timeseries::columnar_agg::{AggAccum, timestamp_range_filter};
+use crate::engine::timeseries::columnar_agg::timestamp_range_filter;
 use crate::engine::timeseries::columnar_memtable::{
     ColumnData, ColumnType, ColumnarMemtable, ColumnarMemtableConfig,
 };
@@ -40,132 +40,48 @@ pub(in crate::data::executor) struct TimeseriesScanParams<'a> {
 }
 
 // ---------------------------------------------------------------------------
-// Aggregate merge types (typed accumulators, no intermediate JSON)
+// Aggregate result emission (GroupedAggResult → JSON)
 // ---------------------------------------------------------------------------
 
-/// Merged aggregate result across memtable + partitions.
-/// Key is a stringified group key (for cross-partition symbol reconciliation).
-type GroupMap = HashMap<String, Vec<AggAccum>>;
-
-/// Build a string group key from column values at a given row index.
-/// Within a single source, symbol IDs are resolved to strings here
-/// so that cross-partition merging is correct.
-fn build_group_key_str<'a>(
-    group_by: &[String],
-    schema: &[(String, ColumnType)],
-    columns: &[Option<&'a ColumnData>],
-    sym_dicts: &dyn Fn(usize) -> Option<&'a nodedb_types::timeseries::SymbolDictionary>,
-    row_idx: usize,
-) -> String {
-    if group_by.is_empty() {
-        return String::new(); // single group for whole-table agg
-    }
-    let mut key = String::with_capacity(group_by.len() * 16);
-    for (i, field) in group_by.iter().enumerate() {
-        if i > 0 {
-            key.push('\0');
-        }
-        if let Some(col_idx) = schema.iter().position(|(n, _)| n == field)
-            && let Some(data) = columns[col_idx]
-        {
-            match &schema[col_idx].1 {
-                ColumnType::Symbol => {
-                    if let ColumnData::Symbol(ids) = data {
-                        let sym_id = ids[row_idx];
-                        if let Some(dict) = sym_dicts(col_idx)
-                            && let Some(s) = dict.get(sym_id)
-                        {
-                            key.push_str(s);
-                        }
-                    }
-                }
-                ColumnType::Int64 => {
-                    if let ColumnData::Int64(vals) = data {
-                        key.push_str(&vals[row_idx].to_string());
-                    }
-                }
-                ColumnType::Float64 => {
-                    if let ColumnData::Float64(vals) = data {
-                        key.push_str(&vals[row_idx].to_string());
-                    }
-                }
-                ColumnType::Timestamp => {
-                    if let ColumnData::Timestamp(vals) = data {
-                        key.push_str(&vals[row_idx].to_string());
-                    }
-                }
-            }
-        }
-    }
-    key
-}
-
-/// Accumulate one row into the group map.
-fn accumulate_row(
-    groups: &mut GroupMap,
-    key: String,
-    aggregates: &[(String, String)],
-    schema: &[(String, ColumnType)],
-    columns: &[Option<&ColumnData>],
-    row_idx: usize,
-    num_aggs: usize,
-) {
-    let accums = groups
-        .entry(key)
-        .or_insert_with(|| (0..num_aggs).map(|_| AggAccum::default()).collect());
-
-    for (agg_idx, (op, field)) in aggregates.iter().enumerate() {
-        if field == "*" {
-            accums[agg_idx].feed_count_only();
-            continue;
-        }
-        if let Some(col_idx) = schema.iter().position(|(n, _)| n == field) {
-            if let Some(data) = columns[col_idx] {
-                let val = match data {
-                    ColumnData::Float64(vals) => vals[row_idx],
-                    ColumnData::Int64(vals) => vals[row_idx] as f64,
-                    ColumnData::Timestamp(vals) => vals[row_idx] as f64,
-                    _ => {
-                        // Symbol column with count op — just count.
-                        if op == "count" {
-                            accums[agg_idx].feed_count_only();
-                        }
-                        continue;
-                    }
-                };
-                if op == "count" {
-                    accums[agg_idx].feed_count_only();
-                } else {
-                    accums[agg_idx].feed(val);
-                }
-            } else {
-                // Column not present in this partition → count as NULL.
-                // Don't feed value, but do count if op is count.
-                if op == "count" || field == "*" {
-                    accums[agg_idx].feed_count_only();
-                }
-            }
-        } else if op == "count" {
-            // Field not in schema at all → count NULL.
-            accums[agg_idx].feed_count_only();
-        }
-    }
-}
-
-/// Emit final JSON from the merged group map.
-fn emit_aggregate_results(
-    groups: &GroupMap,
+/// Emit JSON array from a GroupedAggResult.
+///
+/// Key format depends on query:
+/// - GROUP BY only: "group1\0group2"
+/// - time_bucket only: "bucket_ts"
+/// - time_bucket + GROUP BY: "bucket_ts\0group1\0group2"
+fn emit_grouped_results(
+    result: &crate::engine::timeseries::grouped_scan::GroupedAggResult,
     group_by: &[String],
     aggregates: &[(String, String)],
     limit: usize,
+    bucket_interval_ms: i64,
 ) -> Vec<serde_json::Value> {
-    let mut results = Vec::with_capacity(groups.len().min(limit));
-    for (key, accums) in groups {
+    let has_bucket = bucket_interval_ms > 0;
+    let mut results = Vec::with_capacity(result.groups.len().min(limit));
+    for (key, accums) in &result.groups {
         let mut row = serde_json::Map::new();
 
-        // Parse group key back into field values.
-        if !group_by.is_empty() {
-            let parts: Vec<&str> = key.split('\0').collect();
+        let parts: Vec<&str> = key.split('\0').collect();
+
+        if has_bucket {
+            // First part is bucket timestamp.
+            let bucket_val = parts
+                .first()
+                .and_then(|s| s.parse::<i64>().ok())
+                .map(|v| serde_json::Value::Number(serde_json::Number::from(v)))
+                .unwrap_or(serde_json::Value::Null);
+            row.insert("bucket".into(), bucket_val);
+
+            // Remaining parts map to group_by fields (offset by 1).
+            for (i, field) in group_by.iter().enumerate() {
+                let val = parts
+                    .get(i + 1)
+                    .filter(|s| !s.is_empty())
+                    .map(|s| serde_json::Value::String(s.to_string()))
+                    .unwrap_or(serde_json::Value::Null);
+                row.insert(field.clone(), val);
+            }
+        } else if !group_by.is_empty() {
             for (i, field) in group_by.iter().enumerate() {
                 let val = parts
                     .get(i)
@@ -332,7 +248,6 @@ impl CoreLoop {
                 time_range,
                 limit,
                 &filter_predicates,
-                has_filters,
                 bucket_interval_ms,
                 group_by,
                 aggregates,
@@ -371,9 +286,18 @@ impl CoreLoop {
             let indices = timestamp_range_filter(timestamps, time_range.0, time_range.1);
 
             let (filtered_indices, need_json_filter) = if has_filters {
-                match columnar_filter::eval_filters_sparse(mt, filter_predicates, &indices) {
-                    Some(mask) => (columnar_filter::apply_mask(&indices, &mask), false),
-                    None => (indices, true),
+                // Try SIMD bitmask path first (faster), fall back to sparse bool.
+                let row_count = mt.row_count() as usize;
+                if let Some(bitmask) =
+                    columnar_filter::eval_filters_bitmask(mt, filter_predicates, row_count)
+                {
+                    let bm_indices = nodedb_query::simd_filter::bitmask_to_indices(&bitmask);
+                    (bm_indices, false)
+                } else {
+                    match columnar_filter::eval_filters_sparse(mt, filter_predicates, &indices) {
+                        Some(mask) => (columnar_filter::apply_mask(&indices, &mask), false),
+                        None => (indices, true),
+                    }
                 }
             } else {
                 (indices, false)
@@ -459,14 +383,24 @@ impl CoreLoop {
                     sym_dicts: &sym_dicts,
                 };
 
+                let row_count = timestamps.len();
                 let filtered_indices = if has_filters {
-                    match columnar_filter::eval_filters_sparse(
+                    // Try SIMD bitmask path first, fall back to sparse bool.
+                    if let Some(bitmask) = columnar_filter::eval_filters_bitmask(
                         &part_src,
                         filter_predicates,
-                        &indices,
+                        row_count,
                     ) {
-                        Some(mask) => columnar_filter::apply_mask(&indices, &mask),
-                        None => indices,
+                        nodedb_query::simd_filter::bitmask_to_indices(&bitmask)
+                    } else {
+                        match columnar_filter::eval_filters_sparse(
+                            &part_src,
+                            filter_predicates,
+                            &indices,
+                        ) {
+                            Some(mask) => columnar_filter::apply_mask(&indices, &mask),
+                            None => indices,
+                        }
                     }
                 } else {
                     indices
@@ -523,10 +457,16 @@ impl CoreLoop {
         self.response_with_payload(task, json)
     }
 
-    /// Aggregate mode: time-bucket or generic GROUP BY across memtable + partitions.
+    /// Aggregate mode: GROUP BY / time-bucket across memtable + partitions.
     ///
-    /// Uses typed `AggAccum` accumulators merged across all sources.
-    /// JSON constructed once at the end.
+    /// Uses the grouped_scan engine with:
+    /// - SIMD bitmask filters (not Vec<bool>)
+    /// - Direct-index Vec for low-cardinality symbol GROUP BY
+    /// - FxHashMap<u32> for high-cardinality symbol GROUP BY
+    /// - Parallel partition processing via std::thread::scope
+    /// - Sparse index block-level skip
+    /// - Single metadata read per partition
+    /// - String key resolution once per group, not per row
     #[allow(clippy::too_many_arguments)]
     fn execute_ts_aggregate(
         &self,
@@ -535,276 +475,116 @@ impl CoreLoop {
         time_range: (i64, i64),
         limit: usize,
         filter_predicates: &[crate::bridge::scan_filter::ScanFilter],
-        has_filters: bool,
         bucket_interval_ms: i64,
         group_by: &[String],
         aggregates: &[(String, String)],
         needed_columns: &[String],
     ) -> Response {
-        let num_aggs = aggregates.len();
-        let is_time_bucket = bucket_interval_ms > 0;
-
-        // For time-bucket mode, use BTreeMap<bucket_ts, AggAccum> for the
-        // value aggregate. For generic GROUP BY, use GroupMap.
-        let mut bucket_map: std::collections::BTreeMap<i64, Vec<AggAccum>> =
-            std::collections::BTreeMap::new();
-        let mut group_map: GroupMap = HashMap::new();
-
-        // ── Aggregate from memtable ──
-        if let Some(mt) = self.columnar_memtables.get(collection)
-            && !mt.is_empty()
-        {
-            let schema = mt.schema();
-            let timestamps = mt.column(schema.timestamp_idx).as_timestamps();
-            let indices = timestamp_range_filter(timestamps, time_range.0, time_range.1);
-
-            let passing_indices = if has_filters {
-                match columnar_filter::eval_filters_sparse(mt, filter_predicates, &indices) {
-                    Some(mask) => columnar_filter::apply_mask(&indices, &mask),
-                    None => indices,
-                }
-            } else {
-                indices
-            };
-
-            let schema_vec: Vec<(String, ColumnType)> = schema.columns.clone();
-            let col_refs: Vec<Option<&ColumnData>> = (0..schema.columns.len())
-                .map(|i| Some(mt.column(i)))
-                .collect();
-            let sym_lookup = |col_idx: usize| mt.symbol_dict(col_idx);
-
-            for &idx in &passing_indices {
-                let row_idx = idx as usize;
-
-                if is_time_bucket {
-                    let bucket_key = crate::engine::timeseries::time_bucket::time_bucket(
-                        bucket_interval_ms,
-                        timestamps[row_idx],
-                    );
-                    let key = if group_by.is_empty() {
-                        String::new()
-                    } else {
-                        build_group_key_str(group_by, &schema_vec, &col_refs, &sym_lookup, row_idx)
-                    };
-                    let composite_key = format!("{bucket_key}\x01{key}");
-                    let accums = bucket_map
-                        .entry(bucket_key)
-                        .or_insert_with(|| (0..num_aggs).map(|_| AggAccum::default()).collect());
-                    // Accumulate aggregates.
-                    for (agg_idx, (op, field)) in aggregates.iter().enumerate() {
-                        if field == "*" {
-                            accums[agg_idx].feed_count_only();
-                        } else if let Some(ci) = schema_vec.iter().position(|(n, _)| n == field)
-                            && let Some(data) = col_refs[ci]
-                        {
-                            let val = match data {
-                                ColumnData::Float64(vals) => vals[row_idx],
-                                ColumnData::Int64(vals) => vals[row_idx] as f64,
-                                ColumnData::Timestamp(vals) => vals[row_idx] as f64,
-                                _ => {
-                                    if op == "count" {
-                                        accums[agg_idx].feed_count_only();
-                                    }
-                                    continue;
-                                }
-                            };
-                            if op == "count" {
-                                accums[agg_idx].feed_count_only();
-                            } else {
-                                accums[agg_idx].feed(val);
-                            }
-                        }
-                    }
-                    drop(composite_key);
-                } else {
-                    // Generic GROUP BY.
-                    let key =
-                        build_group_key_str(group_by, &schema_vec, &col_refs, &sym_lookup, row_idx);
-                    accumulate_row(
-                        &mut group_map,
-                        key,
-                        aggregates,
-                        &schema_vec,
-                        &col_refs,
-                        row_idx,
-                        num_aggs,
-                    );
-                }
-            }
-        }
-
-        // ── Aggregate from disk partitions ──
-        if let Some(registry) = self.ts_registries.get(collection) {
-            let query_range = nodedb_types::timeseries::TimeRange::new(time_range.0, time_range.1);
-
-            for entry in registry.query_partitions(&query_range) {
-                let part_dir = self
-                    .data_dir
-                    .join("ts")
-                    .join(collection)
-                    .join(&entry.dir_name);
-                if !part_dir.exists() {
-                    continue;
-                }
-
-                let schema = match ColumnarSegmentReader::read_schema(&part_dir) {
-                    Ok(s) => s,
-                    Err(_) => continue,
-                };
-
-                // Projection pushdown: only read needed columns.
-                let col_data: Vec<Option<ColumnData>> = schema
-                    .columns
-                    .iter()
-                    .map(|(name, ty)| {
-                        if needed_columns.is_empty() || needed_columns.iter().any(|n| n == name) {
-                            ColumnarSegmentReader::read_column(&part_dir, name, *ty).ok()
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-
-                let sym_dicts: HashMap<usize, nodedb_types::timeseries::SymbolDictionary> = schema
-                    .columns
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, (_, ty))| *ty == ColumnType::Symbol)
-                    .filter_map(|(i, (name, _))| {
-                        if needed_columns.is_empty() || needed_columns.iter().any(|n| n == name) {
-                            ColumnarSegmentReader::read_symbol_dict(&part_dir, name)
-                                .ok()
-                                .map(|dict| (i, dict))
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-
-                let ts_col = col_data.get(schema.timestamp_idx).and_then(|d| d.as_ref());
-                let Some(ts_col) = ts_col else { continue };
-                let timestamps = ts_col.as_timestamps();
-                let indices = timestamp_range_filter(timestamps, time_range.0, time_range.1);
-
-                let schema_vec: Vec<(String, ColumnType)> = schema.columns.clone();
-                let part_src = columnar_filter::PartitionColumns {
-                    schema: &schema_vec,
-                    columns: &col_data,
-                    sym_dicts: &sym_dicts,
-                };
-
-                let passing_indices = if has_filters {
-                    match columnar_filter::eval_filters_sparse(
-                        &part_src,
-                        filter_predicates,
-                        &indices,
-                    ) {
-                        Some(mask) => columnar_filter::apply_mask(&indices, &mask),
-                        None => indices,
-                    }
-                } else {
-                    indices
-                };
-
-                let col_refs: Vec<Option<&ColumnData>> =
-                    col_data.iter().map(|c| c.as_ref()).collect();
-                let sym_lookup =
-                    |col_idx: usize| -> Option<&nodedb_types::timeseries::SymbolDictionary> {
-                        sym_dicts.get(&col_idx)
-                    };
-
-                for &idx in &passing_indices {
-                    let row_idx = idx as usize;
-
-                    if is_time_bucket {
-                        let bucket_key = crate::engine::timeseries::time_bucket::time_bucket(
-                            bucket_interval_ms,
-                            timestamps[row_idx],
-                        );
-                        let accums = bucket_map.entry(bucket_key).or_insert_with(|| {
-                            (0..num_aggs).map(|_| AggAccum::default()).collect()
-                        });
-                        for (agg_idx, (op, field)) in aggregates.iter().enumerate() {
-                            if field == "*" {
-                                accums[agg_idx].feed_count_only();
-                            } else if let Some(ci) = schema_vec.iter().position(|(n, _)| n == field)
-                                && let Some(data) = col_refs[ci]
-                            {
-                                let val = match data {
-                                    ColumnData::Float64(vals) => vals[row_idx],
-                                    ColumnData::Int64(vals) => vals[row_idx] as f64,
-                                    ColumnData::Timestamp(vals) => vals[row_idx] as f64,
-                                    _ => {
-                                        if op == "count" {
-                                            accums[agg_idx].feed_count_only();
-                                        }
-                                        continue;
-                                    }
-                                };
-                                if op == "count" {
-                                    accums[agg_idx].feed_count_only();
-                                } else {
-                                    accums[agg_idx].feed(val);
-                                }
-                            }
-                        }
-                    } else {
-                        let key = build_group_key_str(
-                            group_by,
-                            &schema_vec,
-                            &col_refs,
-                            &sym_lookup,
-                            row_idx,
-                        );
-                        accumulate_row(
-                            &mut group_map,
-                            key,
-                            aggregates,
-                            &schema_vec,
-                            &col_refs,
-                            row_idx,
-                            num_aggs,
-                        );
-                    }
-                }
-            }
-        }
-
-        // ── Emit results ──
-        let results = if is_time_bucket {
-            let mut out = Vec::with_capacity(bucket_map.len().min(limit));
-            for (bucket_ts, accums) in &bucket_map {
-                let mut row = serde_json::Map::new();
-                row.insert("bucket".into(), serde_json::json!(bucket_ts));
-                for (agg_idx, (op, field)) in aggregates.iter().enumerate() {
-                    let agg_key = format!("{op}_{field}").replace('*', "all");
-                    let accum = &accums[agg_idx];
-                    let val = match op.as_str() {
-                        "count" => serde_json::json!(accum.count),
-                        "sum" => serde_json::json!(accum.sum()),
-                        "avg" => {
-                            if accum.count == 0 {
-                                serde_json::Value::Null
-                            } else {
-                                serde_json::json!(accum.sum() / accum.count as f64)
-                            }
-                        }
-                        "min" => serde_json::json!(accum.min),
-                        "max" => serde_json::json!(accum.max),
-                        _ => serde_json::Value::Null,
-                    };
-                    row.insert(agg_key, val);
-                }
-                out.push(serde_json::Value::Object(row));
-                if out.len() >= limit {
-                    break;
-                }
-            }
-            out
-        } else {
-            emit_aggregate_results(&group_map, group_by, aggregates, limit)
+        use crate::engine::timeseries::grouped_scan::{
+            GroupedAggResult, aggregate_memtable, aggregate_partition,
         };
 
+        let num_aggs = aggregates.len();
+
+        // ── Phase 1: Aggregate memtable (on TPC core) ──
+        let mut merged = if let Some(mt) = self.columnar_memtables.get(collection)
+            && !mt.is_empty()
+        {
+            aggregate_memtable(
+                mt,
+                group_by,
+                aggregates,
+                filter_predicates,
+                time_range,
+                bucket_interval_ms,
+            )
+            .unwrap_or_else(|| GroupedAggResult::new(num_aggs))
+        } else {
+            GroupedAggResult::new(num_aggs)
+        };
+
+        // ── Phase 2: Aggregate disk partitions (parallel) ──
+        if let Some(registry) = self.ts_registries.get(collection) {
+            let query_range = nodedb_types::timeseries::TimeRange::new(time_range.0, time_range.1);
+            let entries: Vec<_> = registry.query_partitions(&query_range);
+
+            if !entries.is_empty() {
+                let data_dir = &self.data_dir;
+                let partition_dirs: Vec<std::path::PathBuf> = entries
+                    .iter()
+                    .map(|e| data_dir.join("ts").join(collection).join(&e.dir_name))
+                    .filter(|p| p.exists())
+                    .collect();
+
+                if partition_dirs.len() <= 1 {
+                    for dir in &partition_dirs {
+                        if let Some(part_result) = aggregate_partition(
+                            dir,
+                            group_by,
+                            aggregates,
+                            filter_predicates,
+                            time_range,
+                            needed_columns,
+                            bucket_interval_ms,
+                        ) {
+                            merged.merge(&part_result);
+                        }
+                    }
+                } else {
+                    // Multiple partitions — parallel via std::thread::scope.
+                    let group_by_owned: Vec<String> = group_by.to_vec();
+                    let agg_owned: Vec<(String, String)> = aggregates.to_vec();
+                    let filters_owned: Vec<crate::bridge::scan_filter::ScanFilter> =
+                        filter_predicates.to_vec();
+                    let needed_owned: Vec<String> = needed_columns.to_vec();
+
+                    let available = std::thread::available_parallelism()
+                        .map(|n| n.get())
+                        .unwrap_or(1);
+                    let thread_count = available.min(partition_dirs.len()).min(8);
+                    let chunk_size = partition_dirs.len().div_ceil(thread_count);
+
+                    let partition_results: Vec<GroupedAggResult> = std::thread::scope(|s| {
+                        let handles: Vec<_> = partition_dirs
+                            .chunks(chunk_size)
+                            .map(|chunk| {
+                                let gb = &group_by_owned;
+                                let ag = &agg_owned;
+                                let fl = &filters_owned;
+                                let nc = &needed_owned;
+                                s.spawn(move || {
+                                    let mut local = GroupedAggResult::new(ag.len());
+                                    for dir in chunk {
+                                        if let Some(r) = aggregate_partition(
+                                            dir,
+                                            gb,
+                                            ag,
+                                            fl,
+                                            time_range,
+                                            nc,
+                                            bucket_interval_ms,
+                                        ) {
+                                            local.merge(&r);
+                                        }
+                                    }
+                                    local
+                                })
+                            })
+                            .collect();
+
+                        handles.into_iter().filter_map(|h| h.join().ok()).collect()
+                    });
+
+                    for r in &partition_results {
+                        merged.merge(r);
+                    }
+                }
+            }
+        }
+
+        // ── Phase 3: Emit JSON response ──
+        let results =
+            emit_grouped_results(&merged, group_by, aggregates, limit, bucket_interval_ms);
         let json = serde_json::to_vec(&results).unwrap_or_default();
         self.response_with_payload(task, json)
     }

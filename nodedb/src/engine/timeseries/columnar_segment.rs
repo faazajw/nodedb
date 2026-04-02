@@ -298,6 +298,122 @@ impl ColumnarSegmentReader {
         Ok(result)
     }
 
+    /// Read raw compressed bytes of a column without decoding.
+    pub fn read_column_raw(partition_dir: &Path, col_name: &str) -> Result<Vec<u8>, SegmentError> {
+        let col_path = partition_dir.join(format!("{col_name}.col"));
+        std::fs::read(&col_path)
+            .map_err(|e| SegmentError::Io(format!("read {}: {e}", col_path.display())))
+    }
+
+    /// Decode specific FastLanes blocks from a column.
+    ///
+    /// Only decodes blocks in `block_indices` (0-based). Other blocks are
+    /// skipped without decompression. Returns concatenated values from all
+    /// requested blocks in order.
+    ///
+    /// Falls back to full decode for non-FastLanes codecs.
+    pub fn read_column_blocks(
+        partition_dir: &Path,
+        col_name: &str,
+        col_type: ColumnType,
+        codec: Option<ColumnCodec>,
+        block_indices: &[usize],
+    ) -> Result<(ColumnData, Vec<(usize, usize)>), SegmentError> {
+        use nodedb_codec::ColumnCodec;
+
+        let raw = Self::read_column_raw(partition_dir, col_name)?;
+        let codec = codec.unwrap_or_else(|| {
+            Self::read_meta(partition_dir)
+                .ok()
+                .and_then(|meta| meta.column_stats.get(col_name).map(|s| s.codec))
+                .unwrap_or_else(|| legacy_default_codec(col_type))
+        });
+
+        // Only plain FastLanesLz4 supports block-level decode.
+        // DeltaFastLanesLz4 and AlpFastLanesLz4 have preceding transform
+        // stages that prevent independent block decode.
+        let is_fastlanes = matches!(codec, ColumnCodec::FastLanesLz4);
+
+        if !is_fastlanes || block_indices.is_empty() {
+            // Fall back to full decode.
+            let data = decode_column(&raw, col_type, codec)?;
+            let total = match &data {
+                ColumnData::Timestamp(v) => v.len(),
+                ColumnData::Float64(v) => v.len(),
+                ColumnData::Int64(v) => v.len(),
+                ColumnData::Symbol(v) => v.len(),
+            };
+            return Ok((data, vec![(0, total)]));
+        }
+
+        // For FastLanesLz4: decompress LZ4 first, then selective FastLanes decode.
+        let fastlanes_bytes = if codec == ColumnCodec::FastLanesLz4 {
+            nodedb_codec::decode_bytes_pipeline(&raw, ColumnCodec::Lz4)
+                .map_err(|e| SegmentError::Io(format!("lz4 decode: {e}")))?
+        } else {
+            raw
+        };
+
+        // Decode only requested blocks.
+        let mut all_values = Vec::new();
+        let mut ranges = Vec::new();
+        let mut iter = nodedb_codec::fastlanes::BlockIterator::new(&fastlanes_bytes)
+            .map_err(|e| SegmentError::Io(format!("block iter: {e}")))?;
+
+        let mut current_block = 0;
+        let mut bi_pos = 0; // position in sorted block_indices
+
+        while bi_pos < block_indices.len() {
+            let target = block_indices[bi_pos];
+
+            // Skip blocks until we reach the target.
+            while current_block < target {
+                if iter.skip_block().is_err() {
+                    break;
+                }
+                current_block += 1;
+            }
+
+            if current_block != target {
+                break;
+            }
+
+            // Decode this block.
+            let start = all_values.len();
+            match iter.next() {
+                Some(Ok(block_vals)) => {
+                    all_values.extend(block_vals);
+                }
+                Some(Err(e)) => {
+                    return Err(SegmentError::Io(format!("block decode: {e}")));
+                }
+                None => break,
+            }
+            ranges.push((start, all_values.len()));
+            current_block += 1;
+            bi_pos += 1;
+        }
+
+        // Convert i64 values to the correct ColumnData type.
+        let data = match col_type {
+            ColumnType::Timestamp => ColumnData::Timestamp(all_values),
+            ColumnType::Int64 => ColumnData::Int64(all_values),
+            ColumnType::Float64 => {
+                let f64_vals: Vec<f64> = all_values
+                    .iter()
+                    .map(|&v| f64::from_bits(v as u64))
+                    .collect();
+                ColumnData::Float64(f64_vals)
+            }
+            ColumnType::Symbol => {
+                let u32_vals: Vec<u32> = all_values.iter().map(|&v| v as u32).collect();
+                ColumnData::Symbol(u32_vals)
+            }
+        };
+
+        Ok((data, ranges))
+    }
+
     /// Memory-map a column file for zero-copy SIMD access.
     pub fn mmap_column(
         partition_dir: &Path,

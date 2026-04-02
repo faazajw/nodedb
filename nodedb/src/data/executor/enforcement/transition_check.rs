@@ -86,11 +86,16 @@ mod tests {
         // OLD.sealed = false → predicate passes
         let old = serde_json::json!({"sealed": false, "amount": 100});
         let new = serde_json::json!({"sealed": false, "amount": 200});
-        assert!(check_transition_predicates("coll", &[check.clone()], &old, &new).is_ok());
+        assert!(
+            check_transition_predicates("coll", std::slice::from_ref(&check), &old, &new).is_ok()
+        );
 
         // OLD.sealed = true → predicate fails
         let old_sealed = serde_json::json!({"sealed": true, "amount": 100});
-        assert!(check_transition_predicates("coll", &[check], &old_sealed, &new).is_err());
+        assert!(
+            check_transition_predicates("coll", std::slice::from_ref(&check), &old_sealed, &new)
+                .is_err()
+        );
     }
 
     #[test]
@@ -108,7 +113,9 @@ mod tests {
         // 200 >= 100 → ok
         let old = serde_json::json!({"amount": 100});
         let new = serde_json::json!({"amount": 200});
-        assert!(check_transition_predicates("coll", &[check.clone()], &old, &new).is_ok());
+        assert!(
+            check_transition_predicates("coll", std::slice::from_ref(&check), &old, &new).is_ok()
+        );
 
         // 50 >= 100 → fail
         let new_less = serde_json::json!({"amount": 50});

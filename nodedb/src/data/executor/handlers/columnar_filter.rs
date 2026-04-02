@@ -192,6 +192,150 @@ pub(super) fn apply_mask(indices: &[u32], mask: &[bool]) -> Vec<u32> {
         .collect()
 }
 
+// ---------------------------------------------------------------------------
+// SIMD bitmask filter evaluation (Vec<u64>, 1 bit per row)
+// ---------------------------------------------------------------------------
+
+/// Evaluate filters on a contiguous row range `0..row_count`, returning a
+/// packed `Vec<u64>` bitmask (bit *i* set = row *i* passes all filters).
+///
+/// Uses SIMD kernels for numeric and symbol equality comparisons.
+/// Returns `None` for filter patterns that can't be evaluated (OR clauses,
+/// unsupported operators) — caller should fall back to `eval_filters_dense`.
+pub(super) fn eval_filters_bitmask(
+    src: &dyn ColumnarSource,
+    filters: &[ScanFilter],
+    row_count: usize,
+) -> Option<Vec<u64>> {
+    use nodedb_query::simd_filter::{self, filter_runtime};
+
+    let rt = filter_runtime();
+    let mut mask = simd_filter::bitmask_all(row_count);
+
+    for f in filters {
+        if f.op == "match_all" {
+            continue;
+        }
+        if !f.clauses.is_empty() {
+            return None; // OR clauses not supported in bitmask path
+        }
+
+        let (col_pos, col_type, col_data) = src.resolve_column(&f.field)?;
+
+        let filter_mask = match col_type {
+            ColumnType::Float64 => {
+                let fv = f.value.as_f64()?;
+                let ColumnData::Float64(vals) = col_data else {
+                    return None;
+                };
+                let slice = &vals[..row_count.min(vals.len())];
+                match f.op.as_str() {
+                    "gt" => (rt.gt_f64)(slice, fv),
+                    "gte" => (rt.gte_f64)(slice, fv),
+                    "lt" => (rt.lt_f64)(slice, fv),
+                    "lte" => (rt.lte_f64)(slice, fv),
+                    "eq" => {
+                        // f64 equality — use epsilon range.
+                        let lo = fv - f64::EPSILON;
+                        let hi = fv + f64::EPSILON;
+                        let a = (rt.gte_f64)(slice, lo);
+                        let b = (rt.lte_f64)(slice, hi);
+                        simd_filter::bitmask_and(&a, &b)
+                    }
+                    "ne" => {
+                        let lo = fv - f64::EPSILON;
+                        let hi = fv + f64::EPSILON;
+                        let a = (rt.gte_f64)(slice, lo);
+                        let b = (rt.lte_f64)(slice, hi);
+                        let eq = simd_filter::bitmask_and(&a, &b);
+                        simd_filter::bitmask_not(&eq, row_count)
+                    }
+                    _ => return None,
+                }
+            }
+            ColumnType::Int64 => {
+                let fv = f.value.as_i64()?;
+                let ColumnData::Int64(vals) = col_data else {
+                    return None;
+                };
+                let slice = &vals[..row_count.min(vals.len())];
+                match f.op.as_str() {
+                    "gt" => (rt.gt_i64)(slice, fv),
+                    "gte" => (rt.gte_i64)(slice, fv),
+                    "lt" => (rt.lt_i64)(slice, fv),
+                    "lte" => (rt.lte_i64)(slice, fv),
+                    "eq" => {
+                        let a = (rt.gte_i64)(slice, fv);
+                        let b = (rt.lte_i64)(slice, fv);
+                        simd_filter::bitmask_and(&a, &b)
+                    }
+                    "ne" => {
+                        let a = (rt.gte_i64)(slice, fv);
+                        let b = (rt.lte_i64)(slice, fv);
+                        let eq = simd_filter::bitmask_and(&a, &b);
+                        simd_filter::bitmask_not(&eq, row_count)
+                    }
+                    _ => return None,
+                }
+            }
+            ColumnType::Timestamp => {
+                let fv = f.value.as_i64()?;
+                let ColumnData::Timestamp(vals) = col_data else {
+                    return None;
+                };
+                let slice = &vals[..row_count.min(vals.len())];
+                match f.op.as_str() {
+                    "gt" => (rt.gt_i64)(slice, fv),
+                    "gte" => (rt.gte_i64)(slice, fv),
+                    "lt" => (rt.lt_i64)(slice, fv),
+                    "lte" => (rt.lte_i64)(slice, fv),
+                    "eq" => {
+                        let a = (rt.gte_i64)(slice, fv);
+                        let b = (rt.lte_i64)(slice, fv);
+                        simd_filter::bitmask_and(&a, &b)
+                    }
+                    "ne" => {
+                        let a = (rt.gte_i64)(slice, fv);
+                        let b = (rt.lte_i64)(slice, fv);
+                        let eq = simd_filter::bitmask_and(&a, &b);
+                        simd_filter::bitmask_not(&eq, row_count)
+                    }
+                    _ => return None,
+                }
+            }
+            ColumnType::Symbol => {
+                let filter_str = f.value.as_str()?;
+                let dict = src.symbol_dict(col_pos)?;
+                let ColumnData::Symbol(ids) = col_data else {
+                    return None;
+                };
+                let slice = &ids[..row_count.min(ids.len())];
+                match f.op.as_str() {
+                    "eq" => {
+                        if let Some(target_id) = dict.get_id(filter_str) {
+                            (rt.eq_u32)(slice, target_id)
+                        } else {
+                            vec![0u64; simd_filter::words_for(row_count)]
+                        }
+                    }
+                    "ne" => {
+                        if let Some(target_id) = dict.get_id(filter_str) {
+                            (rt.ne_u32)(slice, target_id)
+                        } else {
+                            simd_filter::bitmask_all(row_count)
+                        }
+                    }
+                    _ => return None,
+                }
+            }
+        };
+
+        mask = simd_filter::bitmask_and(&mask, &filter_mask);
+    }
+
+    Some(mask)
+}
+
 #[inline]
 fn eval_numeric_f64(v: f64, op: &str, fv: f64) -> Option<bool> {
     Some(match op {
