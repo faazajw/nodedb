@@ -1,5 +1,6 @@
 pub mod format;
 pub mod gap_free;
+pub mod log;
 pub mod range_alloc;
 pub mod registry;
 pub mod types;

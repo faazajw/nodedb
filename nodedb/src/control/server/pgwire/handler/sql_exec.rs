@@ -169,6 +169,18 @@ impl NodeDbPgHandler {
                     .sequence_registry
                     .gap_free_manager()
                     .commit(handle);
+                // Log to _system.sequence_log.
+                if let Some(catalog) = self.state.credentials.catalog() {
+                    crate::control::sequence::log::log_reservation(
+                        catalog,
+                        &crate::control::sequence::log::committed(
+                            &handle.sequence_key,
+                            handle.value,
+                            &identity.username,
+                            identity.tenant_id.as_u32(),
+                        ),
+                    );
+                }
             }
 
             // Close non-WITH-HOLD cursors on transaction end.
@@ -188,6 +200,18 @@ impl NodeDbPgHandler {
                         h.rollback_one();
                     }
                 });
+                // Log rollback to _system.sequence_log.
+                if let Some(catalog) = self.state.credentials.catalog() {
+                    crate::control::sequence::log::log_reservation(
+                        catalog,
+                        &crate::control::sequence::log::rolled_back(
+                            key,
+                            handle.value,
+                            &identity.username,
+                            identity.tenant_id.as_u32(),
+                        ),
+                    );
+                }
             }
             // Close non-WITH-HOLD cursors on transaction end.
             self.sessions.close_non_hold_cursors(addr);
