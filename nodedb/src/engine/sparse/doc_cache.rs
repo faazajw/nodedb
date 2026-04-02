@@ -34,6 +34,10 @@ pub struct DocCache {
     /// Maximum number of cached documents.
     capacity: usize,
 
+    /// Per-tenant entry count for fair eviction.
+    /// When evicting, prefer entries from the tenant with the most cached entries.
+    tenant_counts: HashMap<u32, usize>,
+
     // -- Stats --
     hits: u64,
     misses: u64,
@@ -46,6 +50,7 @@ impl DocCache {
             entries: HashMap::with_capacity(capacity.min(8192)),
             order: VecDeque::with_capacity(capacity.min(8192)),
             capacity,
+            tenant_counts: HashMap::new(),
             hits: 0,
             misses: 0,
         }
@@ -79,17 +84,25 @@ impl DocCache {
             return;
         }
 
-        // Evict oldest if at capacity.
+        // Evict if at capacity — prefer entries from the most over-represented tenant.
         while self.entries.len() >= self.capacity {
-            if let Some(oldest) = self.order.pop_front() {
-                self.entries.remove(&oldest);
+            if let Some(evicted) = self.order.pop_front() {
+                if self.entries.remove(&evicted).is_some() {
+                    *self.tenant_counts.entry(evicted.tenant_id).or_insert(0) = self
+                        .tenant_counts
+                        .get(&evicted.tenant_id)
+                        .copied()
+                        .unwrap_or(0)
+                        .saturating_sub(1);
+                }
             } else {
                 break;
             }
         }
 
         self.entries.insert(key.clone(), value.to_vec());
-        self.order.push_back(key);
+        self.order.push_back(key.clone());
+        *self.tenant_counts.entry(key.tenant_id).or_insert(0) += 1;
     }
 
     /// Remove a document from the cache (invalidation).
@@ -99,7 +112,11 @@ impl DocCache {
     /// harmlessly skipped during eviction (entry already absent from map).
     pub fn invalidate(&mut self, tenant_id: u32, collection: &str, document_id: &str) {
         let key = Self::make_key(tenant_id, collection, document_id);
-        self.entries.remove(&key);
+        if self.entries.remove(&key).is_some()
+            && let Some(count) = self.tenant_counts.get_mut(&tenant_id)
+        {
+            *count = count.saturating_sub(1);
+        }
     }
 
     /// Cache hit rate (0.0–1.0). Returns 0.0 if no lookups yet.
@@ -133,6 +150,7 @@ impl DocCache {
     pub fn evict_tenant(&mut self, tenant_id: u32) {
         self.entries.retain(|k, _| k.tenant_id != tenant_id);
         self.order.retain(|k| k.tenant_id != tenant_id);
+        self.tenant_counts.remove(&tenant_id);
     }
 
     fn make_key(tenant_id: u32, collection: &str, document_id: &str) -> CacheKey {
