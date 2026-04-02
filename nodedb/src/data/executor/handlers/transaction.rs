@@ -221,11 +221,11 @@ impl CoreLoop {
                 if let Some(config) = self.doc_configs.get(&config_key) {
                     super::super::enforcement::append_only::check_point_put(
                         collection,
-                        &config.accounting,
+                        &config.enforcement,
                         &old_value,
                     )?;
                     // Period lock: check if the period of this document is open.
-                    if let Some(ref pl) = config.accounting.period_lock {
+                    if let Some(ref pl) = config.enforcement.period_lock {
                         super::super::enforcement::period_lock::check_period_lock(
                             &self.sparse,
                             tid,
@@ -281,10 +281,10 @@ impl CoreLoop {
                 if let Some(config) = self.doc_configs.get(&config_key) {
                     super::super::enforcement::append_only::check_point_delete(
                         collection,
-                        &config.accounting,
+                        &config.enforcement,
                     )?;
                     // Period lock on the existing document.
-                    if let Some(ref pl) = config.accounting.period_lock
+                    if let Some(ref pl) = config.enforcement.period_lock
                         && let Some(ref old_bytes) = old_value
                     {
                         super::super::enforcement::period_lock::check_period_lock(
@@ -301,7 +301,7 @@ impl CoreLoop {
                     });
                     super::super::enforcement::retention::check_delete_allowed(
                         collection,
-                        &config.accounting,
+                        &config.enforcement,
                         created_at,
                     )?;
                 }
@@ -476,7 +476,7 @@ impl CoreLoop {
             let Some(config) = self.doc_configs.get(&config_key) else {
                 continue;
             };
-            let Some(ref balanced_def) = config.accounting.balanced else {
+            let Some(ref balanced_def) = config.enforcement.balanced else {
                 continue;
             };
 

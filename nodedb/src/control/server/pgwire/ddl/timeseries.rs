@@ -73,6 +73,9 @@ pub fn create_timeseries(
         hash_chain: false,
         balanced: None,
         last_chain_hash: None,
+        period_lock: None,
+        retention_period: None,
+        legal_holds: Vec::new(),
     };
 
     if let Some(catalog) = state.credentials.catalog() {

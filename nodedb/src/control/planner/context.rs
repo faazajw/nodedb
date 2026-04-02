@@ -365,7 +365,7 @@ pub const SYSTEM_FUNCTION_NAMES: &[&str] = &[
     "approx_percentile",
     "approx_topk",
     "approx_count",
-    // Accounting math functions.
+    // Math functions.
     "round",
     "distribute",
     "allocate",
@@ -400,7 +400,7 @@ fn register_udfs(session: &SessionContext) {
     session.register_udf(ScalarUDF::new_from_impl(StWithin::new()));
     session.register_udf(ScalarUDF::new_from_impl(StDistance::new()));
     session.register_udf(ScalarUDF::new_from_impl(GeoDistance::new()));
-    // Accounting math UDFs.
+    // Math UDFs.
     session.register_udf(ScalarUDF::new_from_impl(RoundDecimal::new("HALF_EVEN")));
     session.register_udf(ScalarUDF::new_from_impl(Distribute::new()));
     session.register_udf(ScalarUDF::new_from_impl(Allocate::new()));

@@ -1,7 +1,7 @@
 //! Append-only enforcement: reject UPDATE and DELETE on append-only collections.
 
 use crate::bridge::envelope::ErrorCode;
-use crate::bridge::physical_plan::AccountingOptions;
+use crate::bridge::physical_plan::EnforcementOptions;
 
 /// Check whether an UPDATE is allowed on this collection.
 ///
@@ -9,7 +9,7 @@ use crate::bridge::physical_plan::AccountingOptions;
 /// `old_value` being `Some` means the document already exists (UPDATE case).
 pub fn check_point_put(
     collection: &str,
-    opts: &AccountingOptions,
+    opts: &EnforcementOptions,
     old_value: &Option<Vec<u8>>,
 ) -> Result<(), ErrorCode> {
     if opts.append_only && old_value.is_some() {
@@ -23,7 +23,7 @@ pub fn check_point_put(
 /// Check whether a DELETE is allowed on this collection.
 ///
 /// For append-only collections, DELETEs are unconditionally rejected.
-pub fn check_point_delete(collection: &str, opts: &AccountingOptions) -> Result<(), ErrorCode> {
+pub fn check_point_delete(collection: &str, opts: &EnforcementOptions) -> Result<(), ErrorCode> {
     if opts.append_only {
         return Err(ErrorCode::AppendOnlyViolation {
             collection: collection.to_string(),
@@ -36,8 +36,8 @@ pub fn check_point_delete(collection: &str, opts: &AccountingOptions) -> Result<
 mod tests {
     use super::*;
 
-    fn opts(append_only: bool) -> AccountingOptions {
-        AccountingOptions {
+    fn opts(append_only: bool) -> EnforcementOptions {
+        EnforcementOptions {
             append_only,
             ..Default::default()
         }

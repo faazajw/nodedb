@@ -389,6 +389,34 @@ pub async fn dispatch(
         return Some(super::collection::show_indexes(state, identity, &parts));
     }
 
+    // Period lock management.
+    if upper.starts_with("ALTER COLLECTION ") && upper.contains("ADD PERIOD LOCK") {
+        return Some(super::period_lock::add_period_lock(state, identity, sql));
+    }
+    if upper.starts_with("ALTER COLLECTION ") && upper.contains("DROP PERIOD LOCK") {
+        return Some(super::period_lock::drop_period_lock(
+            state, identity, &parts,
+        ));
+    }
+
+    // Retention and legal hold management.
+    if upper.starts_with("ALTER COLLECTION ") && upper.contains("SET RETENTION") {
+        return Some(super::collection::alter_collection_enforcement(
+            state,
+            identity,
+            sql,
+            "retention",
+        ));
+    }
+    if upper.starts_with("ALTER COLLECTION ") && upper.contains("LEGAL_HOLD") {
+        return Some(super::collection::alter_collection_enforcement(
+            state,
+            identity,
+            sql,
+            "legal_hold",
+        ));
+    }
+
     // Ownership transfer.
     if upper.starts_with("ALTER COLLECTION ") && upper.contains("OWNER TO") {
         return Some(super::ownership::alter_collection_owner(

@@ -202,6 +202,12 @@ pub enum ErrorCode {
     AppendOnlyViolation { collection: String },
     /// BALANCED constraint: debit/credit sums don't match.
     BalanceViolation { collection: String, detail: String },
+    /// Period is closed/locked: writes rejected.
+    PeriodLocked { collection: String },
+    /// Retention period not expired: DELETE rejected.
+    RetentionViolation { collection: String },
+    /// Legal hold active: DELETE rejected.
+    LegalHoldActive { collection: String },
     /// Internal error (io_uring failure, corruption, etc.)
     Internal { detail: String },
 }
@@ -229,6 +235,13 @@ impl From<crate::Error> for ErrorCode {
             crate::Error::BalanceViolation {
                 collection, detail, ..
             } => Self::BalanceViolation { collection, detail },
+            crate::Error::PeriodLocked { collection, .. } => Self::PeriodLocked { collection },
+            crate::Error::RetentionViolation { collection, .. } => {
+                Self::RetentionViolation { collection }
+            }
+            crate::Error::LegalHoldActive { collection, .. } => {
+                Self::LegalHoldActive { collection }
+            }
             other => Self::Internal {
                 detail: other.to_string(),
             },

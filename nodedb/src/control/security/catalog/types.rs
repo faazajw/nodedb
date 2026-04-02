@@ -282,6 +282,16 @@ pub struct StoredCollection {
     /// Last hash in the chain (updated atomically with each INSERT). `None` = empty chain.
     #[serde(default)]
     pub last_chain_hash: Option<String>,
+    /// Period lock: binds a collection's period column to a fiscal_periods status table.
+    /// When a period is CLOSED/LOCKED, writes to rows in that period are rejected.
+    #[serde(default)]
+    pub period_lock: Option<PeriodLockDef>,
+    /// Data retention period (e.g. "7 years", "90 days"). DELETE rejected if row age < period.
+    #[serde(default)]
+    pub retention_period: Option<String>,
+    /// Active legal holds. DELETE rejected while any hold is active. Each tag is unique.
+    #[serde(default)]
+    pub legal_holds: Vec<LegalHold>,
 }
 
 /// Double-entry balance constraint: within a single transaction, for each
@@ -299,6 +309,33 @@ pub struct BalancedConstraintDef {
     pub amount_column: String,
     /// Column containing the entry type (`"DEBIT"` or `"CREDIT"`).
     pub entry_type_column: String,
+}
+
+/// Period lock definition: binds a collection's period column to a reference table
+/// that holds period statuses (e.g. fiscal_periods).
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct PeriodLockDef {
+    /// Column in this collection that identifies the period (e.g. `fiscal_period`).
+    pub period_column: String,
+    /// Reference collection that holds period statuses (e.g. `fiscal_periods`).
+    pub ref_table: String,
+    /// Primary key column in the reference table (e.g. `period_key`).
+    pub ref_pk: String,
+    /// Status column in the reference table (e.g. `status`).
+    pub status_column: String,
+    /// Status values that allow writes (e.g. `["OPEN", "ADJUSTING"]`).
+    pub allowed_statuses: Vec<String>,
+}
+
+/// A legal hold tag preventing deletion of data in a collection.
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct LegalHold {
+    /// Unique tag identifying this hold (e.g. `"case-001"`).
+    pub tag: String,
+    /// Timestamp when the hold was placed (millis since epoch).
+    pub created_at: u64,
+    /// User who placed the hold.
+    pub created_by: String,
 }
 
 impl StoredCollection {
@@ -323,6 +360,9 @@ impl StoredCollection {
             hash_chain: false,
             balanced: None,
             last_chain_hash: None,
+            period_lock: None,
+            retention_period: None,
+            legal_holds: Vec::new(),
         }
     }
 

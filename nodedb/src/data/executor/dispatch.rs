@@ -601,7 +601,7 @@ impl CoreLoop {
                 index_paths,
                 crdt_enabled,
                 storage_mode,
-                accounting,
+                enforcement,
             }) => self.execute_register_document_collection(
                 task,
                 tid,
@@ -609,7 +609,7 @@ impl CoreLoop {
                 index_paths,
                 *crdt_enabled,
                 storage_mode,
-                accounting,
+                enforcement,
             ),
 
             PhysicalPlan::Document(DocumentOp::IndexLookup {

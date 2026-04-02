@@ -2,7 +2,7 @@
 //! violate data retention policies or active legal holds.
 
 use crate::bridge::envelope::ErrorCode;
-use crate::bridge::physical_plan::AccountingOptions;
+use crate::bridge::physical_plan::EnforcementOptions;
 
 /// Check whether a DELETE is allowed given retention and legal hold policies.
 ///
@@ -14,7 +14,7 @@ use crate::bridge::physical_plan::AccountingOptions;
 /// DELETE is rejected.
 pub fn check_delete_allowed(
     collection: &str,
-    opts: &AccountingOptions,
+    opts: &EnforcementOptions,
     row_created_at_secs: Option<u64>,
 ) -> Result<(), ErrorCode> {
     // Legal hold: absolute block on DELETE.
@@ -207,8 +207,8 @@ mod tests {
         RetentionDuration { count, unit }
     }
 
-    fn opts(retention: Option<RetentionDuration>, has_hold: bool) -> AccountingOptions {
-        AccountingOptions {
+    fn opts(retention: Option<RetentionDuration>, has_hold: bool) -> EnforcementOptions {
+        EnforcementOptions {
             retention,
             has_legal_hold: has_hold,
             ..Default::default()

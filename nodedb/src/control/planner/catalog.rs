@@ -269,6 +269,9 @@ mod tests {
             hash_chain: false,
             balanced: None,
             last_chain_hash: None,
+            period_lock: None,
+            retention_period: None,
+            legal_holds: Vec::new(),
         };
         let schema = collection_to_arrow_schema(&coll);
         assert_eq!(schema.fields().len(), 2);
@@ -298,6 +301,9 @@ mod tests {
             hash_chain: false,
             balanced: None,
             last_chain_hash: None,
+            period_lock: None,
+            retention_period: None,
+            legal_holds: Vec::new(),
         };
         let schema = collection_to_arrow_schema(&coll);
         assert_eq!(schema.fields().len(), 5);

@@ -335,7 +335,7 @@ impl CoreLoop {
         index_paths: &[String],
         crdt_enabled: bool,
         storage_mode: &crate::bridge::physical_plan::StorageMode,
-        accounting: &crate::bridge::physical_plan::AccountingOptions,
+        enforcement: &crate::bridge::physical_plan::EnforcementOptions,
     ) -> Response {
         let mode_label = match storage_mode {
             crate::bridge::physical_plan::StorageMode::Schemaless => "schemaless",
@@ -347,16 +347,16 @@ impl CoreLoop {
             index_count = index_paths.len(),
             crdt_enabled,
             storage_mode = mode_label,
-            append_only = accounting.append_only,
-            hash_chain = accounting.hash_chain,
-            balanced = accounting.balanced.is_some(),
+            append_only = enforcement.append_only,
+            hash_chain = enforcement.hash_chain,
+            balanced = enforcement.balanced.is_some(),
             "register document collection"
         );
 
         let mut config = crate::engine::document::store::CollectionConfig::new(collection);
         config.crdt_enabled = crdt_enabled;
         config.storage_mode = storage_mode.clone();
-        config.accounting = accounting.clone();
+        config.enforcement = enforcement.clone();
         for path in index_paths {
             config = config.with_index(path);
         }

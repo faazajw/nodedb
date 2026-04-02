@@ -43,6 +43,15 @@ pub enum Error {
     #[error("balance violation on {collection}: {detail}")]
     BalanceViolation { collection: String, detail: String },
 
+    #[error("period locked on {collection}: {detail}")]
+    PeriodLocked { collection: String, detail: String },
+
+    #[error("retention violation on {collection}: {detail}")]
+    RetentionViolation { collection: String, detail: String },
+
+    #[error("legal hold active on {collection}: {detail}")]
+    LegalHoldActive { collection: String, detail: String },
+
     // --- Read path errors ---
     #[error("collection {collection} not found for tenant {tenant_id}")]
     CollectionNotFound {
@@ -211,6 +220,15 @@ impl From<Error> for NodeDbError {
             Error::BalanceViolation {
                 collection, detail, ..
             } => NodeDbError::balance_violation(collection, detail),
+            Error::PeriodLocked {
+                collection, detail, ..
+            } => NodeDbError::period_locked(collection, detail),
+            Error::RetentionViolation {
+                collection, detail, ..
+            } => NodeDbError::retention_violation(collection, detail),
+            Error::LegalHoldActive {
+                collection, detail, ..
+            } => NodeDbError::legal_hold_active(collection, detail),
 
             // Read path
             Error::CollectionNotFound { collection, .. } => {

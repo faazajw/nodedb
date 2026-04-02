@@ -19,18 +19,40 @@ pub enum StorageMode {
     Strict { schema: StrictSchema },
 }
 
-/// Accounting enforcement options propagated from catalog to Data Plane.
+/// Collection enforcement options propagated from catalog to Data Plane.
 ///
 /// These flags are cached by the Data Plane in `CollectionConfig` and checked
 /// on every write operation (INSERT, UPDATE, DELETE).
 #[derive(Debug, Clone, Default)]
-pub struct AccountingOptions {
+pub struct EnforcementOptions {
     /// Reject UPDATE/DELETE operations.
     pub append_only: bool,
     /// Maintain SHA-256 hash chain on INSERT.
     pub hash_chain: bool,
     /// Balanced constraint definition (debit/credit sums must match per group_key).
     pub balanced: Option<BalancedDef>,
+    /// Period lock: cross-collection lookup to check if the period is open.
+    pub period_lock: Option<PeriodLockConfig>,
+    /// Data retention duration. DELETE rejected if row age < this.
+    /// Uses calendar-accurate arithmetic (months/years not approximated).
+    pub retention: Option<crate::data::executor::enforcement::retention::RetentionDuration>,
+    /// Whether any legal hold is active. DELETE unconditionally rejected.
+    pub has_legal_hold: bool,
+}
+
+/// Period lock configuration propagated to Data Plane.
+#[derive(Debug, Clone)]
+pub struct PeriodLockConfig {
+    /// Column in this collection identifying the period (e.g. `fiscal_period`).
+    pub period_column: String,
+    /// Reference collection holding period statuses (e.g. `fiscal_periods`).
+    pub ref_table: String,
+    /// Primary key column in the ref table (e.g. `period_key`).
+    pub ref_pk: String,
+    /// Status column in the ref table (e.g. `status`).
+    pub status_column: String,
+    /// Status values that allow writes (e.g. `["OPEN", "ADJUSTING"]`).
+    pub allowed_statuses: Vec<String>,
 }
 
 /// Bridge-level balanced constraint definition (mirrors catalog BalancedConstraintDef).
@@ -123,8 +145,8 @@ pub enum DocumentOp {
         crdt_enabled: bool,
         /// Storage encoding mode. Determines how documents are serialized.
         storage_mode: StorageMode,
-        /// Accounting enforcement options propagated from catalog.
-        accounting: AccountingOptions,
+        /// Collection enforcement options propagated from catalog.
+        enforcement: EnforcementOptions,
     },
 
     /// Lookup documents by secondary index value.

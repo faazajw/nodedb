@@ -30,6 +30,7 @@ pub mod metering_ddl;
 pub mod org_ddl;
 pub mod ownership;
 pub(crate) mod parse_utils;
+pub mod period_lock;
 pub mod procedure;
 pub mod pubsub;
 pub mod rls;

@@ -90,6 +90,21 @@ pub fn error_code_to_sqlstate(code: &ErrorCode) -> (&'static str, &'static str, 
             "23602",
             format!("balance violation on {collection}: {detail}"),
         ),
+        ErrorCode::PeriodLocked { collection } => (
+            "ERROR",
+            "23603",
+            format!("period locked: writes rejected on {collection}"),
+        ),
+        ErrorCode::RetentionViolation { collection } => (
+            "ERROR",
+            "23606",
+            format!("retention violation: cannot delete from {collection}"),
+        ),
+        ErrorCode::LegalHoldActive { collection } => (
+            "ERROR",
+            "23607",
+            format!("legal hold active: cannot delete from {collection}"),
+        ),
         ErrorCode::Internal { detail } => ("ERROR", "XX000", detail.clone()),
     }
 }
