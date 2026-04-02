@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use tracing::warn;
 
 use nodedb_bridge::backpressure::{BackpressureConfig, BackpressureController};
@@ -61,6 +63,21 @@ pub struct Dispatcher {
 
     /// Routes vShards to core IDs.
     router: VShardRouter,
+
+    /// Per-tenant in-flight request count across all cores.
+    /// Used to enforce fair sharing: no single tenant can consume
+    /// more than `max_per_tenant_inflight` slots.
+    tenant_inflight: HashMap<u32, u32>,
+
+    /// Maps request_id → tenant_id for in-flight requests.
+    /// Used by `poll_responses` to decrement the correct tenant counter.
+    request_tenant: HashMap<u64, u32>,
+
+    /// Maximum in-flight requests per tenant (0 = unlimited).
+    /// Recalculated as `max(2, total_queue_capacity / active_tenants)`.
+    max_per_tenant_inflight: u32,
+    /// Per-core queue capacity (used in tenant fairness recalculation).
+    per_core_capacity: u32,
 }
 
 impl Dispatcher {
@@ -90,8 +107,19 @@ impl Dispatcher {
         }
 
         let router = VShardRouter::round_robin(num_cores);
+        let total_capacity = num_cores * queue_capacity;
 
-        (Self { cores, router }, data_sides)
+        (
+            Self {
+                cores,
+                router,
+                tenant_inflight: HashMap::new(),
+                request_tenant: HashMap::new(),
+                max_per_tenant_inflight: total_capacity as u32,
+                per_core_capacity: queue_capacity as u32,
+            },
+            data_sides,
+        )
     }
 
     /// Dispatch a request to the correct Data Plane core.
@@ -99,6 +127,22 @@ impl Dispatcher {
     /// Uses the vShard router to determine which core handles this request,
     /// then pushes it into that core's SPSC request queue.
     pub fn dispatch(&mut self, request: envelope::Request) -> crate::Result<()> {
+        let tenant_id = request.tenant_id.as_u32();
+        let req_id = request.request_id.as_u64();
+
+        // Per-tenant fairness: reject if this tenant has too many in-flight requests.
+        if self.max_per_tenant_inflight > 0 {
+            let inflight = self.tenant_inflight.get(&tenant_id).copied().unwrap_or(0);
+            if inflight >= self.max_per_tenant_inflight {
+                return Err(crate::Error::Dispatch {
+                    detail: format!(
+                        "tenant {tenant_id}: queue full ({inflight}/{} in-flight)",
+                        self.max_per_tenant_inflight
+                    ),
+                });
+            }
+        }
+
         let core_id =
             self.router
                 .resolve(request.vshard_id)
@@ -126,12 +170,36 @@ impl Dispatcher {
                 detail: format!("core {core_id}: {e}"),
             })?;
 
+        // Track per-tenant in-flight + request→tenant mapping for response routing.
+        *self.tenant_inflight.entry(tenant_id).or_insert(0) += 1;
+        self.request_tenant.insert(req_id, tenant_id);
+
         // Wake the Data Plane core via eventfd.
         if let Some(ref notifier) = channel.wake_notifier {
             notifier.notify();
         }
 
         Ok(())
+    }
+
+    /// Record a response received for a tenant (decrements in-flight count).
+    ///
+    /// Called by the response poller when a Data Plane response is received.
+    pub fn tenant_response_received(&mut self, tenant_id: u32) {
+        if let Some(count) = self.tenant_inflight.get_mut(&tenant_id) {
+            *count = count.saturating_sub(1);
+        }
+    }
+
+    /// Recalculate the per-tenant in-flight limit based on active tenants.
+    ///
+    /// Called periodically (e.g., every second) to adjust fairness.
+    pub fn recalculate_tenant_limits(&mut self) {
+        let active = self.tenant_inflight.len().max(1) as u32;
+        let total_capacity: u32 = self.cores.len() as u32 * self.per_core_capacity;
+        self.max_per_tenant_inflight = (total_capacity / active).max(2);
+        // Clean up tenants with zero in-flight (avoid map growth).
+        self.tenant_inflight.retain(|_, count| *count > 0);
     }
 
     /// Dispatch a request directly to a specific core by index.
@@ -182,6 +250,13 @@ impl Dispatcher {
             let mut batch = Vec::new();
             channel.response_rx.drain_into(&mut batch, 64);
             for br in batch {
+                // Decrement per-tenant in-flight count using request→tenant mapping.
+                let rid = br.inner.request_id.as_u64();
+                if let Some(tid) = self.request_tenant.remove(&rid)
+                    && let Some(count) = self.tenant_inflight.get_mut(&tid)
+                {
+                    *count = count.saturating_sub(1);
+                }
                 responses.push(br.inner);
             }
         }
