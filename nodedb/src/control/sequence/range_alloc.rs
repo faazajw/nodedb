@@ -21,6 +21,19 @@ pub struct RangeAllocationRequest {
     pub epoch: u64,
 }
 
+/// A GAP_FREE counter advance proposed to Raft for cluster-safe serialization.
+///
+/// In cluster mode, each gap-free nextval is proposed as a Raft log entry.
+/// On leader failover, the new leader replays the log and has the exact counter.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GapFreeAdvanceRequest {
+    pub tenant_id: u32,
+    pub sequence_name: String,
+    /// The value being reserved (must match the local counter advance).
+    pub reserved_value: i64,
+    pub epoch: u64,
+}
+
 /// Response from the Raft leader after a range allocation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RangeAllocationResponse {
@@ -124,6 +137,43 @@ impl RangeAllocator {
             range_end,
             epoch,
         })
+    }
+
+    /// Propose a GAP_FREE counter advance to Raft.
+    ///
+    /// In cluster mode: serializes the advance as a Raft log entry so that
+    /// on leader failover, the new leader has the exact counter value.
+    /// In single-node mode: no-op (local counter is authoritative).
+    pub fn propose_gap_free_advance(
+        &self,
+        state: &crate::control::state::SharedState,
+        tenant_id: u32,
+        sequence_name: &str,
+        reserved_value: i64,
+        epoch: u64,
+    ) -> Result<(), crate::Error> {
+        let Some(ref proposer) = state.raft_proposer else {
+            // Single-node mode — local counter is authoritative, no Raft needed.
+            return Ok(());
+        };
+
+        let request = GapFreeAdvanceRequest {
+            tenant_id,
+            sequence_name: sequence_name.to_string(),
+            reserved_value,
+            epoch,
+        };
+        let payload = rmp_serde::to_vec(&request).map_err(|e| crate::Error::Serialization {
+            format: "msgpack".into(),
+            detail: format!("gap-free advance request: {e}"),
+        })?;
+
+        // Propose to vshard 0 (system shard).
+        proposer(0, payload).map_err(|e| crate::Error::Dispatch {
+            detail: format!("gap-free advance raft propose: {e}"),
+        })?;
+
+        Ok(())
     }
 }
 
