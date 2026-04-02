@@ -302,6 +302,12 @@ pub async fn dispatch(
     if upper.contains("TEMPORAL_LOOKUP") {
         return Some(super::query_functions::temporal_lookup(state, identity, sql).await);
     }
+    if upper.contains("VERIFY_BALANCE") {
+        return Some(super::query_functions::verify_balance(state, identity, sql).await);
+    }
+    if upper.contains("CONVERT_CURRENCY_LOOKUP") {
+        return Some(super::query_functions::convert_currency_lookup(state, identity, sql).await);
+    }
 
     // Graph index and tree operations.
     if upper.starts_with("CREATE GRAPH INDEX ") {
