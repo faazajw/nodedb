@@ -877,12 +877,19 @@ impl CoreLoop {
         format: &str,
         wal_lsn: Option<u64>,
     ) -> Response {
-        // LSN-based deduplication for WAL catch-up replays.
-        if let Some(lsn) = wal_lsn {
-            // Skip if already ingested into memtable.
-            if let Some(&max_lsn) = self.ts_max_ingested_lsn.get(collection)
-                && lsn <= max_lsn
-            {
+        // LSN-based deduplication: only skip records that are provably
+        // already flushed to sealed disk partitions. We do NOT track a
+        // max-ingested-LSN watermark because SPSC drops create gaps —
+        // LSN 5 ingested does not mean LSNs 1-4 were also ingested.
+        if let Some(lsn) = wal_lsn
+            && let Some(registry) = self.ts_registries.get(collection)
+        {
+            let max_flushed = registry
+                .iter()
+                .map(|(_, e)| e.meta.last_flushed_wal_lsn)
+                .max()
+                .unwrap_or(0);
+            if max_flushed > 0 && lsn <= max_flushed {
                 let result = serde_json::json!({
                     "accepted": 0,
                     "rejected": 0,
@@ -899,32 +906,6 @@ impl CoreLoop {
                     watermark_lsn: self.watermark,
                     error_code: None,
                 };
-            }
-            // Skip if already flushed to disk partitions.
-            if let Some(registry) = self.ts_registries.get(collection) {
-                let max_flushed = registry
-                    .iter()
-                    .map(|(_, e)| e.meta.last_flushed_wal_lsn)
-                    .max()
-                    .unwrap_or(0);
-                if lsn <= max_flushed {
-                    let result = serde_json::json!({
-                        "accepted": 0,
-                        "rejected": 0,
-                        "collection": collection,
-                        "dedup_skipped": true,
-                    });
-                    let json = serde_json::to_vec(&result).unwrap_or_default();
-                    return Response {
-                        request_id: task.request.request_id,
-                        status: Status::Ok,
-                        attempt: 1,
-                        partial: false,
-                        payload: Payload::from_vec(json),
-                        watermark_lsn: self.watermark,
-                        error_code: None,
-                    };
-                }
             }
         }
 
@@ -1013,8 +994,28 @@ impl CoreLoop {
                     );
                 };
                 let mut series_keys = HashMap::new();
-                let (accepted, rejected) =
+                let (mut accepted, rejected) =
                     ilp_ingest::ingest_batch(mt, &lines, &mut series_keys, now_ms);
+
+                // If rows were rejected (memtable hit hard limit), flush and
+                // re-ingest the rejected portion. This prevents silent data
+                // loss when batches arrive faster than the flush pipeline.
+                if rejected > 0 {
+                    tracing::warn!(
+                        collection,
+                        accepted,
+                        rejected,
+                        "ILP batch rows rejected by hard limit, flushing and retrying"
+                    );
+                    self.flush_ts_collection(collection, now_ms);
+                    if let Some(mt) = self.columnar_memtables.get_mut(collection) {
+                        let mut retry_keys = HashMap::new();
+                        let retry_lines = &lines[accepted..];
+                        let (retry_accepted, _) =
+                            ilp_ingest::ingest_batch(mt, retry_lines, &mut retry_keys, now_ms);
+                        accepted += retry_accepted;
+                    }
+                }
 
                 // Post-flush: standard 64MB threshold check.
                 let Some(mt) = self.columnar_memtables.get(collection) else {

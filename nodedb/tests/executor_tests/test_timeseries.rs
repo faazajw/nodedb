@@ -383,11 +383,11 @@ fn group_by_not_capped_at_10k() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn wal_lsn_dedup_skips_already_ingested() {
+fn dedup_only_skips_flushed_partitions() {
     let mut ctx = make_ctx();
-
-    // First ingest: wal_lsn=Some(100) — should succeed.
     let payload = b"dns,qname=a.com elapsed_ms=1.0 1700000000000000000\n";
+
+    // Ingest with wal_lsn — accepted (no flushed partitions yet).
     let resp1 = send_raw(
         &mut ctx.core,
         &mut ctx.tx,
@@ -399,11 +399,12 @@ fn wal_lsn_dedup_skips_already_ingested() {
             wal_lsn: Some(100),
         }),
     );
-    assert_eq!(resp1.status, nodedb::bridge::envelope::Status::Ok);
     let v1: serde_json::Value = serde_json::from_slice(&resp1.payload).unwrap();
     assert_eq!(v1["accepted"], 1);
 
-    // Duplicate ingest: same wal_lsn=100 — should be skipped.
+    // Same LSN again — accepted (no flushed partition to dedup against).
+    // In-memory dedup is intentionally NOT done because SPSC gaps mean
+    // max-LSN watermarks produce false negatives.
     let resp2 = send_raw(
         &mut ctx.core,
         &mut ctx.tx,
@@ -415,28 +416,14 @@ fn wal_lsn_dedup_skips_already_ingested() {
             wal_lsn: Some(100),
         }),
     );
-    assert_eq!(resp2.status, nodedb::bridge::envelope::Status::Ok);
     let v2: serde_json::Value = serde_json::from_slice(&resp2.payload).unwrap();
-    assert_eq!(v2["accepted"], 0);
-    assert_eq!(v2["dedup_skipped"], true);
-
-    // Higher LSN: wal_lsn=200 — should succeed.
-    let resp3 = send_raw(
-        &mut ctx.core,
-        &mut ctx.tx,
-        &mut ctx.rx,
-        PhysicalPlan::Timeseries(TimeseriesOp::Ingest {
-            collection: "dns_dedup".to_string(),
-            payload: payload.to_vec(),
-            format: "ilp".to_string(),
-            wal_lsn: Some(200),
-        }),
+    assert_eq!(
+        v2["accepted"], 1,
+        "same LSN re-ingest must be accepted (no flushed partition to dedup against)"
     );
-    let v3: serde_json::Value = serde_json::from_slice(&resp3.payload).unwrap();
-    assert_eq!(v3["accepted"], 1);
 
-    // Live ingest (wal_lsn=None) — always accepted, no dedup.
-    let resp4 = send_raw(
+    // Live ingest (wal_lsn=None) — always accepted.
+    let resp3 = send_raw(
         &mut ctx.core,
         &mut ctx.tx,
         &mut ctx.rx,
@@ -447,8 +434,136 @@ fn wal_lsn_dedup_skips_already_ingested() {
             wal_lsn: None,
         }),
     );
-    let v4: serde_json::Value = serde_json::from_slice(&resp4.payload).unwrap();
-    assert_eq!(v4["accepted"], 1);
+    let v3: serde_json::Value = serde_json::from_slice(&resp3.payload).unwrap();
+    assert_eq!(v3["accepted"], 1);
+}
+
+// ---------------------------------------------------------------------------
+// #11 — Catch-up must not skip gaps in LSN coverage
+// ---------------------------------------------------------------------------
+
+/// Simulates the real-world failure: ILP ingests batches 1,2,3,4,5 to WAL,
+/// but SPSC drops batches 2 and 4 (never reach Data Plane). Batch 1,3,5
+/// are ingested with their WAL LSNs. Later, catch-up replays batch 2 and 4
+/// from WAL. The dedup must NOT skip them just because LSN 2 < max(5).
+#[test]
+fn catchup_replays_gaps_in_lsn_coverage() {
+    let mut ctx = make_ctx();
+
+    let mk_payload = |i: i64| -> Vec<u8> {
+        format!(
+            "dns,qname=host-{i}.test elapsed_ms=1.0 {}\n",
+            1700000000000000000 + i * 1000000
+        )
+        .into_bytes()
+    };
+
+    // Simulate live ingest: batches at LSN 1, 3, 5 reach Data Plane.
+    // (Batches at LSN 2, 4 were dropped by SPSC — they're in WAL only.)
+    for lsn in [1, 3, 5] {
+        send_raw(
+            &mut ctx.core,
+            &mut ctx.tx,
+            &mut ctx.rx,
+            PhysicalPlan::Timeseries(TimeseriesOp::Ingest {
+                collection: "dns_gap".to_string(),
+                payload: mk_payload(lsn),
+                format: "ilp".to_string(),
+                wal_lsn: Some(lsn as u64),
+            }),
+        );
+    }
+
+    // Verify: 3 rows visible.
+    let results = ts_scan(
+        &mut ctx,
+        "dns_gap",
+        Vec::new(),
+        vec![("count".into(), "*".into())],
+        0,
+    );
+    assert_eq!(
+        results[0]["count_all"], 3,
+        "should see 3 rows from live ingest"
+    );
+
+    // Now simulate catch-up replaying the DROPPED batches (LSN 2, 4).
+    // These must NOT be skipped by dedup even though LSN 2 < max(5).
+    for lsn in [2, 4] {
+        let resp = send_raw(
+            &mut ctx.core,
+            &mut ctx.tx,
+            &mut ctx.rx,
+            PhysicalPlan::Timeseries(TimeseriesOp::Ingest {
+                collection: "dns_gap".to_string(),
+                payload: mk_payload(lsn),
+                format: "ilp".to_string(),
+                wal_lsn: Some(lsn as u64),
+            }),
+        );
+        let v: serde_json::Value = serde_json::from_slice(&resp.payload).unwrap();
+        assert_eq!(
+            v["accepted"], 1,
+            "catch-up batch at LSN {lsn} must be accepted (not deduped)"
+        );
+    }
+
+    // Verify: all 5 rows visible.
+    let results = ts_scan(
+        &mut ctx,
+        "dns_gap",
+        Vec::new(),
+        vec![("count".into(), "*".into())],
+        0,
+    );
+    assert_eq!(
+        results[0]["count_all"], 5,
+        "all 5 rows must be visible after catch-up fills the gaps"
+    );
+}
+
+/// Multi-batch ingest exceeding memtable capacity: all rows must survive
+/// across memtable flushes. Simulates sustained ILP ingest where the
+/// server receives many small batches, not one giant batch.
+#[test]
+fn multi_batch_ingest_survives_memtable_flush() {
+    let mut ctx = make_ctx();
+
+    // Ingest in 10 batches of 100K rows each = 1M total.
+    // Each batch is ~10MB of wide ILP rows. After ~6 batches the memtable
+    // hits 64MB and flushes. All 1M rows must be visible at the end.
+    let batch_size = 100_000;
+    let num_batches = 10;
+    let total = batch_size * num_batches;
+
+    for batch in 0..num_batches {
+        let start = batch * batch_size;
+        let lines = ilp_lines(
+            "dns_multi",
+            batch_size,
+            1_700_000_000_000_000_000 + start as i64 * 1_000_000,
+        );
+        let result = ingest_ilp(&mut ctx, "dns_multi", &lines);
+        let accepted = result["accepted"].as_u64().unwrap_or(0);
+        assert!(
+            accepted > 0,
+            "batch {batch} must accept rows, got accepted={accepted}"
+        );
+    }
+
+    // COUNT must see all rows (memtable + sealed partitions).
+    let results = ts_scan(
+        &mut ctx,
+        "dns_multi",
+        Vec::new(),
+        vec![("count".into(), "*".into())],
+        0,
+    );
+    let count = results[0]["count_all"].as_u64().unwrap();
+    assert_eq!(
+        count, total as u64,
+        "all {total} rows must be visible across memtable + partitions"
+    );
 }
 
 // ---------------------------------------------------------------------------

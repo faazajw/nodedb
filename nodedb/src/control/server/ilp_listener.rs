@@ -73,7 +73,7 @@ impl IlpListener {
                                         Ok(tls_stream) => {
                                             let cs = ConnStream::tls(tls_stream);
                                             if let Err(e) = handle_ilp_connection(cs, peer, &state).await {
-                                                debug!(%peer, error = %e, "ILP TLS connection error");
+                                                warn!(%peer, error = %e, "ILP TLS connection error (data may be lost)");
                                             }
                                         }
                                         Err(e) => {
@@ -86,7 +86,7 @@ impl IlpListener {
                                 connections.spawn(async move {
                                     let cs = ConnStream::plain(stream);
                                     if let Err(e) = handle_ilp_connection(cs, peer, &state).await {
-                                        debug!(%peer, error = %e, "ILP connection error");
+                                        warn!(%peer, error = %e, "ILP connection error (data may be lost)");
                                     }
                                     drop(permit);
                                 });
