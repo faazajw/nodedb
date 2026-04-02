@@ -369,6 +369,7 @@ pub const SYSTEM_FUNCTION_NAMES: &[&str] = &[
     "round",
     "distribute",
     "allocate",
+    "convert_currency",
     // Sequence functions (registered per-tenant in for_state).
     "nextval",
     "currval",
@@ -381,8 +382,8 @@ fn register_udfs(session: &SessionContext) {
         GeoDistance, StContains, StDistance, StDwithin, StIntersects, StWithin,
     };
     use super::udf::{
-        Allocate, Bm25Score, Distribute, DocArrayContains, DocExists, DocGet, MultiVectorSearch,
-        RoundDecimal, RrfScore, TextMatch, VectorDistance,
+        Allocate, Bm25Score, ConvertCurrency, Distribute, DocArrayContains, DocExists, DocGet,
+        MultiVectorSearch, RoundDecimal, RrfScore, TextMatch, VectorDistance,
     };
     use datafusion::logical_expr::ScalarUDF;
     session.register_udf(ScalarUDF::new_from_impl(DocGet::new()));
@@ -404,6 +405,7 @@ fn register_udfs(session: &SessionContext) {
     session.register_udf(ScalarUDF::new_from_impl(RoundDecimal::new("HALF_EVEN")));
     session.register_udf(ScalarUDF::new_from_impl(Distribute::new()));
     session.register_udf(ScalarUDF::new_from_impl(Allocate::new()));
+    session.register_udf(ScalarUDF::new_from_impl(ConvertCurrency::new()));
     // Timeseries UDFs (window + aggregate).
     nodedb_query::ts_udfs::register_timeseries_udfs(session);
 }
