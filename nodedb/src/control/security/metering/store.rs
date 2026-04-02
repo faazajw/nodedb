@@ -133,16 +133,12 @@ impl UsageStore {
         let mut graph_traversals: u64 = 0;
 
         for e in &events {
-            match e.operation.as_str() {
-                "point_get" | "range_scan" | "kv_get" | "kv_scan" | "text_search"
-                | "vector_search" | "timeseries_scan" | "columnar_scan" => {
-                    reads_count += 1;
-                    reads_tokens += e.tokens;
-                }
-                _ => {
-                    writes_count += 1;
-                    writes_tokens += e.tokens;
-                }
+            if is_read_operation(&e.operation) {
+                reads_count += 1;
+                reads_tokens += e.tokens;
+            } else {
+                writes_count += 1;
+                writes_tokens += e.tokens;
             }
             if e.operation == "vector_search" {
                 vector_searches += 1;
@@ -163,10 +159,80 @@ impl UsageStore {
         .to_string()
     }
 
+    /// Aggregate usage events by tenant_id.
+    ///
+    /// Returns a map of `tenant_id → TenantUsageSummary` with rolled-up
+    /// read/write counts and engine-specific metrics.
+    pub fn aggregate_by_tenant(&self) -> HashMap<u32, TenantUsageSummary> {
+        let events = self.events.read().unwrap_or_else(|p| p.into_inner());
+        let mut summaries: HashMap<u32, TenantUsageSummary> = HashMap::new();
+
+        for e in events.iter() {
+            let summary = summaries.entry(e.tenant_id).or_default();
+            summary.total_tokens += e.tokens;
+            summary.total_events += 1;
+
+            if is_read_operation(&e.operation) {
+                summary.reads_count += 1;
+                summary.reads_tokens += e.tokens;
+            } else {
+                summary.writes_count += 1;
+                summary.writes_tokens += e.tokens;
+            }
+            if e.operation == "vector_search" {
+                summary.vector_searches += 1;
+            }
+            if e.engine == "graph" {
+                summary.graph_traversals += 1;
+            }
+        }
+
+        summaries
+    }
+
     /// Total events stored.
     pub fn count(&self) -> usize {
         self.events.read().unwrap_or_else(|p| p.into_inner()).len()
     }
+}
+
+/// Whether an operation is a read (vs. write) based on the operation name.
+fn is_read_operation(operation: &str) -> bool {
+    matches!(
+        operation,
+        "point_get"
+            | "range_scan"
+            | "kv_get"
+            | "kv_scan"
+            | "text_search"
+            | "vector_search"
+            | "timeseries_scan"
+            | "columnar_scan"
+    )
+}
+
+/// Aggregated usage summary for a single tenant.
+///
+/// Computed by [`UsageStore::aggregate_by_tenant()`] from raw usage events.
+/// Used by billing integration, quota enforcement, and the SHOW TENANT USAGE DDL.
+#[derive(Debug, Default, Clone)]
+pub struct TenantUsageSummary {
+    /// Total tokens consumed across all operations.
+    pub total_tokens: u64,
+    /// Total number of metering events recorded.
+    pub total_events: u64,
+    /// Number of read operations (point get, scan, search).
+    pub reads_count: u64,
+    /// Tokens consumed by read operations.
+    pub reads_tokens: u64,
+    /// Number of write operations (put, delete, bulk).
+    pub writes_count: u64,
+    /// Tokens consumed by write operations.
+    pub writes_tokens: u64,
+    /// Number of vector similarity searches.
+    pub vector_searches: u64,
+    /// Number of graph traversal operations.
+    pub graph_traversals: u64,
 }
 
 impl Default for UsageStore {
