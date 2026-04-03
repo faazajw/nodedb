@@ -1,137 +1,43 @@
-//! Inverted index for full-text search with BM25 scoring.
+//! Full-text inverted index for Origin, backed by redb.
 //!
-//! Stores term → posting list mappings in redb. Each posting records
-//! the document ID, term frequency, and token positions (for phrase matching).
-//!
-//! Search logic is in `inverted_search.rs`, highlighting in `inverted_highlight.rs`.
+//! Wraps `nodedb_fts::FtsIndex<RedbFtsBackend>` to provide persistent
+//! full-text search with BM25 scoring. All scoring, tokenization, and
+//! fuzzy logic lives in `nodedb-fts`; this module provides the Origin-specific
+//! integration (redb backend, transaction support, tenant purge).
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
-use redb::{Database, ReadableTable, TableDefinition, WriteTransaction};
-use tracing::{debug, warn};
+use redb::{Database, ReadableTable, WriteTransaction};
+use tracing::debug;
 
-use super::text_analyzer;
+use nodedb_fts::index::FtsIndex;
 
-/// Inverted index table: key = "term", value = MessagePack-encoded Vec<Posting>.
-pub(super) const POSTINGS: TableDefinition<&str, &[u8]> = TableDefinition::new("text.postings");
+pub use nodedb_fts::posting::{MatchOffset, Posting, QueryMode, TextSearchResult};
 
-/// Document length table: key = "doc_id", value = u32 (number of tokens).
-pub(super) const DOC_LENGTHS: TableDefinition<&str, &[u8]> =
-    TableDefinition::new("text.doc_lengths");
+use super::fts_redb::RedbFtsBackend;
+use super::fts_redb::tables::{DOC_LENGTHS, POSTINGS};
 
-/// Index metadata: key = name, value = MessagePack bytes.
-const INDEX_META: TableDefinition<&str, &[u8]> = TableDefinition::new("text.meta");
-
-/// Default BM25 parameters. Sourced from `SparseTuning::bm25_k1` / `bm25_b` at runtime.
-pub(super) const DEFAULT_BM25_K1: f32 = 1.2;
-pub(super) const DEFAULT_BM25_B: f32 = 0.75;
-
-/// A single posting entry for a term in a document.
-#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
-pub struct Posting {
-    pub doc_id: String,
-    pub term_freq: u32,
-    pub positions: Vec<u32>,
-}
-
-/// Boolean query mode for multi-term searches.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum QueryMode {
-    /// All query terms must match (intersection). Default.
-    #[default]
-    And,
-    /// Any query term can match (union).
-    Or,
-}
-
-/// A scored search result from the inverted index.
-#[derive(Debug, Clone)]
-pub struct TextSearchResult {
-    pub doc_id: String,
-    pub score: f32,
-    /// Whether any result came from fuzzy matching.
-    pub fuzzy: bool,
-}
-
-/// A character-level offset of a matched term in the original text.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MatchOffset {
-    pub start: usize,
-    pub end: usize,
-    pub term: String,
-}
-
-fn inverted_err(ctx: &str, e: impl std::fmt::Display) -> crate::Error {
-    crate::Error::Storage {
-        engine: "inverted".into(),
-        detail: format!("{ctx}: {e}"),
-    }
-}
-
-/// Full-text inverted index backed by redb.
+/// Full-text inverted index backed by redb via `nodedb-fts`.
 pub struct InvertedIndex {
-    db: Arc<Database>,
-    /// BM25 term saturation parameter. Set from `SparseTuning::bm25_k1`.
-    pub(super) bm25_k1: f32,
-    /// BM25 length normalization parameter. Set from `SparseTuning::bm25_b`.
-    pub(super) bm25_b: f32,
+    inner: FtsIndex<RedbFtsBackend>,
 }
 
 impl InvertedIndex {
     /// Open or create an inverted index at the given redb database.
     pub fn open(db: Arc<Database>) -> crate::Result<Self> {
-        let write_txn = db.begin_write().map_err(|e| crate::Error::Storage {
-            engine: "inverted".into(),
-            detail: format!("init tables: {e}"),
-        })?;
-        {
-            write_txn
-                .open_table(POSTINGS)
-                .map_err(|e| crate::Error::Storage {
-                    engine: "inverted".into(),
-                    detail: format!("create postings table: {e}"),
-                })?;
-            write_txn
-                .open_table(DOC_LENGTHS)
-                .map_err(|e| crate::Error::Storage {
-                    engine: "inverted".into(),
-                    detail: format!("create doc_lengths table: {e}"),
-                })?;
-            write_txn
-                .open_table(INDEX_META)
-                .map_err(|e| crate::Error::Storage {
-                    engine: "inverted".into(),
-                    detail: format!("create index_meta table: {e}"),
-                })?;
-        }
-        write_txn.commit().map_err(|e| crate::Error::Storage {
-            engine: "inverted".into(),
-            detail: format!("commit init: {e}"),
-        })?;
-
+        let backend = RedbFtsBackend::open(db)?;
         Ok(Self {
-            db,
-            bm25_k1: DEFAULT_BM25_K1,
-            bm25_b: DEFAULT_BM25_B,
+            inner: FtsIndex::new(backend),
         })
     }
 
-    /// Access the underlying database (for sub-modules).
-    pub(super) fn db(&self) -> &Database {
-        &self.db
-    }
-
     /// Purge all inverted index entries for a tenant.
-    ///
-    /// Scans POSTINGS and DOC_LENGTHS tables for keys starting with
-    /// `"{tenant_id}:"` (the scoped collection prefix) and removes them.
     pub fn purge_tenant(&self, tenant_id: u32) -> crate::Result<usize> {
         let prefix = format!("{tenant_id}:");
         let end = format!("{tenant_id}:\u{ffff}");
 
-        let write_txn = self
-            .db
+        let db = self.inner.backend().db();
+        let write_txn = db
             .begin_write()
             .map_err(|e| inverted_err("purge write txn", e))?;
         let mut removed = 0;
@@ -174,15 +80,17 @@ impl InvertedIndex {
 
     /// Index a document's text content.
     pub fn index_document(&self, collection: &str, doc_id: &str, text: &str) -> crate::Result<()> {
-        let write_txn = self.db.begin_write().map_err(|e| crate::Error::Storage {
-            engine: "inverted".into(),
-            detail: format!("write txn: {e}"),
-        })?;
-        self.write_index_data(&write_txn, collection, doc_id, text)?;
-        write_txn.commit().map_err(|e| crate::Error::Storage {
-            engine: "inverted".into(),
-            detail: format!("commit index: {e}"),
-        })?;
+        let tokens = nodedb_fts::analyze(text);
+        if tokens.is_empty() {
+            return Ok(());
+        }
+
+        let db = self.inner.backend().db();
+        let write_txn = db.begin_write().map_err(|e| inverted_err("write txn", e))?;
+        self.write_index_data(&write_txn, collection, doc_id, &tokens)?;
+        write_txn
+            .commit()
+            .map_err(|e| inverted_err("commit index", e))?;
         Ok(())
     }
 
@@ -194,21 +102,22 @@ impl InvertedIndex {
         doc_id: &str,
         text: &str,
     ) -> crate::Result<()> {
-        self.write_index_data(txn, collection, doc_id, text)
+        let tokens = nodedb_fts::analyze(text);
+        if tokens.is_empty() {
+            return Ok(());
+        }
+        self.write_index_data(txn, collection, doc_id, &tokens)
     }
 
-    /// Core indexing logic shared by both index methods.
+    /// Core indexing logic: writes postings and doc length within a transaction.
     fn write_index_data(
         &self,
         txn: &WriteTransaction,
         collection: &str,
         doc_id: &str,
-        text: &str,
+        tokens: &[String],
     ) -> crate::Result<()> {
-        let tokens = text_analyzer::analyze(text);
-        if tokens.is_empty() {
-            return Ok(());
-        }
+        use std::collections::HashMap;
 
         let mut term_postings: HashMap<&str, (u32, Vec<u32>)> = HashMap::new();
         for (pos, token) in tokens.iter().enumerate() {
@@ -224,10 +133,7 @@ impl InvertedIndex {
 
         let mut postings_table = txn
             .open_table(POSTINGS)
-            .map_err(|e| crate::Error::Storage {
-                engine: "inverted".into(),
-                detail: format!("open postings: {e}"),
-            })?;
+            .map_err(|e| inverted_err("open postings", e))?;
 
         for (term, (freq, positions)) in &term_postings {
             let term_key = format!("{collection}:{term}");
@@ -247,35 +153,22 @@ impl InvertedIndex {
             existing.retain(|p| p.doc_id != scoped_doc_id);
             existing.push(posting);
 
-            let bytes = rmp_serde::to_vec_named(&existing).map_err(|e| crate::Error::Storage {
-                engine: "inverted".into(),
-                detail: format!("serialize postings: {e}"),
-            })?;
+            let bytes = rmp_serde::to_vec_named(&existing)
+                .map_err(|e| inverted_err("serialize postings", e))?;
             postings_table
                 .insert(term_key.as_str(), bytes.as_slice())
-                .map_err(|e| crate::Error::Storage {
-                    engine: "inverted".into(),
-                    detail: format!("insert posting: {e}"),
-                })?;
+                .map_err(|e| inverted_err("insert posting", e))?;
         }
         drop(postings_table);
 
         let mut lengths = txn
             .open_table(DOC_LENGTHS)
-            .map_err(|e| crate::Error::Storage {
-                engine: "inverted".into(),
-                detail: format!("open doc_lengths: {e}"),
-            })?;
-        let len_bytes = rmp_serde::to_vec_named(&doc_len).map_err(|e| crate::Error::Storage {
-            engine: "inverted".into(),
-            detail: format!("serialize doc_len: {e}"),
-        })?;
+            .map_err(|e| inverted_err("open doc_lengths", e))?;
+        let len_bytes =
+            rmp_serde::to_vec_named(&doc_len).map_err(|e| inverted_err("serialize doc_len", e))?;
         lengths
             .insert(scoped_doc_id.as_str(), len_bytes.as_slice())
-            .map_err(|e| crate::Error::Storage {
-                engine: "inverted".into(),
-                detail: format!("insert doc_len: {e}"),
-            })?;
+            .map_err(|e| inverted_err("insert doc_len", e))?;
 
         debug!(%collection, %doc_id, tokens = tokens.len(), terms = term_postings.len(), "indexed document");
         Ok(())
@@ -285,27 +178,18 @@ impl InvertedIndex {
     pub fn remove_document(&self, collection: &str, doc_id: &str) -> crate::Result<()> {
         let scoped_doc_id = format!("{collection}:{doc_id}");
 
-        let write_txn = self.db.begin_write().map_err(|e| crate::Error::Storage {
-            engine: "inverted".into(),
-            detail: format!("write txn: {e}"),
-        })?;
+        let db = self.inner.backend().db();
+        let write_txn = db.begin_write().map_err(|e| inverted_err("write txn", e))?;
         {
-            let mut postings_table =
-                write_txn
-                    .open_table(POSTINGS)
-                    .map_err(|e| crate::Error::Storage {
-                        engine: "inverted".into(),
-                        detail: format!("open postings: {e}"),
-                    })?;
+            let mut postings_table = write_txn
+                .open_table(POSTINGS)
+                .map_err(|e| inverted_err("open postings", e))?;
 
             let prefix = format!("{collection}:");
             let end = format!("{collection}:\u{ffff}");
             let keys: Vec<String> = postings_table
                 .range(prefix.as_str()..end.as_str())
-                .map_err(|e| crate::Error::Storage {
-                    engine: "inverted".into(),
-                    detail: format!("range: {e}"),
-                })?
+                .map_err(|e| inverted_err("range", e))?
                 .filter_map(|r| r.ok().map(|(k, _)| k.value().to_string()))
                 .collect();
 
@@ -330,35 +214,65 @@ impl InvertedIndex {
             for (key, new_val) in &updates {
                 match new_val {
                     None => {
-                        if let Err(e) = postings_table.remove(key.as_str()) {
-                            warn!(%collection, %doc_id, error = %e, "failed to remove posting");
-                        }
+                        let _ = postings_table.remove(key.as_str());
                     }
                     Some(bytes) => {
-                        if let Err(e) = postings_table.insert(key.as_str(), bytes.as_slice()) {
-                            warn!(%collection, %doc_id, error = %e, "failed to update posting");
-                        }
+                        let _ = postings_table.insert(key.as_str(), bytes.as_slice());
                     }
                 }
             }
 
-            let mut lengths =
-                write_txn
-                    .open_table(DOC_LENGTHS)
-                    .map_err(|e| crate::Error::Storage {
-                        engine: "inverted".into(),
-                        detail: format!("open doc_lengths: {e}"),
-                    })?;
-            if let Err(e) = lengths.remove(scoped_doc_id.as_str()) {
-                warn!(%collection, %doc_id, error = %e, "failed to remove doc length");
-            }
+            let mut lengths = write_txn
+                .open_table(DOC_LENGTHS)
+                .map_err(|e| inverted_err("open doc_lengths", e))?;
+            let _ = lengths.remove(scoped_doc_id.as_str());
         }
-        write_txn.commit().map_err(|e| crate::Error::Storage {
-            engine: "inverted".into(),
-            detail: format!("commit remove: {e}"),
-        })?;
+        write_txn
+            .commit()
+            .map_err(|e| inverted_err("commit remove", e))?;
 
         Ok(())
+    }
+
+    /// Search the inverted index using BM25 scoring.
+    pub fn search(
+        &self,
+        collection: &str,
+        query: &str,
+        top_k: usize,
+        fuzzy_enabled: bool,
+    ) -> crate::Result<Vec<TextSearchResult>> {
+        self.inner.search(collection, query, top_k, fuzzy_enabled)
+    }
+
+    /// Search with explicit boolean mode (AND or OR).
+    pub fn search_with_mode(
+        &self,
+        collection: &str,
+        query: &str,
+        top_k: usize,
+        fuzzy_enabled: bool,
+        mode: QueryMode,
+    ) -> crate::Result<Vec<TextSearchResult>> {
+        self.inner
+            .search_with_mode(collection, query, top_k, fuzzy_enabled, mode)
+    }
+
+    /// Generate highlighted text with matched query terms wrapped in tags.
+    pub fn highlight(&self, text: &str, query: &str, prefix: &str, suffix: &str) -> String {
+        self.inner.highlight(text, query, prefix, suffix)
+    }
+
+    /// Return byte offsets of matched query terms in the original text.
+    pub fn offsets(&self, text: &str, query: &str) -> Vec<MatchOffset> {
+        self.inner.offsets(text, query)
+    }
+}
+
+fn inverted_err(ctx: &str, e: impl std::fmt::Display) -> crate::Error {
+    crate::Error::Storage {
+        engine: "inverted".into(),
+        detail: format!("{ctx}: {e}"),
     }
 }
 

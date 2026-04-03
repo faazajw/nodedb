@@ -10,8 +10,7 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
+nodedb-fts = { workspace = true }
 serde = { workspace = true }
-rust-stemmers = { workspace = true }
-unicode-normalization = { workspace = true }
 
 [dev-dependencies]

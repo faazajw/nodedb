@@ -13,6 +13,7 @@ homepage.workspace = true
 nodedb-types = { workspace = true }
 nodedb-spatial = { workspace = true }
 nodedb-document = { workspace = true }
+nodedb-fts = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sonic-rs = { workspace = true }

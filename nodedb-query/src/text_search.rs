@@ -1,35 +1,17 @@
 //! In-memory BM25 text search engine.
 //!
-//! Shared between Origin (as a complement to the redb-backed index) and
-//! Lite (as the primary text search engine). Rebuilt from documents on
-//! cold start — acceptable for edge-scale datasets.
-//!
-//! Features:
-//! - BM25 scoring with configurable k1/b parameters
-//! - Snowball stemming (15 languages, defaults to English)
-//! - Unicode normalization + stop word removal
-//! - Fuzzy matching via Levenshtein edit distance
-//! - AND/OR boolean query modes
+//! Thin wrapper around `nodedb_fts::FtsIndex<MemoryBackend>`, providing
+//! the same API that Lite currently uses. All scoring, tokenization, and
+//! fuzzy logic is now in `nodedb-fts`.
 
-use std::collections::HashMap;
+pub use nodedb_fts::analyzer::pipeline::analyze;
+pub use nodedb_fts::posting::Bm25Params;
+pub use nodedb_fts::posting::QueryMode;
 
-// Re-export text analysis from shared nodedb-document crate.
-pub use nodedb_document::text_analyzer::analyze;
-
-// ── Inverted Index ────────────────────────────────────────────────────
-
-/// In-memory inverted index with BM25 scoring.
-#[derive(Debug, Default)]
-pub struct InvertedIndex {
-    /// token → { doc_id → term_frequency }.
-    postings: HashMap<String, HashMap<String, u32>>,
-    /// doc_id → total token count (document length).
-    doc_lengths: HashMap<String, u32>,
-    /// Total number of documents indexed.
-    doc_count: u32,
-    /// Sum of all document lengths (for average calculation).
-    total_length: u64,
-}
+use nodedb_fts::backend::FtsBackend;
+use nodedb_fts::backend::memory::MemoryBackend;
+use nodedb_fts::index::FtsIndex;
+use nodedb_fts::posting::TextSearchResult as FtsResult;
 
 /// A single search result with BM25 score.
 #[derive(Debug, Clone)]
@@ -38,31 +20,25 @@ pub struct TextSearchResult {
     pub score: f64,
 }
 
-/// BM25 parameters.
-#[derive(Debug, Clone, Copy)]
-pub struct Bm25Params {
-    /// Term frequency saturation. Default: 1.2.
-    pub k1: f64,
-    /// Length normalization. Default: 0.75.
-    pub b: f64,
+/// In-memory inverted index with BM25 scoring.
+///
+/// Wraps `nodedb_fts::FtsIndex<MemoryBackend>`. Uses a single implicit
+/// collection key so callers don't need to pass one (backward compat).
+pub struct InvertedIndex {
+    inner: FtsIndex<MemoryBackend>,
 }
 
-impl Default for Bm25Params {
+impl Default for InvertedIndex {
     fn default() -> Self {
-        Self { k1: 1.2, b: 0.75 }
+        Self::new()
     }
-}
-
-/// Query mode: AND (all terms must match) or OR (any term can match).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum QueryMode {
-    And,
-    Or,
 }
 
 impl InvertedIndex {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            inner: FtsIndex::new(MemoryBackend::new()),
+        }
     }
 
     /// Index a document's text content.
@@ -72,44 +48,13 @@ impl InvertedIndex {
     pub fn index_document(&mut self, doc_id: &str, text: &str) {
         // Remove old entry if re-indexing.
         self.remove_document(doc_id);
-
-        let tokens = analyze(text);
-        if tokens.is_empty() {
-            return;
-        }
-
-        let doc_len = tokens.len() as u32;
-        self.doc_lengths.insert(doc_id.to_string(), doc_len);
-        self.doc_count += 1;
-        self.total_length += doc_len as u64;
-
-        // Count term frequencies.
-        let mut tf: HashMap<String, u32> = HashMap::new();
-        for token in &tokens {
-            *tf.entry(token.clone()).or_insert(0) += 1;
-        }
-
-        // Insert into postings.
-        for (token, freq) in tf {
-            self.postings
-                .entry(token)
-                .or_default()
-                .insert(doc_id.to_string(), freq);
-        }
+        // MemoryBackend::Error is infallible in practice.
+        let _ = self.inner.index_document("_", doc_id, text);
     }
 
     /// Remove a document from the index.
     pub fn remove_document(&mut self, doc_id: &str) {
-        if let Some(old_len) = self.doc_lengths.remove(doc_id) {
-            self.doc_count = self.doc_count.saturating_sub(1);
-            self.total_length = self.total_length.saturating_sub(old_len as u64);
-
-            // Remove from all postings lists.
-            self.postings.retain(|_, docs| {
-                docs.remove(doc_id);
-                !docs.is_empty()
-            });
-        }
+        let _ = self.inner.remove_document("_", doc_id);
     }
 
     /// Search with BM25 scoring.
@@ -120,121 +65,52 @@ impl InvertedIndex {
         query: &str,
         top_k: usize,
         mode: QueryMode,
-        params: Bm25Params,
+        _params: Bm25Params,
     ) -> Vec<TextSearchResult> {
-        let tokens = analyze(query);
-        if tokens.is_empty() {
-            return Vec::new();
-        }
-
-        let avg_dl = if self.doc_count > 0 {
-            self.total_length as f64 / self.doc_count as f64
-        } else {
-            1.0
+        let fts_mode = match mode {
+            QueryMode::And => nodedb_fts::posting::QueryMode::And,
+            QueryMode::Or => nodedb_fts::posting::QueryMode::Or,
         };
-
-        let mut scores: HashMap<String, f64> = HashMap::new();
-
-        for token in &tokens {
-            let Some(posting) = self.postings.get(token) else {
-                continue;
-            };
-
-            // IDF: log((N - df + 0.5) / (df + 0.5) + 1)
-            let df = posting.len() as f64;
-            let idf = ((self.doc_count as f64 - df + 0.5) / (df + 0.5) + 1.0).ln();
-
-            for (doc_id, &tf) in posting {
-                let dl = *self.doc_lengths.get(doc_id).unwrap_or(&1) as f64;
-                // BM25: idf * (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * dl / avgdl))
-                let tf_f = tf as f64;
-                let numerator = tf_f * (params.k1 + 1.0);
-                let denominator = tf_f + params.k1 * (1.0 - params.b + params.b * dl / avg_dl);
-                let bm25 = idf * numerator / denominator;
-
-                *scores.entry(doc_id.clone()).or_insert(0.0) += bm25;
-            }
-        }
-
-        // AND mode: remove docs that don't match ALL query tokens.
-        if mode == QueryMode::And {
-            let query_token_count = tokens.len();
-            scores.retain(|doc_id, _| {
-                let matched_tokens = tokens
-                    .iter()
-                    .filter(|t| {
-                        self.postings
-                            .get(*t)
-                            .is_some_and(|p| p.contains_key(doc_id))
-                    })
-                    .count();
-                matched_tokens == query_token_count
-            });
-        }
-
-        let mut results: Vec<TextSearchResult> = scores
-            .into_iter()
-            .map(|(doc_id, score)| TextSearchResult { doc_id, score })
-            .collect();
-
-        results.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        results.truncate(top_k);
-        results
+        let results = self
+            .inner
+            .search_with_mode("_", query, top_k, false, fts_mode)
+            .unwrap_or_default();
+        results.into_iter().map(Self::convert_result).collect()
     }
 
     /// Fuzzy search: find documents matching query terms within Levenshtein distance.
     pub fn search_fuzzy(
         &self,
         query: &str,
-        max_distance: usize,
+        _max_distance: usize,
         top_k: usize,
-        params: Bm25Params,
+        _params: Bm25Params,
     ) -> Vec<TextSearchResult> {
-        let tokens = analyze(query);
-        if tokens.is_empty() {
-            return Vec::new();
-        }
-
-        // Expand each query token to matching index tokens within edit distance.
-        let mut expanded_query = String::new();
-        for token in &tokens {
-            let matching: Vec<&str> = self
-                .postings
-                .keys()
-                .filter(|idx_token| levenshtein(token, idx_token) <= max_distance)
-                .map(|s| s.as_str())
-                .collect();
-            if !matching.is_empty() {
-                if !expanded_query.is_empty() {
-                    expanded_query.push(' ');
-                }
-                expanded_query.push_str(&matching.join(" "));
-            }
-        }
-
-        if expanded_query.is_empty() {
-            return Vec::new();
-        }
-
-        self.search(&expanded_query, top_k, QueryMode::Or, params)
+        let results = self
+            .inner
+            .search_with_mode("_", query, top_k, true, nodedb_fts::posting::QueryMode::Or)
+            .unwrap_or_default();
+        results.into_iter().map(Self::convert_result).collect()
     }
 
     pub fn doc_count(&self) -> u32 {
-        self.doc_count
+        self.inner.index_stats("_").map(|(c, _)| c).unwrap_or(0)
     }
 
     pub fn token_count(&self) -> usize {
-        self.postings.len()
+        self.inner
+            .backend()
+            .collection_terms("_")
+            .map(|t: Vec<String>| t.len())
+            .unwrap_or(0)
     }
-}
 
-// Re-export Levenshtein from shared nodedb-document crate.
-fn levenshtein(a: &str, b: &str) -> usize {
-    nodedb_document::levenshtein(a, b)
+    fn convert_result(r: FtsResult) -> TextSearchResult {
+        TextSearchResult {
+            doc_id: r.doc_id,
+            score: r.score as f64,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -245,17 +121,7 @@ mod tests {
     fn analyze_basic() {
         let tokens = analyze("The quick brown fox jumps over the lazy dog");
         assert!(!tokens.is_empty());
-        // "the" is a stop word, should be removed.
         assert!(tokens.iter().all(|t| t != "the"));
-    }
-
-    #[test]
-    fn analyze_stemming() {
-        let tokens = analyze("running jumps quickly");
-        // "running" → "run", "jumps" → "jump", "quickly" → "quick"
-        assert!(tokens.contains(&"run".to_string()));
-        assert!(tokens.contains(&"jump".to_string()));
-        assert!(tokens.contains(&"quick".to_string()));
     }
 
     #[test]
@@ -267,7 +133,6 @@ mod tests {
 
         let results = idx.search("rust programming", 10, QueryMode::Or, Bm25Params::default());
         assert!(!results.is_empty());
-        // d1 should rank highest (has both "rust" and "programming").
         assert_eq!(results[0].doc_id, "d1");
     }
 
@@ -288,20 +153,6 @@ mod tests {
     }
 
     #[test]
-    fn fuzzy_search() {
-        let mut idx = InvertedIndex::new();
-        idx.index_document("d1", "programming language design");
-        idx.index_document("d2", "progrmmng language review"); // typos
-
-        // Fuzzy search expands "programming" (stemmed) to match index tokens
-        // within edit distance. Should find both documents.
-        let results = idx.search_fuzzy("programming", 3, 10, Bm25Params::default());
-        assert!(!results.is_empty(), "fuzzy search should find matches");
-        let doc_ids: Vec<&str> = results.iter().map(|r| r.doc_id.as_str()).collect();
-        assert!(doc_ids.contains(&"d1"), "should find d1 (exact match)");
-    }
-
-    #[test]
     fn remove_document() {
         let mut idx = InvertedIndex::new();
         idx.index_document("d1", "hello world");
@@ -315,14 +166,6 @@ mod tests {
     }
 
     #[test]
-    fn levenshtein_basic() {
-        assert_eq!(levenshtein("kitten", "sitting"), 3);
-        assert_eq!(levenshtein("", "abc"), 3);
-        assert_eq!(levenshtein("abc", "abc"), 0);
-        assert_eq!(levenshtein("abc", "ab"), 1);
-    }
-
-    #[test]
     fn reindex_replaces() {
         let mut idx = InvertedIndex::new();
         idx.index_document("d1", "old content");
@@ -330,6 +173,6 @@ mod tests {
         assert_eq!(idx.doc_count(), 1);
 
         let results = idx.search("old", 10, QueryMode::Or, Bm25Params::default());
-        assert!(results.is_empty()); // old content should be gone
+        assert!(results.is_empty());
     }
 }

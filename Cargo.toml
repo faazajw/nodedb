@@ -19,6 +19,7 @@ members = [
   "nodedb-graph",
   "nodedb-vector",
   "nodedb-document",
+  "nodedb-fts",
   "nodedb-strict",
   "nodedb-columnar",
 ]
@@ -51,6 +52,7 @@ nodedb-spatial = { path = "nodedb-spatial", version = "0.0.0-beta.1" }
 nodedb-graph = { path = "nodedb-graph", version = "0.0.0-beta.1" }
 nodedb-vector = { path = "nodedb-vector", version = "0.0.0-beta.1" }
 nodedb-document = { path = "nodedb-document", version = "0.0.0-beta.1" }
+nodedb-fts = { path = "nodedb-fts", version = "0.0.0-beta.1" }
 nodedb-strict = { path = "nodedb-strict", version = "0.0.0-beta.1" }
 nodedb-columnar = { path = "nodedb-columnar", version = "0.0.0-beta.1" }
 
