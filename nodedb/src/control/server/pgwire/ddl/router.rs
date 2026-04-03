@@ -325,6 +325,13 @@ pub async fn dispatch(
         )));
     }
 
+    // CHUNK_TEXT table-valued function: SELECT * FROM CHUNK_TEXT(...).
+    if (upper.starts_with("SELECT ") && upper.contains("CHUNK_TEXT("))
+        || upper.starts_with("SELECT CHUNK_TEXT(")
+    {
+        return Some(execute_chunk_text(sql));
+    }
+
     // Triggers: CREATE [OR REPLACE] [SYNC|DEFERRED] TRIGGER ...
     if upper.starts_with("CREATE TRIGGER ")
         || upper.starts_with("CREATE OR REPLACE TRIGGER ")
@@ -1086,6 +1093,191 @@ pub async fn dispatch(
     }
 
     None
+}
+
+/// Execute `CHUNK_TEXT(text, chunk_size, overlap, strategy)` and return rows.
+///
+/// Parses named (`text => '...'`) or positional arguments from the SQL string,
+/// delegates to `nodedb_query::chunk_text`, and returns a pgwire result set.
+fn execute_chunk_text(
+    sql: &str,
+) -> pgwire::error::PgWireResult<Vec<pgwire::api::results::Response>> {
+    use futures::stream;
+    use pgwire::api::results::{DataRowEncoder, QueryResponse, Response};
+
+    // Extract the parenthesized args from CHUNK_TEXT(...).
+    let paren_start = sql
+        .find("CHUNK_TEXT(")
+        .or_else(|| sql.find("chunk_text("))
+        .or_else(|| sql.find("Chunk_Text("))
+        .and_then(|p| sql[p..].find('(').map(|off| p + off))
+        .ok_or_else(|| super::super::types::sqlstate_error("42601", "expected CHUNK_TEXT(...)"))?;
+    let paren_end = sql.rfind(')').ok_or_else(|| {
+        super::super::types::sqlstate_error("42601", "expected closing ) for CHUNK_TEXT")
+    })?;
+
+    let inner = &sql[paren_start + 1..paren_end];
+
+    // Parse named or positional arguments.
+    let mut text_val = String::new();
+    let mut chunk_size = 0usize;
+    let mut overlap = 0usize;
+    let mut strategy_str = String::from("character");
+
+    // Split on commas, but respect quoted strings.
+    let args = split_args_respecting_quotes(inner);
+
+    if args.is_empty() {
+        return Err(super::super::types::sqlstate_error(
+            "42601",
+            "CHUNK_TEXT requires at least text and chunk_size arguments",
+        ));
+    }
+
+    // Detect named vs positional by checking if first arg contains `=>`.
+    let is_named = args[0].contains("=>");
+
+    if is_named {
+        for arg in &args {
+            if let Some((key, val)) = arg.split_once("=>") {
+                let key = key.trim().to_lowercase();
+                let val = val.trim().trim_matches('\'').trim_matches('"');
+                match key.as_str() {
+                    "text" => text_val = val.to_string(),
+                    "chunk_size" => {
+                        chunk_size = val.parse().map_err(|_| {
+                            super::super::types::sqlstate_error(
+                                "22023",
+                                &format!("invalid chunk_size: {val}"),
+                            )
+                        })?;
+                    }
+                    "overlap" => {
+                        overlap = val.parse().map_err(|_| {
+                            super::super::types::sqlstate_error(
+                                "22023",
+                                &format!("invalid overlap: {val}"),
+                            )
+                        })?;
+                    }
+                    "strategy" => strategy_str = val.to_string(),
+                    other => {
+                        return Err(super::super::types::sqlstate_error(
+                            "42601",
+                            &format!("unknown CHUNK_TEXT parameter: {other}"),
+                        ));
+                    }
+                }
+            }
+        }
+    } else {
+        // Positional: CHUNK_TEXT('text', chunk_size, overlap, 'strategy')
+        if args.len() < 2 {
+            return Err(super::super::types::sqlstate_error(
+                "42601",
+                "CHUNK_TEXT requires at least (text, chunk_size)",
+            ));
+        }
+        text_val = args[0]
+            .trim()
+            .trim_matches('\'')
+            .trim_matches('"')
+            .to_string();
+        chunk_size = args[1]
+            .trim()
+            .parse()
+            .map_err(|_| super::super::types::sqlstate_error("22023", "invalid chunk_size"))?;
+        if args.len() > 2 {
+            overlap = args[2]
+                .trim()
+                .parse()
+                .map_err(|_| super::super::types::sqlstate_error("22023", "invalid overlap"))?;
+        }
+        if args.len() > 3 {
+            strategy_str = args[3]
+                .trim()
+                .trim_matches('\'')
+                .trim_matches('"')
+                .to_string();
+        }
+    }
+
+    if text_val.is_empty() {
+        return Err(super::super::types::sqlstate_error(
+            "42601",
+            "CHUNK_TEXT: text argument is required",
+        ));
+    }
+    if chunk_size == 0 {
+        return Err(super::super::types::sqlstate_error(
+            "42601",
+            "CHUNK_TEXT: chunk_size must be > 0",
+        ));
+    }
+
+    let strategy = nodedb_query::ChunkStrategy::parse(&strategy_str).ok_or_else(|| {
+        super::super::types::sqlstate_error(
+            "22023",
+            &format!(
+                "unknown strategy '{strategy_str}'; supported: character, sentence, paragraph"
+            ),
+        )
+    })?;
+
+    let chunks = nodedb_query::chunk_text(&text_val, chunk_size, overlap, strategy)
+        .map_err(|e| super::super::types::sqlstate_error("22023", &e.to_string()))?;
+
+    let schema = std::sync::Arc::new(vec![
+        super::super::types::text_field("index"),
+        super::super::types::text_field("start"),
+        super::super::types::text_field("end"),
+        super::super::types::text_field("text"),
+    ]);
+
+    let rows: Vec<_> = chunks
+        .iter()
+        .map(|c| {
+            let mut encoder = DataRowEncoder::new(schema.clone());
+            let _ = encoder.encode_field(&c.index.to_string());
+            let _ = encoder.encode_field(&c.start.to_string());
+            let _ = encoder.encode_field(&c.end.to_string());
+            let _ = encoder.encode_field(&c.text);
+            Ok(encoder.take_row())
+        })
+        .collect();
+
+    Ok(vec![Response::Query(QueryResponse::new(
+        schema,
+        stream::iter(rows),
+    ))])
+}
+
+/// Split a comma-separated argument string, respecting single-quoted strings.
+fn split_args_respecting_quotes(s: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut in_quote = false;
+
+    for ch in s.chars() {
+        match ch {
+            '\'' if !in_quote => {
+                in_quote = true;
+                current.push(ch);
+            }
+            '\'' if in_quote => {
+                in_quote = false;
+                current.push(ch);
+            }
+            ',' if !in_quote => {
+                args.push(std::mem::take(&mut current));
+            }
+            _ => current.push(ch),
+        }
+    }
+    if !current.is_empty() {
+        args.push(current);
+    }
+    args
 }
 
 /// Handle `SELECT * FROM TOPIC <topic> CONSUMER GROUP <group> [LIMIT <n>]`.

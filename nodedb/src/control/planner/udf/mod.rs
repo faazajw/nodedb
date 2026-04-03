@@ -1,6 +1,7 @@
 pub mod alloc_common;
 pub mod allocate;
 pub mod bm25_score;
+pub mod chunk_text;
 pub mod currency;
 pub mod doc_array_contains;
 pub mod doc_exists;
@@ -21,6 +22,7 @@ pub mod distribute;
 
 pub use allocate::Allocate;
 pub use bm25_score::Bm25Score;
+pub use chunk_text::ChunkText;
 pub use currency::ConvertCurrency;
 pub use distribute::Distribute;
 pub use doc_array_contains::DocArrayContains;

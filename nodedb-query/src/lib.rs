@@ -1,4 +1,5 @@
 pub mod cast;
+pub mod chunk_text;
 pub mod expr;
 pub mod functions;
 pub mod fusion;
@@ -15,6 +16,7 @@ pub mod window;
 
 pub mod ts_udfs;
 
+pub use chunk_text::{ChunkError, ChunkStrategy, TextChunk, chunk_text};
 pub use expr::{BinaryOp, CastType, ComputedColumn, SqlExpr};
 pub use fusion::{
     DEFAULT_RRF_K, FusedResult, RankedResult, reciprocal_rank_fusion,

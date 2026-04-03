@@ -382,10 +382,12 @@ fn register_udfs(session: &SessionContext) {
         GeoDistance, StContains, StDistance, StDwithin, StIntersects, StWithin,
     };
     use super::udf::{
-        Allocate, Bm25Score, ConvertCurrency, Distribute, DocArrayContains, DocExists, DocGet,
-        MultiVectorSearch, RoundDecimal, RrfScore, TextMatch, VectorDistance, VectorMetadata,
+        Allocate, Bm25Score, ChunkText, ConvertCurrency, Distribute, DocArrayContains, DocExists,
+        DocGet, MultiVectorSearch, RoundDecimal, RrfScore, TextMatch, VectorDistance,
+        VectorMetadata,
     };
     use datafusion::logical_expr::ScalarUDF;
+    session.register_udf(ScalarUDF::new_from_impl(ChunkText::new()));
     session.register_udf(ScalarUDF::new_from_impl(DocGet::new()));
     session.register_udf(ScalarUDF::new_from_impl(DocExists::new()));
     session.register_udf(ScalarUDF::new_from_impl(DocArrayContains::new()));
