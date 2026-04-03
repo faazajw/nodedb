@@ -14,13 +14,13 @@ NodeDB provides the storage and retrieval layer. Your application handles chunki
 
 - [Agent Memory](agent-memory.md) — Episodic (conversation logs), semantic (distilled facts), working (KV + TTL), scheduled consolidation
 
+## ML Infrastructure
+
+- [Feature Store](feature-store.md) — Columnar engine for training features, point-in-time lookups, batch export, online serving
+- [Evaluation Tracking](evaluation-tracking.md) — Experiment metrics, retriever comparison, drift detection
+
 ## Platform
 
 - [On-Device AI](on-device.md) — NodeDB-Lite vector search, offline RAG, CRDT sync, WASM deployment, privacy
-
-## Coming Soon
-
-- [Feature Store](../columnar.md) — Columnar engine for training features, point-in-time lookups, batch export
-- [CDC for Inference Triggers](../real-time.md) — Change streams for embedding pipelines and knowledge graph re-indexing
-- [Evaluation Tracking](../timeseries.md) — Experiment metrics, retriever comparison, drift detection
-- [Multi-Tenancy for AI SaaS](../security.md) — WAL-level tenant isolation, RLS during vector search, per-tenant budgets
+- [CDC for Inference Triggers](cdc-inference-triggers.md) — Change streams for embedding pipelines, graph re-indexing, model output routing
+- [Multi-Tenancy for AI SaaS](multi-tenancy.md) — WAL-level tenant isolation, RLS during vector search, per-tenant budgets

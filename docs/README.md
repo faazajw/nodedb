@@ -28,6 +28,10 @@ Welcome to the NodeDB docs. These guides explain what each engine does, when to 
 - [Agent Memory](ai/agent-memory.md) — Episodic, semantic, working memory with scheduled consolidation
 - [On-Device AI](ai/on-device.md) — NodeDB-Lite for offline RAG, CRDT sync, WASM, privacy
 - [Multi-Modal Search](ai/multi-modal-search.md) — Multiple vector columns, cross-modal CLIP, RRF fusion
+- [Feature Store](ai/feature-store.md) — Training features, point-in-time lookups, batch export, online serving
+- [CDC for Inference Triggers](ai/cdc-inference-triggers.md) — Embedding pipelines, graph re-indexing, model output routing
+- [Evaluation Tracking](ai/evaluation-tracking.md) — Experiment metrics, retriever comparison, drift detection
+- [Multi-Tenancy for AI SaaS](ai/multi-tenancy.md) — WAL-level isolation, RLS during search, per-tenant budgets
 
 ## Platform & Operations
 
