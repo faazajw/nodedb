@@ -176,6 +176,41 @@ impl CoreLoop {
                 doc_id,
             }) => self.execute_sparse_delete(task, tid, collection, field_name, doc_id),
 
+            PhysicalPlan::Vector(VectorOp::MultiVectorInsert {
+                collection,
+                field_name,
+                doc_id,
+                vectors,
+                count,
+                dim,
+            }) => self.execute_multi_vector_insert(
+                task, tid, collection, field_name, doc_id, vectors, *count, *dim,
+            ),
+
+            PhysicalPlan::Vector(VectorOp::MultiVectorDelete {
+                collection,
+                field_name,
+                doc_id,
+            }) => self.execute_multi_vector_delete(task, tid, collection, field_name, doc_id),
+
+            PhysicalPlan::Vector(VectorOp::MultiVectorScoreSearch {
+                collection,
+                field_name,
+                query_vector,
+                top_k,
+                ef_search,
+                mode,
+            }) => self.execute_multi_vector_score_search(
+                task,
+                tid,
+                collection,
+                field_name,
+                query_vector,
+                *top_k,
+                *ef_search,
+                mode,
+            ),
+
             PhysicalPlan::Document(DocumentOp::Scan {
                 collection,
                 limit,

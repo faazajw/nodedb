@@ -101,6 +101,11 @@ pub struct VectorCollection {
     /// Mapping from internal vector ID → user-facing document ID.
     /// Populated when vectors are inserted with an associated document ID.
     pub doc_id_map: std::collections::HashMap<u32, String>,
+    /// Reverse mapping for multi-vector documents: doc_id → list of vector IDs.
+    /// Populated by `insert_multi_vector()`. Used by `delete_multi_vector()`
+    /// to tombstone all vectors belonging to a document.
+    /// Reconstructed from `doc_id_map` on checkpoint restore.
+    pub multi_doc_map: std::collections::HashMap<String, Vec<u32>>,
     /// Number of vectors in the growing segment before sealing.
     /// Set from `VectorTuning::seal_threshold` at construction time.
     pub(super) seal_threshold: usize,
@@ -130,6 +135,7 @@ impl VectorCollection {
             mmap_fallback_count: 0,
             mmap_segment_count: 0,
             doc_id_map: std::collections::HashMap::new(),
+            multi_doc_map: std::collections::HashMap::new(),
             seal_threshold,
         }
     }
@@ -154,6 +160,40 @@ impl VectorCollection {
         let id = self.insert(vector);
         self.doc_id_map.insert(id, doc_id);
         id
+    }
+
+    /// Insert multiple vectors for a single document (ColBERT-style).
+    ///
+    /// Each vector is inserted as a separate HNSW node, all sharing the same
+    /// `doc_id`. The `multi_doc_map` tracks which vector IDs belong to this doc.
+    /// Returns the list of assigned vector IDs.
+    pub fn insert_multi_vector(&mut self, vectors: &[&[f32]], doc_id: String) -> Vec<u32> {
+        let mut ids = Vec::with_capacity(vectors.len());
+        for &v in vectors {
+            let id = self.insert(v.to_vec());
+            self.doc_id_map.insert(id, doc_id.clone());
+            ids.push(id);
+        }
+        self.multi_doc_map.insert(doc_id, ids.clone());
+        ids
+    }
+
+    /// Delete all vectors belonging to a multi-vector document.
+    ///
+    /// Tombstones every vector ID tracked in `multi_doc_map` for this doc.
+    /// Returns the number of vectors successfully tombstoned.
+    pub fn delete_multi_vector(&mut self, doc_id: &str) -> usize {
+        let Some(ids) = self.multi_doc_map.remove(doc_id) else {
+            return 0;
+        };
+        let mut deleted = 0;
+        for id in &ids {
+            if self.delete(*id) {
+                deleted += 1;
+            }
+            self.doc_id_map.remove(id);
+        }
+        deleted
     }
 
     /// Look up the document ID for a vector ID, if one was provided at insert time.

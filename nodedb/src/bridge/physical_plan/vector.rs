@@ -135,4 +135,45 @@ pub enum VectorOp {
         /// Document ID to remove.
         doc_id: String,
     },
+
+    /// Insert multiple vectors for a single document (ColBERT-style).
+    /// All vectors are inserted as separate HNSW nodes sharing the same doc_id.
+    MultiVectorInsert {
+        collection: String,
+        /// Named vector field. Empty = default.
+        field_name: String,
+        /// Document ID shared by all vectors.
+        doc_id: String,
+        /// Flat vector data: count × dim f32 values.
+        vectors: Vec<f32>,
+        /// Number of vectors.
+        count: usize,
+        /// Dimensionality of each vector.
+        dim: usize,
+    },
+
+    /// Delete all vectors for a document from the multi-vector index.
+    MultiVectorDelete {
+        collection: String,
+        /// Named vector field. Empty = default.
+        field_name: String,
+        /// Document ID whose vectors should be tombstoned.
+        doc_id: String,
+    },
+
+    /// Search with multi-vector aggregated scoring (MaxSim, AvgSim, SumSim).
+    /// Over-fetches from HNSW, groups by doc_id, aggregates, deduplicates.
+    MultiVectorScoreSearch {
+        collection: String,
+        /// Named vector field. Empty = default.
+        field_name: String,
+        /// Query vector.
+        query_vector: Arc<[f32]>,
+        /// Maximum documents to return.
+        top_k: usize,
+        /// HNSW ef_search override. 0 = auto.
+        ef_search: usize,
+        /// Aggregation mode: "max_sim", "avg_sim", "sum_sim".
+        mode: String,
+    },
 }
