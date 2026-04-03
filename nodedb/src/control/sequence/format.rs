@@ -213,8 +213,7 @@ fn day_of_week_iso(year: i32, month: u8, day: u8) -> u8 {
     if month < 3 {
         y -= 1;
     }
-    let raw = ((y + y / 4 - y / 100 + y / 400 + t[(month - 1) as usize] + day as i32) % 7 + 7)
-        % 7;
+    let raw = ((y + y / 4 - y / 100 + y / 400 + t[(month - 1) as usize] + day as i32) % 7 + 7) % 7;
     // Sakamoto: 0=Sun, 1=Mon..6=Sat → ISO: Sun=7, Mon=1..Sat=6
     if raw == 0 { 7 } else { raw as u8 }
 }
@@ -226,7 +225,11 @@ fn day_of_week_iso(year: i32, month: u8, day: u8) -> u8 {
 fn iso_weeks_in_year(year: i32) -> u8 {
     let jan1_dow = day_of_week_iso(year, 1, 1);
     let is_leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
-    if jan1_dow == 4 || (is_leap && jan1_dow == 3) { 53 } else { 52 }
+    if jan1_dow == 4 || (is_leap && jan1_dow == 3) {
+        53
+    } else {
+        52
+    }
 }
 
 /// Resolve a format template to a string using the given context.
