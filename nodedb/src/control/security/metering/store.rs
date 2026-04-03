@@ -19,6 +19,10 @@ pub struct UsageStore {
     user_totals: RwLock<HashMap<String, u64>>,
     /// Aggregated totals per org.
     org_totals: RwLock<HashMap<String, u64>>,
+    /// Persistent per-tenant usage summaries. Updated on every `ingest()` call.
+    /// Serves as the queryable aggregation layer for `SHOW USAGE FOR TENANT`
+    /// and `EXPORT USAGE`. Survives ring buffer eviction.
+    tenant_totals: RwLock<HashMap<u32, TenantUsageSummary>>,
 }
 
 impl UsageStore {
@@ -28,12 +32,18 @@ impl UsageStore {
             max_events,
             user_totals: RwLock::new(HashMap::new()),
             org_totals: RwLock::new(HashMap::new()),
+            tenant_totals: RwLock::new(HashMap::new()),
         }
     }
 
     /// Ingest flushed events from the counter.
+    ///
+    /// Updates three aggregation layers:
+    /// 1. Per-user totals (for `SHOW USAGE FOR AUTH USER`)
+    /// 2. Per-org totals (for `SHOW USAGE FOR ORG`)
+    /// 3. Per-tenant summaries (for `SHOW USAGE FOR TENANT` / `EXPORT USAGE`)
     pub fn ingest(&self, events: Vec<UsageEvent>) {
-        // Update aggregated totals.
+        // Update per-user and per-org totals.
         {
             let mut user_totals = self.user_totals.write().unwrap_or_else(|p| p.into_inner());
             let mut org_totals = self.org_totals.write().unwrap_or_else(|p| p.into_inner());
@@ -42,6 +52,18 @@ impl UsageStore {
                 if !e.org_id.is_empty() {
                     *org_totals.entry(e.org_id.clone()).or_insert(0) += e.tokens;
                 }
+            }
+        }
+
+        // Update per-tenant summaries (persistent aggregation).
+        {
+            let mut tenant_totals = self
+                .tenant_totals
+                .write()
+                .unwrap_or_else(|p| p.into_inner());
+            for e in &events {
+                let summary = tenant_totals.entry(e.tenant_id).or_default();
+                accumulate_event(summary, e);
             }
         }
 
@@ -125,36 +147,18 @@ impl UsageStore {
     pub fn export_tenant_json(&self, tenant_id: u32, since_secs: u64) -> String {
         let events = self.query_by_tenant(tenant_id, since_secs);
 
-        let mut reads_count: u64 = 0;
-        let mut reads_tokens: u64 = 0;
-        let mut writes_count: u64 = 0;
-        let mut writes_tokens: u64 = 0;
-        let mut vector_searches: u64 = 0;
-        let mut graph_traversals: u64 = 0;
-
+        let mut summary = TenantUsageSummary::default();
         for e in &events {
-            if is_read_operation(&e.operation) {
-                reads_count += 1;
-                reads_tokens += e.tokens;
-            } else {
-                writes_count += 1;
-                writes_tokens += e.tokens;
-            }
-            if e.operation == "vector_search" {
-                vector_searches += 1;
-            }
-            if e.engine == "graph" {
-                graph_traversals += 1;
-            }
+            accumulate_event(&mut summary, e);
         }
 
         serde_json::json!({
             "tenant_id": tenant_id,
-            "reads": { "count": reads_count, "tokens": reads_tokens },
-            "writes": { "count": writes_count, "tokens": writes_tokens },
-            "vector_searches": vector_searches,
-            "graph_traversals": graph_traversals,
-            "total_events": events.len(),
+            "reads": { "count": summary.reads_count, "tokens": summary.reads_tokens },
+            "writes": { "count": summary.writes_count, "tokens": summary.writes_tokens },
+            "vector_searches": summary.vector_searches,
+            "graph_traversals": summary.graph_traversals,
+            "total_events": summary.total_events,
         })
         .to_string()
     }
@@ -169,30 +173,43 @@ impl UsageStore {
 
         for e in events.iter() {
             let summary = summaries.entry(e.tenant_id).or_default();
-            summary.total_tokens += e.tokens;
-            summary.total_events += 1;
-
-            if is_read_operation(&e.operation) {
-                summary.reads_count += 1;
-                summary.reads_tokens += e.tokens;
-            } else {
-                summary.writes_count += 1;
-                summary.writes_tokens += e.tokens;
-            }
-            if e.operation == "vector_search" {
-                summary.vector_searches += 1;
-            }
-            if e.engine == "graph" {
-                summary.graph_traversals += 1;
-            }
+            accumulate_event(summary, e);
         }
 
         summaries
     }
 
+    /// Get the persistent usage summary for a specific tenant.
+    ///
+    /// Unlike `aggregate_by_tenant()` which recomputes from the event ring buffer,
+    /// this reads from the persistent aggregation layer that survives ring buffer eviction.
+    pub fn tenant_summary(&self, tenant_id: u32) -> Option<TenantUsageSummary> {
+        let totals = self.tenant_totals.read().unwrap_or_else(|p| p.into_inner());
+        totals.get(&tenant_id).cloned()
+    }
+
     /// Total events stored.
     pub fn count(&self) -> usize {
         self.events.read().unwrap_or_else(|p| p.into_inner()).len()
+    }
+}
+
+/// Accumulate a single usage event into a summary.
+fn accumulate_event(summary: &mut TenantUsageSummary, e: &UsageEvent) {
+    summary.total_tokens += e.tokens;
+    summary.total_events += 1;
+    if is_read_operation(&e.operation) {
+        summary.reads_count += 1;
+        summary.reads_tokens += e.tokens;
+    } else {
+        summary.writes_count += 1;
+        summary.writes_tokens += e.tokens;
+    }
+    if e.operation == "vector_search" {
+        summary.vector_searches += 1;
+    }
+    if e.engine == "graph" {
+        summary.graph_traversals += 1;
     }
 }
 

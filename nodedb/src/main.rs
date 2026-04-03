@@ -365,6 +365,14 @@ async fn main() -> anyhow::Result<()> {
         shutdown_rx_ckpt,
     );
 
+    // Usage metering flush: drain per-core counters → UsageStore every 60 seconds.
+    // JoinHandle intentionally held — task runs for the lifetime of the process.
+    let _metering_flush = nodedb::control::security::metering::counter::spawn_flush_task(
+        Arc::clone(&shared.usage_counter),
+        Arc::clone(&shared.usage_store),
+        60,
+    );
+
     // Cold tier task: upload old L1 segments to L2 cold storage (if configured).
     if let Some(ref cold_settings) = config.cold_storage {
         let shared_cold = Arc::clone(&shared);
