@@ -166,9 +166,9 @@ pub fn required_permission(plan: &crate::bridge::envelope::PhysicalPlan) -> Perm
             | DocumentOp::EstimateCount { .. },
         ) => Permission::Read,
 
-        PhysicalPlan::Vector(VectorOp::Search { .. } | VectorOp::MultiSearch { .. }) => {
-            Permission::Read
-        }
+        PhysicalPlan::Vector(
+            VectorOp::Search { .. } | VectorOp::MultiSearch { .. } | VectorOp::QueryStats { .. },
+        ) => Permission::Read,
 
         PhysicalPlan::Crdt(CrdtOp::Read { .. }) => Permission::Read,
 
@@ -247,7 +247,12 @@ pub fn required_permission(plan: &crate::bridge::envelope::PhysicalPlan) -> Perm
             | MetaOp::ConvertCollection { .. },
         ) => Permission::Alter,
 
-        PhysicalPlan::Vector(VectorOp::SetParams { .. }) => Permission::Alter,
+        PhysicalPlan::Vector(
+            VectorOp::SetParams { .. }
+            | VectorOp::Seal { .. }
+            | VectorOp::CompactIndex { .. }
+            | VectorOp::Rebuild { .. },
+        ) => Permission::Alter,
 
         // Control operations.
         PhysicalPlan::Meta(MetaOp::Cancel { .. }) => Permission::Admin,

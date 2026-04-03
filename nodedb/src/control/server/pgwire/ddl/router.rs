@@ -267,6 +267,64 @@ pub async fn dispatch(
         ));
     }
 
+    // Vector index lifecycle: SHOW VECTOR INDEX, ALTER VECTOR INDEX.
+    if upper.starts_with("SHOW VECTOR INDEX ") {
+        return Some(super::maintenance::handle_show_vector_index(state, identity, sql).await);
+    }
+    if upper.starts_with("ALTER VECTOR INDEX ") && upper.contains(" SEAL") {
+        return Some(
+            super::maintenance::handle_alter_vector_index_seal(state, identity, sql).await,
+        );
+    }
+    if upper.starts_with("ALTER VECTOR INDEX ") && upper.contains(" COMPACT") {
+        return Some(
+            super::maintenance::handle_alter_vector_index_compact(state, identity, sql).await,
+        );
+    }
+    if upper.starts_with("ALTER VECTOR INDEX ") && upper.contains(" SET ") {
+        return Some(super::maintenance::handle_alter_vector_index_set(state, identity, sql).await);
+    }
+
+    // Vector model metadata: ALTER COLLECTION ... SET VECTOR METADATA ON ...
+    if upper.starts_with("ALTER COLLECTION ") && upper.contains("SET VECTOR METADATA ON") {
+        return Some(super::collection::handle_set_vector_metadata(
+            state, identity, sql,
+        ));
+    }
+
+    // SHOW VECTOR MODELS — catalog view.
+    if upper.starts_with("SHOW VECTOR MODELS") || upper == "SHOW VECTOR MODELS" {
+        return Some(super::collection::handle_show_vector_models(
+            state, identity,
+        ));
+    }
+
+    // SELECT VECTOR_METADATA('collection', 'column') — inline query.
+    if upper.starts_with("SELECT VECTOR_METADATA(") || upper.starts_with("SELECT VECTOR_METADATA (")
+    {
+        let inner = sql
+            .find('(')
+            .and_then(|start| sql.rfind(')').map(|end| &sql[start + 1..end]));
+        if let Some(args_str) = inner {
+            let args: Vec<&str> = args_str
+                .split(',')
+                .map(|s| s.trim().trim_matches('\'').trim_matches('"'))
+                .collect();
+            if args.len() >= 2 && !args[0].is_empty() && !args[1].is_empty() {
+                return Some(super::collection::handle_vector_metadata_query(
+                    state,
+                    identity,
+                    &args[0].to_lowercase(),
+                    &args[1].to_lowercase(),
+                ));
+            }
+        }
+        return Some(Err(super::super::types::sqlstate_error(
+            "42601",
+            "usage: SELECT VECTOR_METADATA('collection', 'column')",
+        )));
+    }
+
     // Triggers: CREATE [OR REPLACE] [SYNC|DEFERRED] TRIGGER ...
     if upper.starts_with("CREATE TRIGGER ")
         || upper.starts_with("CREATE OR REPLACE TRIGGER ")

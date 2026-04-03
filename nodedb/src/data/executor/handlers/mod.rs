@@ -26,5 +26,6 @@ pub mod timeseries;
 pub mod timeseries_wal;
 pub mod transaction;
 pub mod vector;
+pub mod vector_lifecycle;
 pub mod vector_search;
 pub mod write_batch;

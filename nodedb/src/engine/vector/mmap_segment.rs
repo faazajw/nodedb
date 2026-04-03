@@ -203,6 +203,11 @@ impl MmapVectorSegment {
     pub fn mmap_bytes(&self) -> usize {
         self.mmap_size
     }
+
+    /// File size on disk in bytes (same as mmap_bytes for mmap'd segments).
+    pub fn file_size(&self) -> usize {
+        self.mmap_size
+    }
 }
 
 impl Drop for MmapVectorSegment {

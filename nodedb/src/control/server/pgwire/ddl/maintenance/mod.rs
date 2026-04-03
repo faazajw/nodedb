@@ -5,8 +5,13 @@ pub mod distributed;
 pub mod reindex;
 pub mod stats_collector;
 pub mod storage_info;
+pub mod vector_index;
 
 pub use analyze::handle_analyze;
 pub use compact::handle_compact;
 pub use reindex::handle_reindex;
 pub use storage_info::{handle_show_compaction_status, handle_show_storage};
+pub use vector_index::{
+    handle_alter_vector_index_compact, handle_alter_vector_index_seal,
+    handle_alter_vector_index_set, handle_show_vector_index,
+};

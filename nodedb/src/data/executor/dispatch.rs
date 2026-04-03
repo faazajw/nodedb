@@ -123,6 +123,37 @@ impl CoreLoop {
                 ivf_nprobe: *ivf_nprobe,
             }),
 
+            PhysicalPlan::Vector(VectorOp::QueryStats {
+                collection,
+                field_name,
+            }) => self.execute_vector_query_stats(task, tid, collection, field_name),
+
+            PhysicalPlan::Vector(VectorOp::Seal {
+                collection,
+                field_name,
+            }) => self.execute_vector_seal(task, tid, collection, field_name),
+
+            PhysicalPlan::Vector(VectorOp::CompactIndex {
+                collection,
+                field_name,
+            }) => self.execute_vector_compact_index(task, tid, collection, field_name),
+
+            PhysicalPlan::Vector(VectorOp::Rebuild {
+                collection,
+                field_name,
+                m,
+                m0,
+                ef_construction,
+            }) => self.execute_vector_rebuild(
+                task,
+                tid,
+                collection,
+                field_name,
+                *m,
+                *m0,
+                *ef_construction,
+            ),
+
             PhysicalPlan::Document(DocumentOp::Scan {
                 collection,
                 limit,

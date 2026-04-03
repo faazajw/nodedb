@@ -238,6 +238,23 @@ impl HnswIndex {
         self.rng.0
     }
 
+    /// Approximate memory usage in bytes (vector data + neighbor lists).
+    pub fn memory_usage_bytes(&self) -> usize {
+        let vector_bytes = self.nodes.len() * self.dim * std::mem::size_of::<f32>();
+        let neighbor_bytes: usize = self
+            .nodes
+            .iter()
+            .map(|n| {
+                n.neighbors
+                    .iter()
+                    .map(|layer| layer.len() * 4)
+                    .sum::<usize>()
+            })
+            .sum();
+        let node_overhead = self.nodes.len() * std::mem::size_of::<Node>();
+        vector_bytes + neighbor_bytes + node_overhead
+    }
+
     /// Export all vectors for snapshot transfer.
     pub fn export_vectors(&self) -> Vec<Vec<f32>> {
         self.nodes.iter().map(|n| n.vector.clone()).collect()

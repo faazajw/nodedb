@@ -59,7 +59,7 @@ pub struct SealedSegment {
     /// Contiguous layout: `[v0_q0, v0_q1, ..., v1_q0, ...]` (dim bytes per vector).
     /// When present, search uses asymmetric SQ8 distance for candidate
     /// selection (4x fewer cache misses), then reranks top-K×3 with FP32.
-    pub(super) sq8: Option<(Sq8Codec, Vec<u8>)>,
+    pub(crate) sq8: Option<(Sq8Codec, Vec<u8>)>,
     /// Storage tier: L0Ram = FP32 vectors in HNSW nodes (default),
     /// L1Nvme = FP32 vectors in mmap segment file (budget-constrained).
     pub(super) tier: StorageTier,
@@ -422,7 +422,7 @@ impl VectorCollection {
     /// Calibrates min/max from all live vectors, then quantizes each vector
     /// to INT8. Returns `None` if the index is too small to benefit from
     /// quantization (<1000 vectors).
-    pub(super) fn build_sq8_for_index(index: &HnswIndex) -> Option<(Sq8Codec, Vec<u8>)> {
+    pub(crate) fn build_sq8_for_index(index: &HnswIndex) -> Option<(Sq8Codec, Vec<u8>)> {
         if index.live_count() < 1000 {
             return None; // Not worth quantizing small indexes.
         }
@@ -460,6 +460,16 @@ impl VectorCollection {
     /// Access sealed segments (read-only) for tombstone ratio inspection.
     pub fn sealed_segments(&self) -> &[SealedSegment] {
         &self.sealed
+    }
+
+    /// Access sealed segments mutably (for rebuild operations).
+    pub fn sealed_segments_mut(&mut self) -> &mut Vec<SealedSegment> {
+        &mut self.sealed
+    }
+
+    /// Whether the growing segment has no vectors.
+    pub fn growing_is_empty(&self) -> bool {
+        self.growing.is_empty()
     }
 
     /// Compact sealed segments: merge all into one, rebuild HNSW.
@@ -549,6 +559,95 @@ impl VectorCollection {
 
     pub fn params(&self) -> &HnswParams {
         &self.params
+    }
+
+    /// Update HNSW parameters for future builds.
+    ///
+    /// Growing segment uses old params until sealed. New sealed segments
+    /// will use the updated params. Does NOT rebuild existing sealed segments.
+    pub fn set_params(&mut self, params: HnswParams) {
+        self.params = params;
+    }
+
+    /// Collect live statistics from all segments.
+    ///
+    /// Called on the Data Plane in response to `VectorOp::QueryStats`.
+    pub fn stats(&self) -> nodedb_types::VectorIndexStats {
+        let growing_vectors = self.growing.len();
+        let sealed_vectors: usize = self.sealed.iter().map(|s| s.index.len()).sum();
+        let building_vectors: usize = self.building.iter().map(|s| s.flat.len()).sum();
+
+        let tombstone_count: usize = self
+            .sealed
+            .iter()
+            .map(|s| s.index.tombstone_count())
+            .sum::<usize>()
+            + self.growing.tombstone_count()
+            + self
+                .building
+                .iter()
+                .map(|s| s.flat.tombstone_count())
+                .sum::<usize>();
+
+        let total = growing_vectors + sealed_vectors + building_vectors;
+        let tombstone_ratio = if total > 0 {
+            tombstone_count as f64 / total as f64
+        } else {
+            0.0
+        };
+
+        // Determine quantization from sealed segments (all share the same config).
+        let quantization = if self.sealed.iter().any(|s| s.sq8.is_some()) {
+            nodedb_types::VectorIndexQuantization::Sq8
+        } else {
+            nodedb_types::VectorIndexQuantization::None
+        };
+
+        // Memory estimate: HNSW graph nodes + SQ8 data + growing flat vectors.
+        let hnsw_mem: usize = self
+            .sealed
+            .iter()
+            .map(|s| s.index.memory_usage_bytes())
+            .sum();
+        let sq8_mem: usize = self
+            .sealed
+            .iter()
+            .filter_map(|s| s.sq8.as_ref().map(|(_, data)| data.len()))
+            .sum();
+        let growing_mem = growing_vectors * self.dim * std::mem::size_of::<f32>();
+        let building_mem = building_vectors * self.dim * std::mem::size_of::<f32>();
+        let memory_bytes = hnsw_mem + sq8_mem + growing_mem + building_mem;
+
+        // Disk estimate: mmap segment files.
+        let disk_bytes: usize = self
+            .sealed
+            .iter()
+            .filter_map(|s| s.mmap_vectors.as_ref().map(|m| m.file_size()))
+            .sum();
+
+        let metric_name = format!("{:?}", self.params.metric).to_lowercase();
+
+        nodedb_types::VectorIndexStats {
+            sealed_count: self.sealed.len(),
+            building_count: self.building.len(),
+            growing_vectors,
+            sealed_vectors,
+            live_count: self.live_count(),
+            tombstone_count,
+            tombstone_ratio,
+            quantization,
+            memory_bytes,
+            disk_bytes,
+            build_in_progress: !self.building.is_empty(),
+            index_type: nodedb_types::VectorIndexType::Hnsw,
+            hnsw_m: self.params.m,
+            hnsw_m0: self.params.m0,
+            hnsw_ef_construction: self.params.ef_construction,
+            metric: metric_name,
+            dimensions: self.dim,
+            seal_threshold: self.seal_threshold,
+            mmap_segment_count: self.mmap_segment_count,
+        }
     }
 }
 

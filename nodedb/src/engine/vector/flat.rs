@@ -192,6 +192,11 @@ impl FlatIndex {
     pub fn metric(&self) -> DistanceMetric {
         self.metric
     }
+
+    /// Number of soft-deleted (tombstoned) vectors.
+    pub fn tombstone_count(&self) -> usize {
+        self.len().saturating_sub(self.live_count)
+    }
 }
 
 #[cfg(test)]

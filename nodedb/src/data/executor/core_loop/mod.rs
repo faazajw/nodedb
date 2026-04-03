@@ -308,4 +308,28 @@ impl CoreLoop {
     pub fn advance_watermark(&mut self, lsn: Lsn) {
         self.watermark = lsn;
     }
+
+    /// Test accessor: row count in a columnar memtable.
+    #[cfg(test)]
+    pub fn columnar_memtable_row_count(&self, collection: &str) -> u64 {
+        self.columnar_memtables
+            .get(collection)
+            .map(|mt| mt.row_count())
+            .unwrap_or(0)
+    }
+
+    /// Test accessor: total row count across all partitions in a timeseries registry.
+    #[cfg(test)]
+    pub fn ts_registry_row_count(&self, collection: &str) -> u64 {
+        self.ts_registries
+            .get(collection)
+            .map(|reg| {
+                let range = nodedb_types::timeseries::TimeRange::new(0, i64::MAX);
+                reg.query_partitions(&range)
+                    .iter()
+                    .map(|e| e.meta.row_count)
+                    .sum()
+            })
+            .unwrap_or(0)
+    }
 }

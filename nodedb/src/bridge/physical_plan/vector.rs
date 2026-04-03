@@ -69,4 +69,39 @@ pub enum VectorOp {
         /// IVF probe count (for ivf_pq only). Default: 16.
         ivf_nprobe: usize,
     },
+
+    /// Query live vector index statistics. Returns `VectorIndexStats` as payload.
+    QueryStats {
+        collection: String,
+        /// Named vector field. Empty string = default (unnamed) field.
+        field_name: String,
+    },
+
+    /// Force-seal the growing segment, triggering background HNSW build.
+    Seal {
+        collection: String,
+        /// Named vector field. Empty string = default field.
+        field_name: String,
+    },
+
+    /// Force tombstone compaction on sealed segments.
+    CompactIndex {
+        collection: String,
+        /// Named vector field. Empty string = default field.
+        field_name: String,
+    },
+
+    /// Rebuild sealed segments with new HNSW parameters.
+    /// Old index serves queries until rebuild completes, then swaps atomically.
+    Rebuild {
+        collection: String,
+        /// Named vector field. Empty string = default field.
+        field_name: String,
+        /// New M parameter. 0 = keep current.
+        m: usize,
+        /// New M0 parameter. 0 = keep current.
+        m0: usize,
+        /// New ef_construction. 0 = keep current.
+        ef_construction: usize,
+    },
 }

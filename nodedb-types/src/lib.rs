@@ -24,6 +24,8 @@ pub mod sync;
 pub mod timeseries;
 pub mod value;
 pub mod vector_distance;
+pub mod vector_index_stats;
+pub mod vector_model;
 
 pub use approx::{CountMinSketch, HyperLogLog, SpaceSaving, TDigest};
 pub use bbox::{BoundingBox, geometry_bbox};
@@ -48,3 +50,5 @@ pub use sync::shape::{ShapeDefinition, ShapeType};
 pub use sync::violation::ViolationType;
 pub use sync::wire::{SyncFrame, SyncMessageType};
 pub use value::Value;
+pub use vector_index_stats::{VectorIndexQuantization, VectorIndexStats, VectorIndexType};
+pub use vector_model::{VectorModelEntry, VectorModelMetadata};
