@@ -117,14 +117,10 @@ fn apply_single_binding(
     let new_balance = current_balance + delta;
 
     // Update the balance field in the JSON document.
+    // Always store as string to preserve exact Decimal precision — f64 is lossy
+    // for values with >15 significant digits (e.g. 123456789012345.67).
     if let Some(obj) = target_doc.as_object_mut() {
-        use rust_decimal::prelude::ToPrimitive;
-        // Store as number if it fits, otherwise as string for precision.
-        let json_val = if let Some(f) = new_balance.to_f64() {
-            serde_json::json!(f)
-        } else {
-            serde_json::json!(new_balance.to_string())
-        };
+        let json_val = serde_json::json!(new_balance.to_string());
         obj.insert(binding.target_column.clone(), json_val);
     }
 
