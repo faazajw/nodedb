@@ -170,8 +170,30 @@ impl<'a> FormatContext<'a> {
 }
 
 /// Compute ISO 8601 week number (1–53).
+///
+/// Week 01 is the week containing the year's first Thursday.
+/// Days before Week 01 belong to the last week of the previous year;
+/// days after the last week belong to Week 01 of the next year.
 fn iso_week_number(year: i32, month: u8, day: u8) -> u8 {
-    // Day of year (1-based).
+    let doy = day_of_year(year, month, day) as i32;
+    let dow = day_of_week_iso(year, month, day) as i32; // 1=Mon..7=Sun
+
+    // ISO week: (ordinal - weekday + 10) / 7
+    let w = (doy - dow + 10) / 7;
+
+    if w < 1 {
+        // Belongs to the last week of the previous year.
+        iso_weeks_in_year(year - 1)
+    } else if w > iso_weeks_in_year(year) as i32 {
+        // Belongs to week 1 of the next year.
+        1
+    } else {
+        w as u8
+    }
+}
+
+/// Day of year (1-based ordinal).
+fn day_of_year(year: i32, month: u8, day: u8) -> u16 {
     let days_in_months: [u16; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
     let is_leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
     let mut doy: u16 = day as u16;
@@ -181,31 +203,30 @@ fn iso_week_number(year: i32, month: u8, day: u8) -> u8 {
             doy += 1;
         }
     }
+    doy
+}
 
-    // Day of week for Jan 1 (0=Mon..6=Sun, ISO convention).
-    // Tomohiko Sakamoto's algorithm (returns 0=Sun..6=Sat), adjusted to ISO.
-    let dow_jan1 = {
-        let mut y = year;
-        let t = [0i32, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
-        if 1 < 3 {
-            y -= 1;
-        }
-        let raw = (y + y / 4 - y / 100 + y / 400 + t[0] + 1) % 7;
-        // Convert: 0=Sun → 6, 1=Mon → 0, ..., 6=Sat → 5
-        ((raw + 6) % 7) as u16
-    };
-
-    // ISO week: week 1 contains the first Thursday of the year.
-    let week = (doy + dow_jan1 + 5) / 7;
-    if week == 0 {
-        // Day belongs to last week of previous year.
-        52
-    } else if week > 52 {
-        // Check if it spills into week 1 of next year.
-        53.min(week) as u8
-    } else {
-        week as u8
+/// ISO day of week: 1=Monday .. 7=Sunday (Tomohiko Sakamoto's algorithm).
+fn day_of_week_iso(year: i32, month: u8, day: u8) -> u8 {
+    let t = [0i32, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
+    let mut y = year;
+    if month < 3 {
+        y -= 1;
     }
+    let raw = ((y + y / 4 - y / 100 + y / 400 + t[(month - 1) as usize] + day as i32) % 7 + 7)
+        % 7;
+    // Sakamoto: 0=Sun, 1=Mon..6=Sat → ISO: Sun=7, Mon=1..Sat=6
+    if raw == 0 { 7 } else { raw as u8 }
+}
+
+/// Number of ISO weeks in a year (52 or 53).
+///
+/// A year has 53 weeks iff Jan 1 is Thursday, or the year is a leap year
+/// and Jan 1 is Wednesday.
+fn iso_weeks_in_year(year: i32) -> u8 {
+    let jan1_dow = day_of_week_iso(year, 1, 1);
+    let is_leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+    if jan1_dow == 4 || (is_leap && jan1_dow == 3) { 53 } else { 52 }
 }
 
 /// Resolve a format template to a string using the given context.
@@ -434,5 +455,61 @@ mod tests {
         assert_eq!(ResetScope::parse("yearly").unwrap(), ResetScope::Yearly);
         assert_eq!(ResetScope::parse("NEVER").unwrap(), ResetScope::Never);
         assert!(ResetScope::parse("BIWEEKLY").is_err());
+    }
+
+    // --- ISO week edge cases ---
+
+    #[test]
+    fn iso_week_mid_year() {
+        // 2026-04-02 is a Thursday in week 14.
+        assert_eq!(iso_week_number(2026, 4, 2), 14);
+    }
+
+    #[test]
+    fn iso_week_jan1_thursday() {
+        // 2026-01-01 is Thursday → week 1.
+        assert_eq!(iso_week_number(2026, 1, 1), 1);
+    }
+
+    #[test]
+    fn iso_week_dec31_belongs_to_week1_next_year() {
+        // 2025-12-29 is Monday → ISO week 1 of 2026 (Jan 1, 2026 is Thursday).
+        assert_eq!(iso_week_number(2025, 12, 29), 1);
+    }
+
+    #[test]
+    fn iso_week_jan1_belongs_to_prev_year() {
+        // 2016-01-01 is Friday → belongs to week 53 of 2015.
+        assert_eq!(iso_week_number(2016, 1, 1), 53);
+    }
+
+    #[test]
+    fn iso_week_53_long_year() {
+        // 2015-12-31 is Thursday → week 53 of 2015 (long year).
+        assert_eq!(iso_week_number(2015, 12, 31), 53);
+    }
+
+    #[test]
+    fn iso_week_leap_year() {
+        // 2024-02-29 (leap day) is Thursday → week 9.
+        assert_eq!(iso_week_number(2024, 2, 29), 9);
+    }
+
+    #[test]
+    fn iso_week_dec28_always_same_year() {
+        // Dec 28 always belongs to the last week of its own year.
+        assert_eq!(iso_week_number(2026, 12, 28), 53);
+    }
+
+    #[test]
+    fn day_of_week_known_dates() {
+        // 2026-01-01 = Thursday (4)
+        assert_eq!(day_of_week_iso(2026, 1, 1), 4);
+        // 2024-02-29 = Thursday (4)
+        assert_eq!(day_of_week_iso(2024, 2, 29), 4);
+        // 2025-12-29 = Monday (1)
+        assert_eq!(day_of_week_iso(2025, 12, 29), 1);
+        // 2016-01-01 = Friday (5)
+        assert_eq!(day_of_week_iso(2016, 1, 1), 5);
     }
 }
