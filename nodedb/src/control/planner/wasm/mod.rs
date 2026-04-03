@@ -6,7 +6,7 @@
 //! This is intentional: WASM UDFs are called from within DataFusion ScalarUDF
 //! evaluation, which runs on the Control Plane.
 
-pub mod accounting;
+pub mod enforcement;
 pub mod aggregate_udf;
 pub mod fuel;
 pub mod pool;
