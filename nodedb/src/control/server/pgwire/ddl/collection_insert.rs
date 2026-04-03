@@ -312,8 +312,30 @@ pub async fn insert_document(
 
     // Dispatch VectorInsert for vector fields.
     let vec_vshard = crate::types::VShardId::from_collection(&parsed.coll_name);
-    for (_field_name, vector) in &parsed.vector_fields {
+    for (field_name, vector) in &parsed.vector_fields {
         let dim = vector.len();
+
+        // Enforce strict_dimensions if model metadata is set.
+        if let Some(catalog) = state.credentials.catalog() {
+            let col = if field_name.is_empty() {
+                "embedding"
+            } else {
+                field_name.as_str()
+            };
+            if let Ok(Some(entry)) =
+                catalog.get_vector_model(tenant_id.as_u32(), &parsed.coll_name, col)
+            {
+                if entry.metadata.strict_dimensions && entry.metadata.dimensions != dim {
+                    return Some(Err(sqlstate_error(
+                        "23514",
+                        &format!(
+                            "strict_dimensions: vector has {} dimensions, model '{}' requires {}",
+                            dim, entry.metadata.model, entry.metadata.dimensions
+                        ),
+                    )));
+                }
+            }
+        }
         let vec_plan = crate::bridge::envelope::PhysicalPlan::Vector(VectorOp::Insert {
             collection: parsed.coll_name.clone(),
             vector: vector.clone(),
