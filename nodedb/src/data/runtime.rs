@@ -210,9 +210,10 @@ pub fn spawn_core(
             // 2c. Apply query tuning config.
             core.set_query_tuning(compaction_config.query);
 
-            // 3. Load vector + spatial checkpoints (fast recovery).
+            // 3. Load vector + spatial + sparse vector checkpoints (fast recovery).
             core.load_vector_checkpoints();
             core.load_spatial_checkpoints();
+            core.load_sparse_vector_checkpoints();
 
             // 4. Replay WAL records for crash recovery.
             if !wal_records.is_empty() {
@@ -307,9 +308,10 @@ pub fn spawn_core(
                     }
                 }
 
-                // Periodic vector checkpoint (when idle and interval elapsed).
+                // Periodic vector + sparse vector checkpoint (when idle and interval elapsed).
                 if last_checkpoint.elapsed() >= CHECKPOINT_INTERVAL {
                     core.checkpoint_vector_indexes();
+                    core.checkpoint_sparse_vector_indexes();
                     last_checkpoint = Instant::now();
                 }
 

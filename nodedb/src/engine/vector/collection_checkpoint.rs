@@ -24,6 +24,12 @@ pub(super) struct CollectionSnapshot {
     pub growing_deleted: Vec<bool>,
     pub sealed_segments: Vec<SealedSnapshot>,
     pub building_segments: Vec<BuildingSnapshot>,
+    /// Persisted doc_id_map: vector_id → document_id string.
+    #[serde(default)]
+    pub doc_id_map: Vec<(u32, String)>,
+    /// Persisted multi_doc_map: document_id → list of vector_ids.
+    #[serde(default)]
+    pub multi_doc_map: Vec<(String, Vec<u32>)>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -78,6 +84,16 @@ impl VectorCollection {
                         .filter_map(|i| b.flat.get_vector(i).map(|v| v.to_vec()))
                         .collect(),
                 })
+                .collect(),
+            doc_id_map: self
+                .doc_id_map
+                .iter()
+                .map(|(&k, v)| (k, v.clone()))
+                .collect(),
+            multi_doc_map: self
+                .multi_doc_map
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
                 .collect(),
         };
         match rmp_serde::to_vec_named(&snapshot) {
@@ -162,8 +178,8 @@ impl VectorCollection {
             ram_budget_bytes: 0,
             mmap_fallback_count: 0,
             mmap_segment_count: 0,
-            doc_id_map: std::collections::HashMap::new(),
-            multi_doc_map: std::collections::HashMap::new(),
+            doc_id_map: snap.doc_id_map.into_iter().collect(),
+            multi_doc_map: snap.multi_doc_map.into_iter().collect(),
             seal_threshold: super::collection::DEFAULT_SEAL_THRESHOLD,
         })
     }
