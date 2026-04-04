@@ -12,7 +12,6 @@ homepage.workspace = true
 [dependencies]
 nodedb-types = { workspace = true }
 nodedb-spatial = { workspace = true }
-nodedb-document = { workspace = true }
 nodedb-fts = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
