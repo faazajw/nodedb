@@ -1,3 +1,4 @@
+pub mod alert;
 pub mod budget;
 pub mod bus;
 pub mod cdc;

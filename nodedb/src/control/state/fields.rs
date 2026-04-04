@@ -173,6 +173,12 @@ pub struct SharedState {
     pub retention_policy_registry:
         Arc<crate::engine::timeseries::retention_policy::RetentionPolicyRegistry>,
 
+    /// In-memory alert rule registry for threshold alerting.
+    pub alert_registry: Arc<crate::event::alert::AlertRegistry>,
+
+    /// Per-group hysteresis state for alert rules.
+    pub alert_hysteresis: Arc<crate::event::alert::hysteresis::HysteresisManager>,
+
     /// In-memory schedule registry for cron scheduler.
     pub schedule_registry: Arc<crate::event::scheduler::ScheduleRegistry>,
 

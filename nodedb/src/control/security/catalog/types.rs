@@ -63,6 +63,10 @@ pub(super) const SCHEDULES: TableDefinition<&str, &[u8]> =
 pub(super) const RETENTION_POLICIES: TableDefinition<&str, &[u8]> =
     TableDefinition::new("_system.retention_policies");
 
+/// Table: "{tenant_id}:{alert_name}" -> MessagePack-serialized AlertDef.
+pub(super) const ALERT_RULES: TableDefinition<&str, &[u8]> =
+    TableDefinition::new("_system.alert_rules");
+
 /// Table: "{tenant_id}:{topic_name}" -> MessagePack-serialized TopicDef.
 pub(super) const TOPICS_EP: TableDefinition<&str, &[u8]> =
     TableDefinition::new("_system.topics_ep");

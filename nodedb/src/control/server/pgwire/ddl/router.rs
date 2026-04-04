@@ -496,6 +496,24 @@ pub async fn dispatch(
         ));
     }
 
+    // Alert rules.
+    if upper.starts_with("CREATE ALERT ") {
+        return Some(super::alert::create_alert(state, identity, sql));
+    }
+    if upper.starts_with("DROP ALERT ") {
+        return Some(super::alert::drop_alert(state, identity, &parts));
+    }
+    if upper.starts_with("ALTER ALERT ") {
+        return Some(super::alert::alter_alert(state, identity, sql));
+    }
+    if upper.starts_with("SHOW ALERT STATUS ") {
+        let name = parts.get(4).unwrap_or(&"");
+        return Some(super::alert::show_alert_status(state, identity, name));
+    }
+    if upper.starts_with("SHOW ALERT") {
+        return Some(super::alert::show_alerts(state, identity));
+    }
+
     // Retention policies.
     if upper.starts_with("CREATE RETENTION POLICY ") {
         return Some(super::retention_policy::create_retention_policy(state, identity, sql).await);

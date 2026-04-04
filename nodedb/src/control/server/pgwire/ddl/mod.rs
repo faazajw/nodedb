@@ -1,3 +1,4 @@
+pub mod alert;
 pub mod apikey;
 pub mod auth_key_ddl;
 pub mod auth_user_ddl;

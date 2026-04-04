@@ -110,6 +110,13 @@ impl EventPlane {
                 shutdown_rx.clone(),
             );
 
+        // Spawn the alert evaluation loop.
+        let _alert_handle = super::alert::executor::spawn_alert_eval_loop(
+            Arc::clone(&shared_state),
+            Arc::clone(&shared_state.alert_registry),
+            shutdown_rx.clone(),
+        );
+
         // Spawn the CDC log compaction background task.
         let _compaction_handle = super::cdc::compaction::spawn_compaction_task(
             Arc::clone(&shared_state.stream_registry),

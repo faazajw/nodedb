@@ -1,3 +1,4 @@
+pub mod alert;
 pub mod audit;
 pub mod auth_users;
 pub mod blacklist;
