@@ -279,4 +279,10 @@ pub struct SharedState {
     /// Wrapped in `tokio::sync::RwLock` for concurrent reads (broadcast fan-out)
     /// with exclusive writes (upsert/remove/sweep).
     pub presence: Arc<tokio::sync::RwLock<crate::control::server::sync::presence::PresenceManager>>,
+
+    /// Permission tree cache: in-memory resource hierarchy + permission grants.
+    /// Used by RLS injection to resolve hierarchical permissions without
+    /// crossing to the Data Plane.
+    pub permission_cache:
+        Arc<tokio::sync::RwLock<crate::control::security::permission_tree::PermissionCache>>,
 }

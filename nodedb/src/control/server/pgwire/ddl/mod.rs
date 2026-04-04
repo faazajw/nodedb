@@ -36,6 +36,7 @@ pub mod org_ddl;
 pub mod ownership;
 pub(crate) mod parse_utils;
 pub mod period_lock;
+pub mod permission_tree;
 pub mod procedure;
 pub mod pubsub;
 pub mod query_functions;
@@ -43,6 +44,7 @@ pub mod rate_gate;
 pub mod retention_policy;
 pub mod rls;
 pub mod role;
+#[path = "router/mod.rs"]
 pub mod router;
 pub mod schedule;
 pub mod schema_validation;
@@ -65,6 +67,7 @@ pub mod transfer;
 pub mod tree_ops;
 pub mod trigger;
 pub mod user;
+pub mod version_history;
 pub mod weighted_pick;
 
 pub use router::dispatch;

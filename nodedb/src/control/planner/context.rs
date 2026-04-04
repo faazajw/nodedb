@@ -23,6 +23,9 @@ pub struct PlanSecurityContext<'a> {
     pub rls_store: &'a crate::control::security::rls::RlsPolicyStore,
     pub permissions: &'a PermissionStore,
     pub roles: &'a RoleStore,
+    /// Permission tree cache for hierarchical ACL injection.
+    /// `None` = skip permission tree filtering (e.g., internal queries).
+    pub permission_cache: Option<&'a crate::control::security::permission_tree::PermissionCache>,
 }
 
 /// DataFusion session context for the Control Plane.
@@ -255,6 +258,12 @@ impl QueryContext {
 
         // Step 7: Inject RLS (applies to inlined body expressions too).
         super::rls_injection::inject_rls(&mut tasks, sec.rls_store, sec.auth)?;
+
+        // Step 8: Inject permission tree filters (hierarchical ACL).
+        if let Some(cache) = sec.permission_cache {
+            super::rls_injection::inject_permission_tree(&mut tasks, cache, sec.auth)?;
+        }
+
         Ok(tasks)
     }
 

@@ -21,6 +21,7 @@ pub mod vector_distance;
 pub mod vector_metadata;
 
 pub mod distribute;
+pub mod resolve_permission;
 
 pub use allocate::Allocate;
 pub use bm25_score::Bm25Score;

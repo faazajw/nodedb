@@ -600,12 +600,14 @@ impl NodeDbPgHandler {
         }
 
         let auth_ctx = crate::control::server::session_auth::build_auth_context(identity);
+        let perm_cache = self.state.permission_cache.read().await;
         let sec = crate::control::planner::context::PlanSecurityContext {
             identity,
             auth: &auth_ctx,
             rls_store: &self.state.rls,
             permissions: &self.state.permissions,
             roles: &self.state.roles,
+            permission_cache: Some(&*perm_cache),
         };
         let tasks = query_ctx
             .plan_sql_with_rls(sql, tenant_id, &sec)

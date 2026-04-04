@@ -65,12 +65,14 @@ impl NodeDbPgHandler {
         let tasks = if let Some(tasks) = cached_tasks {
             tasks
         } else {
+            let perm_cache = self.state.permission_cache.read().await;
             let sec = crate::control::planner::context::PlanSecurityContext {
                 identity,
                 auth: &auth_ctx,
                 rls_store: &self.state.rls,
                 permissions: &self.state.permissions,
                 roles: &self.state.roles,
+                permission_cache: Some(&*perm_cache),
             };
             let planned = self
                 .query_ctx

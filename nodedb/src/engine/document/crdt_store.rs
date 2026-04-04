@@ -43,7 +43,7 @@ impl<'a> CrdtDocumentEngine<'a> {
 }
 
 /// Convert a `LoroValue` to `serde_json::Value`.
-fn loro_value_to_json(val: &LoroValue) -> serde_json::Value {
+pub fn loro_value_to_json(val: &LoroValue) -> serde_json::Value {
     match val {
         LoroValue::Null => serde_json::Value::Null,
         LoroValue::Bool(b) => serde_json::Value::Bool(*b),

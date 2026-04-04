@@ -215,6 +215,11 @@ async fn consumer_loop(config: ConsumerConfig, metrics: Arc<CoreMetrics>) {
                         )
                         .await;
                         cdc_router.route_event(event, &shared_state.watermark_tracker);
+                        // Update permission tree cache if event affects a permission table/graph.
+                        crate::control::security::permission_tree::event_handler::handle_permission_event(
+                            event,
+                            &shared_state.permission_cache,
+                        );
                         let matching_streams = shared_state
                             .stream_registry
                             .find_matching(event.tenant_id.as_u32(), &event.collection);

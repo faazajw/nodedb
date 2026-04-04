@@ -3,6 +3,7 @@ pub mod audit;
 pub mod auth_users;
 pub mod blacklist;
 pub mod change_streams;
+pub mod checkpoints;
 pub mod collections;
 pub mod column_stats;
 pub mod consumer_groups;

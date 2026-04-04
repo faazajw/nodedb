@@ -130,6 +130,44 @@ pub(super) const SCOPE_GRANTS: TableDefinition<&str, &[u8]> =
 pub(super) const VECTOR_MODEL_METADATA: TableDefinition<&str, &[u8]> =
     TableDefinition::new("_system.vector_model_metadata");
 
+/// Table: "{tenant_id}:{collection}:{doc_id}:{checkpoint_name}" -> MessagePack-serialized CheckpointRecord.
+pub(super) const CHECKPOINTS: TableDefinition<&str, &[u8]> =
+    TableDefinition::new("_system.checkpoints");
+
+/// A named checkpoint: captures a version vector at a point in time.
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct CheckpointRecord {
+    /// Tenant scope.
+    pub tenant_id: u32,
+    /// Collection the document belongs to.
+    pub collection: String,
+    /// Document ID.
+    pub doc_id: String,
+    /// User-defined checkpoint name (e.g., "v2-final", "launch-ready").
+    pub checkpoint_name: String,
+    /// Serialized version vector as JSON string: `{"peer_hex": counter, ...}`.
+    pub version_vector_json: String,
+    /// Who created this checkpoint.
+    pub created_by: String,
+    /// When this checkpoint was created (unix epoch seconds).
+    pub created_at: u64,
+}
+
+impl CheckpointRecord {
+    /// Catalog key for this checkpoint.
+    pub fn catalog_key(&self) -> String {
+        format!(
+            "{}:{}:{}:{}",
+            self.tenant_id, self.collection, self.doc_id, self.checkpoint_name
+        )
+    }
+
+    /// Prefix for scanning all checkpoints of a document.
+    pub fn doc_prefix(tenant_id: u32, collection: &str, doc_id: &str) -> String {
+        format!("{tenant_id}:{collection}:{doc_id}:")
+    }
+}
+
 pub fn catalog_err<E: std::fmt::Display>(ctx: &str, e: E) -> crate::Error {
     crate::Error::Storage {
         engine: "catalog".into(),
@@ -317,6 +355,11 @@ pub struct StoredCollection {
     /// Only applicable to timeseries collections.
     #[serde(default)]
     pub lvc_enabled: bool,
+    /// Permission tree definition (JSON-serialized `PermissionTreeDef`).
+    /// When set, queries on this collection are filtered by hierarchical
+    /// permission inheritance resolved via the specified graph index.
+    #[serde(default)]
+    pub permission_tree_def: Option<String>,
 }
 
 /// Double-entry balance constraint: within a single transaction, for each
@@ -450,6 +493,7 @@ impl StoredCollection {
             transition_checks: Vec::new(),
             materialized_sums: Vec::new(),
             lvc_enabled: false,
+            permission_tree_def: None,
         }
     }
 

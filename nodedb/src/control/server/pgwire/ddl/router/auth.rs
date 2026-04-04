@@ -1,0 +1,81 @@
+use pgwire::api::results::Response;
+use pgwire::error::PgWireResult;
+
+use crate::control::security::identity::AuthenticatedIdentity;
+use crate::control::state::SharedState;
+
+pub(super) async fn dispatch(
+    state: &SharedState,
+    identity: &AuthenticatedIdentity,
+    _sql: &str,
+    upper: &str,
+    parts: &[&str],
+) -> Option<PgWireResult<Vec<Response>>> {
+    // User management.
+    if upper.starts_with("CREATE USER ") {
+        return Some(super::super::user::create_user(state, identity, parts));
+    }
+    if upper.starts_with("ALTER USER ") {
+        return Some(super::super::user::alter_user(state, identity, parts));
+    }
+    if upper.starts_with("DROP USER ") {
+        return Some(super::super::user::drop_user(state, identity, parts));
+    }
+
+    // Service accounts.
+    if upper.starts_with("CREATE SERVICE ACCOUNT ") {
+        return Some(super::super::service_account::create_service_account(
+            state, identity, parts,
+        ));
+    }
+    if upper.starts_with("DROP SERVICE ACCOUNT ") {
+        return Some(super::super::service_account::drop_service_account(
+            state, identity, parts,
+        ));
+    }
+
+    // Tenant management.
+    if upper.starts_with("CREATE TENANT ") {
+        return Some(super::super::tenant::create_tenant(state, identity, parts));
+    }
+    if upper.starts_with("ALTER TENANT ") {
+        return Some(super::super::tenant::alter_tenant(state, identity, parts));
+    }
+    if upper.starts_with("DROP TENANT ") {
+        return Some(super::super::tenant::drop_tenant(state, identity, parts));
+    }
+    if upper.starts_with("PURGE TENANT ") {
+        return Some(super::super::tenant::purge_tenant(state, identity, parts).await);
+    }
+    if upper.starts_with("SHOW TENANT USAGE") {
+        return Some(super::super::tenant::show_tenant_usage(
+            state, identity, parts,
+        ));
+    }
+    if upper.starts_with("SHOW TENANT QUOTA") {
+        return Some(super::super::tenant::show_tenant_quota(
+            state, identity, parts,
+        ));
+    }
+
+    // GRANT / REVOKE.
+    if upper.starts_with("GRANT ") {
+        return Some(super::super::grant::handle_grant(state, identity, parts));
+    }
+    if upper.starts_with("REVOKE ") {
+        return Some(super::super::grant::handle_revoke(state, identity, parts));
+    }
+
+    // Role management.
+    if upper.starts_with("CREATE ROLE ") {
+        return Some(super::super::role::create_role(state, identity, parts));
+    }
+    if upper.starts_with("ALTER ROLE ") {
+        return Some(super::super::role::alter_role(state, identity, parts));
+    }
+    if upper.starts_with("DROP ROLE ") {
+        return Some(super::super::role::drop_role(state, identity, parts));
+    }
+
+    None
+}

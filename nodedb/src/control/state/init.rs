@@ -184,6 +184,9 @@ impl SharedState {
                     crate::control::server::sync::presence::PresenceConfig::default(),
                 ),
             )),
+            permission_cache: Arc::new(tokio::sync::RwLock::new(
+                crate::control::security::permission_tree::PermissionCache::new(),
+            )),
             _shutdown_senders: shutdown_senders,
         })
     }
@@ -245,7 +248,7 @@ impl SharedState {
         audit_log.set_next_seq(audit_start_seq);
 
         let mut shutdown_senders: Vec<tokio::sync::watch::Sender<bool>> = Vec::new();
-        Ok(Arc::new(Self {
+        let state = Arc::new(Self {
             dispatcher: Mutex::new(dispatcher),
             tracker: RequestTracker::new(),
             wal,
@@ -357,7 +360,28 @@ impl SharedState {
                     crate::control::server::sync::presence::PresenceConfig::default(),
                 ),
             )),
+            permission_cache: Arc::new(tokio::sync::RwLock::new(
+                crate::control::security::permission_tree::PermissionCache::new(),
+            )),
             _shutdown_senders: shutdown_senders,
-        }))
+        });
+
+        // Load permission tree definitions from catalog into the in-memory cache.
+        if let Some(catalog) = state.credentials.catalog()
+            && let Ok(collections) = catalog.load_all_collections()
+        {
+            let mut cache = state.permission_cache.blocking_write();
+            for coll in &collections {
+                if let Some(ref def_json) = coll.permission_tree_def
+                    && let Ok(def) = sonic_rs::from_str::<
+                        crate::control::security::permission_tree::PermissionTreeDef,
+                    >(def_json)
+                {
+                    cache.register_tree_def(coll.tenant_id, &coll.name, def);
+                }
+            }
+        }
+
+        Ok(state)
     }
 }

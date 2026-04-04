@@ -23,6 +23,7 @@ pub mod mtls;
 pub mod observability;
 pub mod org;
 pub mod permission;
+pub mod permission_tree;
 pub mod predicate;
 pub mod predicate_eval;
 pub mod predicate_parser;
