@@ -1,0 +1,207 @@
+//! BMW query entry point: converts Posting (String) → CompactPosting (u32),
+//! runs BMW scoring, and resolves top-k u32 IDs back to String.
+
+use crate::backend::FtsBackend;
+use crate::block::{CompactPosting, into_blocks};
+use crate::codec::{DocIdMap, smallfloat};
+use crate::index::FtsIndex;
+use crate::posting::{Bm25Params, Posting, TextSearchResult};
+
+use super::scorer::bmw_score;
+use super::skip_index::TermBlocks;
+
+/// Corpus-level parameters for BMW search.
+pub struct BmwParams<'a> {
+    pub query_tokens: &'a [String],
+    pub fuzzy_enabled: bool,
+    pub top_k: usize,
+    pub total_docs: u32,
+    pub avg_doc_len: f32,
+    pub bm25: &'a Bm25Params,
+}
+
+/// Convert a `Vec<Posting>` (String doc_id) to `Vec<CompactPosting>` (u32 doc_id)
+/// using a DocIdMap. Also reads fieldnorms from the index.
+fn to_compact<B: FtsBackend>(
+    postings: &[Posting],
+    doc_map: &DocIdMap,
+    index: &FtsIndex<B>,
+    collection: &str,
+) -> Result<Vec<CompactPosting>, B::Error> {
+    let mut compact = Vec::with_capacity(postings.len());
+    for p in postings {
+        let Some(doc_id) = doc_map.to_u32(&p.doc_id) else {
+            continue; // Tombstoned doc — skip.
+        };
+        let fieldnorm = index
+            .read_fieldnorm(collection, doc_id)?
+            .map(smallfloat::encode)
+            .unwrap_or_else(|| smallfloat::encode(p.term_freq)); // Fallback: estimate from tf.
+        compact.push(CompactPosting {
+            doc_id,
+            term_freq: p.term_freq,
+            fieldnorm,
+            positions: p.positions.clone(),
+        });
+    }
+    Ok(compact)
+}
+
+/// Run BMW search over the FtsIndex.
+///
+/// Reads posting lists from the backend, converts to CompactPosting blocks
+/// via DocIdMap, runs Block-Max WAND scoring with deferred String resolution.
+///
+/// Returns `None` if BMW can't run (e.g., no DocIdMap available), signaling
+/// the caller to fall back to exhaustive search.
+pub fn bmw_search<B: FtsBackend>(
+    index: &FtsIndex<B>,
+    collection: &str,
+    p: &BmwParams<'_>,
+) -> Result<Option<Vec<TextSearchResult>>, B::Error> {
+    // Load DocIdMap — if empty, BMW has no u32 mapping, fall back.
+    let doc_map = index.load_doc_id_map(collection)?;
+    if doc_map.is_empty() {
+        return Ok(None);
+    }
+
+    // Collect posting lists and convert to TermBlocks.
+    let mut all_term_blocks = Vec::with_capacity(p.query_tokens.len());
+    let mut has_fuzzy = vec![false; p.query_tokens.len()];
+
+    for (i, token) in p.query_tokens.iter().enumerate() {
+        let postings = index.backend.read_postings(collection, token)?;
+        let (posts, is_fuzzy) = if !postings.is_empty() {
+            (postings, false)
+        } else if p.fuzzy_enabled {
+            index.fuzzy_lookup(collection, token)?
+        } else {
+            (Vec::new(), false)
+        };
+        has_fuzzy[i] = is_fuzzy;
+
+        if posts.is_empty() {
+            all_term_blocks.push(TermBlocks::from_blocks(Vec::new()));
+            continue;
+        }
+
+        let compact = to_compact(&posts, &doc_map, index, collection)?;
+        let blocks = into_blocks(compact);
+        all_term_blocks.push(TermBlocks::from_blocks(blocks));
+    }
+
+    // Run BMW.
+    let heap = bmw_score(
+        &all_term_blocks,
+        p.total_docs,
+        p.avg_doc_len,
+        p.bm25,
+        p.top_k,
+    );
+    let scored = heap.into_sorted();
+
+    // Deferred doc ID resolution: u32 → String.
+    let mut results = Vec::with_capacity(scored.len());
+    for doc in &scored {
+        let doc_id_str = match doc_map.to_string(doc.doc_id) {
+            Some(s) => s.to_string(),
+            None => continue, // Tombstoned — skip.
+        };
+        let is_fuzzy = has_fuzzy.iter().any(|&f| f);
+        results.push(TextSearchResult {
+            doc_id: doc_id_str,
+            score: doc.score,
+            fuzzy: is_fuzzy,
+        });
+    }
+
+    Ok(Some(results))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::memory::MemoryBackend;
+    use crate::index::FtsIndex;
+
+    fn make_params<'a>(
+        tokens: &'a [String],
+        total: u32,
+        avg: f32,
+        top_k: usize,
+        fuzzy: bool,
+        bm25: &'a Bm25Params,
+    ) -> BmwParams<'a> {
+        BmwParams {
+            query_tokens: tokens,
+            fuzzy_enabled: fuzzy,
+            top_k,
+            total_docs: total,
+            avg_doc_len: avg,
+            bm25,
+        }
+    }
+
+    #[test]
+    fn bmw_query_basic() {
+        let idx = FtsIndex::new(MemoryBackend::new());
+        idx.index_document("docs", "d1", "The quick brown fox jumps over the lazy dog")
+            .unwrap();
+        idx.index_document("docs", "d2", "A fast brown dog runs across the field")
+            .unwrap();
+        idx.index_document("docs", "d3", "Rust programming language for systems")
+            .unwrap();
+
+        let tokens = crate::analyze("brown fox");
+        let (total, avg) = idx.index_stats("docs").unwrap();
+        let bm25 = Bm25Params::default();
+        let p = make_params(&tokens, total, avg, 10, false, &bm25);
+
+        let results = bmw_search(&idx, "docs", &p).unwrap().unwrap();
+        assert!(!results.is_empty());
+        assert_eq!(results[0].doc_id, "d1");
+    }
+
+    #[test]
+    fn bmw_query_empty_collection() {
+        let idx = FtsIndex::new(MemoryBackend::new());
+        let tokens = crate::analyze("hello");
+        let bm25 = Bm25Params::default();
+        let p = make_params(&tokens, 0, 1.0, 10, false, &bm25);
+
+        let result = bmw_search(&idx, "empty", &p).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn bmw_query_respects_top_k() {
+        let idx = FtsIndex::new(MemoryBackend::new());
+        for i in 0..50 {
+            idx.index_document("docs", &format!("d{i}"), &format!("common term word{i}"))
+                .unwrap();
+        }
+
+        let tokens = crate::analyze("common term");
+        let (total, avg) = idx.index_stats("docs").unwrap();
+        let bm25 = Bm25Params::default();
+        let p = make_params(&tokens, total, avg, 5, false, &bm25);
+
+        let results = bmw_search(&idx, "docs", &p).unwrap().unwrap();
+        assert_eq!(results.len(), 5);
+    }
+
+    #[test]
+    fn bmw_query_with_fuzzy() {
+        let idx = FtsIndex::new(MemoryBackend::new());
+        idx.index_document("docs", "d1", "distributed database systems")
+            .unwrap();
+
+        let tokens = crate::analyze("databse");
+        let (total, avg) = idx.index_stats("docs").unwrap();
+        let bm25 = Bm25Params::default();
+        let p = make_params(&tokens, total, avg, 10, true, &bm25);
+
+        let results = bmw_search(&idx, "docs", &p).unwrap().unwrap();
+        assert!(!results.is_empty());
+    }
+}

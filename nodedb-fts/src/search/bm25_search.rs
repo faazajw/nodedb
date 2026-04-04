@@ -29,6 +29,9 @@ impl<B: FtsBackend> FtsIndex<B> {
     ///
     /// When `mode` is AND and a multi-term query returns zero results,
     /// automatically falls back to OR with a coverage penalty.
+    ///
+    /// Dispatches to Block-Max WAND (BMW) for OR-mode queries when a DocIdMap
+    /// is available. Falls back to exhaustive BM25 scoring otherwise.
     pub fn search_with_mode(
         &self,
         collection: &str,
@@ -48,6 +51,55 @@ impl<B: FtsBackend> FtsIndex<B> {
             return Ok(Vec::new());
         }
 
+        // Try BMW for OR-mode or as the first pass of AND-with-fallback.
+        let bmw_params = super::bmw::query::BmwParams {
+            query_tokens: &query_tokens,
+            fuzzy_enabled,
+            top_k: if mode == QueryMode::And && num_query_terms > 1 {
+                top_k.saturating_mul(3).max(20)
+            } else {
+                top_k
+            },
+            total_docs,
+            avg_doc_len,
+            bm25: &self.bm25_params,
+        };
+        if let Ok(Some(bmw_results)) = super::bmw::query::bmw_search(self, collection, &bmw_params)
+        {
+            if mode == QueryMode::Or || num_query_terms == 1 {
+                return Ok(bmw_results.into_iter().take(top_k).collect());
+            }
+
+            // AND mode: filter BMW results to docs matching all terms.
+            // Re-check term coverage for top candidates.
+            let and_results =
+                self.filter_and_mode(collection, &query_tokens, &bmw_results, num_query_terms)?;
+
+            if !and_results.is_empty() {
+                return Ok(and_results.into_iter().take(top_k).collect());
+            }
+
+            // AND returned nothing — apply coverage penalty to BMW OR results.
+            let penalized: Vec<TextSearchResult> = bmw_results
+                .into_iter()
+                .map(|mut r| {
+                    let matched = self.count_term_matches(collection, &query_tokens, &r.doc_id);
+                    let coverage = matched as f32 / num_query_terms as f32;
+                    r.score *= coverage;
+                    r
+                })
+                .collect();
+            let mut sorted = penalized;
+            sorted.sort_by(|a, b| {
+                b.score
+                    .partial_cmp(&a.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            sorted.truncate(top_k);
+            return Ok(sorted);
+        }
+
+        // Fallback: exhaustive BM25 scoring (no DocIdMap, or BMW returned None).
         // Collect posting lists for all query tokens.
         let mut term_postings: Vec<(Vec<Posting>, bool)> = Vec::with_capacity(num_query_terms);
         for token in &query_tokens {
@@ -135,6 +187,37 @@ impl<B: FtsBackend> FtsIndex<B> {
         }
 
         Ok(Self::to_sorted_results(doc_scores, top_k))
+    }
+
+    /// Filter BMW results to only docs matching ALL query terms (AND mode).
+    fn filter_and_mode(
+        &self,
+        collection: &str,
+        query_tokens: &[String],
+        candidates: &[TextSearchResult],
+        num_terms: usize,
+    ) -> Result<Vec<TextSearchResult>, B::Error> {
+        let mut results = Vec::new();
+        for candidate in candidates {
+            let matched = self.count_term_matches(collection, query_tokens, &candidate.doc_id);
+            if matched >= num_terms {
+                results.push(candidate.clone());
+            }
+        }
+        Ok(results)
+    }
+
+    /// Count how many query terms appear in a document's posting lists.
+    fn count_term_matches(&self, collection: &str, query_tokens: &[String], doc_id: &str) -> usize {
+        query_tokens
+            .iter()
+            .filter(|token| {
+                self.backend
+                    .read_postings(collection, token)
+                    .ok()
+                    .is_some_and(|posts| posts.iter().any(|p| p.doc_id == doc_id))
+            })
+            .count()
     }
 
     /// Convert score map to sorted, truncated results.
