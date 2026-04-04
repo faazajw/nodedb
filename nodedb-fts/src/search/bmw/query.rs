@@ -1,14 +1,15 @@
-//! BMW query entry point: converts Posting (String) → CompactPosting (u32),
-//! runs BMW scoring, and resolves top-k u32 IDs back to String.
+//! BMW query entry point: merges memtable + segments via LSM layer,
+//! runs BMW scoring on u32 doc IDs, resolves top-k back to String.
 
 use crate::backend::FtsBackend;
 use crate::block::{CompactPosting, into_blocks};
 use crate::codec::{DocIdMap, smallfloat};
 use crate::index::FtsIndex;
+use crate::lsm::query as lsm_query;
 use crate::posting::{Bm25Params, Posting, TextSearchResult};
+use crate::search::bmw::skip_index::TermBlocks;
 
 use super::scorer::bmw_score;
-use super::skip_index::TermBlocks;
 
 /// Corpus-level parameters for BMW search.
 pub struct BmwParams<'a> {
@@ -20,40 +21,13 @@ pub struct BmwParams<'a> {
     pub bm25: &'a Bm25Params,
 }
 
-/// Convert a `Vec<Posting>` (String doc_id) to `Vec<CompactPosting>` (u32 doc_id)
-/// using a DocIdMap. Also reads fieldnorms from the index.
-fn to_compact<B: FtsBackend>(
-    postings: &[Posting],
-    doc_map: &DocIdMap,
-    index: &FtsIndex<B>,
-    collection: &str,
-) -> Result<Vec<CompactPosting>, B::Error> {
-    let mut compact = Vec::with_capacity(postings.len());
-    for p in postings {
-        let Some(doc_id) = doc_map.to_u32(&p.doc_id) else {
-            continue; // Tombstoned doc — skip.
-        };
-        let fieldnorm = index
-            .read_fieldnorm(collection, doc_id)?
-            .map(smallfloat::encode)
-            .unwrap_or_else(|| smallfloat::encode(p.term_freq)); // Fallback: estimate from tf.
-        compact.push(CompactPosting {
-            doc_id,
-            term_freq: p.term_freq,
-            fieldnorm,
-            positions: p.positions.clone(),
-        });
-    }
-    Ok(compact)
-}
-
 /// Run BMW search over the FtsIndex.
 ///
-/// Reads posting lists from the backend, converts to CompactPosting blocks
-/// via DocIdMap, runs Block-Max WAND scoring with deferred String resolution.
+/// Merges posting lists from the active memtable and all immutable segments
+/// via the LSM query layer, then runs Block-Max WAND scoring.
+/// Falls back to backend postings if memtable is empty and no segments exist.
 ///
-/// Returns `None` if BMW can't run (e.g., no DocIdMap available), signaling
-/// the caller to fall back to exhaustive search.
+/// Returns `None` if BMW can't run (e.g., no DocIdMap available).
 pub fn bmw_search<B: FtsBackend>(
     index: &FtsIndex<B>,
     collection: &str,
@@ -65,30 +39,30 @@ pub fn bmw_search<B: FtsBackend>(
         return Ok(None);
     }
 
-    // Collect posting lists and convert to TermBlocks.
-    let mut all_term_blocks = Vec::with_capacity(p.query_tokens.len());
+    // Collect posting lists from LSM layer (memtable + segments).
     let mut has_fuzzy = vec![false; p.query_tokens.len()];
 
+    let mut lsm_term_blocks = lsm_query::collect_merged_term_blocks(
+        &index.backend,
+        collection,
+        index.memtable(),
+        p.query_tokens,
+    )?;
+
+    // For terms with no LSM postings, attempt fuzzy lookup.
     for (i, token) in p.query_tokens.iter().enumerate() {
-        let postings = index.backend.read_postings(collection, token)?;
-        let (posts, is_fuzzy) = if !postings.is_empty() {
-            (postings, false)
-        } else if p.fuzzy_enabled {
-            index.fuzzy_lookup(collection, token)?
-        } else {
-            (Vec::new(), false)
-        };
-        has_fuzzy[i] = is_fuzzy;
-
-        if posts.is_empty() {
-            all_term_blocks.push(TermBlocks::from_blocks(Vec::new()));
-            continue;
+        if lsm_term_blocks[i].df == 0 && p.fuzzy_enabled {
+            let (posts, is_fuzzy) = index.fuzzy_lookup(collection, token)?;
+            has_fuzzy[i] = is_fuzzy;
+            if !posts.is_empty() {
+                let compact = to_compact(&posts, &doc_map, index, collection)?;
+                let blocks = into_blocks(compact);
+                lsm_term_blocks[i] = TermBlocks::from_blocks(blocks);
+            }
         }
-
-        let compact = to_compact(&posts, &doc_map, index, collection)?;
-        let blocks = into_blocks(compact);
-        all_term_blocks.push(TermBlocks::from_blocks(blocks));
     }
+
+    let all_term_blocks = lsm_term_blocks;
 
     // Run BMW.
     let heap = bmw_score(
@@ -105,7 +79,7 @@ pub fn bmw_search<B: FtsBackend>(
     for doc in &scored {
         let doc_id_str = match doc_map.to_string(doc.doc_id) {
             Some(s) => s.to_string(),
-            None => continue, // Tombstoned — skip.
+            None => continue,
         };
         let is_fuzzy = has_fuzzy.iter().any(|&f| f);
         results.push(TextSearchResult {
@@ -116,6 +90,32 @@ pub fn bmw_search<B: FtsBackend>(
     }
 
     Ok(Some(results))
+}
+
+/// Convert `Vec<Posting>` (String) → `Vec<CompactPosting>` (u32) via DocIdMap.
+fn to_compact<B: FtsBackend>(
+    postings: &[Posting],
+    doc_map: &DocIdMap,
+    index: &FtsIndex<B>,
+    collection: &str,
+) -> Result<Vec<CompactPosting>, B::Error> {
+    let mut compact = Vec::with_capacity(postings.len());
+    for p in postings {
+        let Some(doc_id) = doc_map.to_u32(&p.doc_id) else {
+            continue;
+        };
+        let fieldnorm = index
+            .read_fieldnorm(collection, doc_id)?
+            .map(smallfloat::encode)
+            .unwrap_or_else(|| smallfloat::encode(p.term_freq));
+        compact.push(CompactPosting {
+            doc_id,
+            term_freq: p.term_freq,
+            fieldnorm,
+            positions: p.positions.clone(),
+        });
+    }
+    Ok(compact)
 }
 
 #[cfg(test)]
@@ -203,5 +203,24 @@ mod tests {
 
         let results = bmw_search(&idx, "docs", &p).unwrap().unwrap();
         assert!(!results.is_empty());
+    }
+
+    #[test]
+    fn bmw_query_uses_memtable() {
+        let idx = FtsIndex::new(MemoryBackend::new());
+        idx.index_document("docs", "d1", "hello world greeting")
+            .unwrap();
+
+        // Memtable should have data.
+        assert!(!idx.memtable().is_empty());
+
+        let tokens = crate::analyze("hello");
+        let (total, avg) = idx.index_stats("docs").unwrap();
+        let bm25 = Bm25Params::default();
+        let p = make_params(&tokens, total, avg, 10, false, &bm25);
+
+        let results = bmw_search(&idx, "docs", &p).unwrap().unwrap();
+        assert!(!results.is_empty());
+        assert_eq!(results[0].doc_id, "d1");
     }
 }

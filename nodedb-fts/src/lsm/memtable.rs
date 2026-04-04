@@ -134,11 +134,35 @@ impl Memtable {
     }
 
     /// Drain all postings from the memtable (for flush).
-    /// Returns the term→postings map and resets the memtable to empty.
+    /// Returns the term→postings map and resets the memtable to empty,
+    /// including stats and fieldnorms.
     pub fn drain(&self) -> HashMap<String, Vec<CompactPosting>> {
         let mut map = self.postings.borrow_mut();
         *self.total_postings.borrow_mut() = 0;
+        *self.stats.borrow_mut() = (0, 0);
+        self.fieldnorms.borrow_mut().clear();
         std::mem::take(&mut *map)
+    }
+
+    /// Drain only postings matching a collection prefix.
+    /// Removes scoped terms like "{collection}:*" and resets stats/fieldnorms.
+    pub fn drain_collection(&self, collection: &str) {
+        let prefix = format!("{collection}:");
+        let mut map = self.postings.borrow_mut();
+        let mut removed = 0usize;
+        map.retain(|k, v| {
+            if k.starts_with(&prefix) {
+                removed += v.len();
+                false
+            } else {
+                true
+            }
+        });
+        *self.total_postings.borrow_mut() -= removed;
+        // Stats and fieldnorms are collection-scoped in the backend,
+        // but the memtable tracks them globally. Reset to be safe.
+        *self.stats.borrow_mut() = (0, 0);
+        self.fieldnorms.borrow_mut().clear();
     }
 
     /// Number of unique terms.
@@ -200,15 +224,34 @@ mod tests {
     }
 
     #[test]
-    fn drain_resets() {
+    fn drain_resets_everything() {
         let mt = Memtable::new(MemtableConfig::default());
         mt.insert("hello", make_posting(0, 1));
         mt.insert("world", make_posting(1, 1));
+        mt.record_doc(0, 100);
+        mt.record_doc(1, 50);
 
         let drained = mt.drain();
         assert_eq!(drained.len(), 2);
         assert!(mt.is_empty());
         assert_eq!(mt.posting_count(), 0);
+        assert_eq!(mt.stats(), (0, 0));
+        assert!(mt.fieldnorms().is_empty());
+    }
+
+    #[test]
+    fn drain_collection_selective() {
+        let mt = Memtable::new(MemtableConfig::default());
+        mt.insert("col_a:hello", make_posting(0, 1));
+        mt.insert("col_a:world", make_posting(1, 1));
+        mt.insert("col_b:rust", make_posting(2, 1));
+
+        mt.drain_collection("col_a");
+
+        assert!(mt.get_postings("col_a:hello").is_empty());
+        assert!(mt.get_postings("col_a:world").is_empty());
+        assert_eq!(mt.get_postings("col_b:rust").len(), 1);
+        assert_eq!(mt.posting_count(), 1);
     }
 
     #[test]

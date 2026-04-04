@@ -33,8 +33,9 @@ pub fn collect_merged_term_blocks<B: FtsBackend>(
     let mut term_blocks_list = Vec::with_capacity(query_tokens.len());
 
     for token in query_tokens {
-        // Get memtable postings for this term.
-        let mt_postings = memtable.get_postings(token);
+        // Get memtable postings for this term (scoped by collection).
+        let scoped_term = format!("{collection}:{token}");
+        let mt_postings = memtable.get_postings(&scoped_term);
 
         // Get segment postings for this term.
         let seg_postings: Vec<Vec<CompactPosting>> = readers
@@ -69,6 +70,39 @@ pub fn collect_merged_term_blocks<B: FtsBackend>(
     }
 
     Ok(term_blocks_list)
+}
+
+/// Collect all unique term names across memtable + segments for a collection.
+///
+/// Used by fuzzy matching to scan available terms.
+pub fn collect_all_terms<B: FtsBackend>(
+    backend: &B,
+    collection: &str,
+    memtable: &Memtable,
+) -> Result<Vec<String>, B::Error> {
+    let prefix = format!("{collection}:");
+    let mut terms: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    // Memtable terms (scoped as "{collection}:{term}").
+    for key in memtable.terms() {
+        if let Some(term) = key.strip_prefix(&prefix) {
+            terms.insert(term.to_string());
+        }
+    }
+
+    // Segment terms.
+    let seg_keys = backend.list_segments(collection)?;
+    for key in &seg_keys {
+        if let Some(data) = backend.read_segment(key)?
+            && let Some(reader) = SegmentReader::open(data)
+        {
+            for term in reader.terms() {
+                terms.insert(term);
+            }
+        }
+    }
+
+    Ok(terms.into_iter().collect())
 }
 
 /// Compute merged corpus stats from memtable + all segments.
@@ -111,8 +145,9 @@ mod tests {
     fn memtable_only() {
         let backend = MemoryBackend::new();
         let mt = Memtable::new(MemtableConfig::default());
-        mt.insert("hello", cp(0, 2));
-        mt.insert("hello", cp(1, 1));
+        // Use scoped terms: "{collection}:{term}" as FtsIndex does.
+        mt.insert("col:hello", cp(0, 2));
+        mt.insert("col:hello", cp(1, 1));
 
         let tokens = vec!["hello".to_string()];
         let term_blocks = collect_merged_term_blocks(&backend, "col", &mt, &tokens).unwrap();
@@ -152,10 +187,10 @@ mod tests {
             .write_segment("col:seg:L0:0000000000000001", &seg_bytes)
             .unwrap();
 
-        // Memtable has docs 0 (updated tf=10) and 3 (new).
+        // Memtable has docs 0 (updated tf=10) and 3 (new). Scoped terms.
         let mt = Memtable::new(MemtableConfig::default());
-        mt.insert("hello", cp(0, 10)); // Updated from segment's tf=1.
-        mt.insert("hello", cp(3, 1)); // New doc.
+        mt.insert("col:hello", cp(0, 10)); // Updated from segment's tf=1.
+        mt.insert("col:hello", cp(3, 1)); // New doc.
 
         let tokens = vec!["hello".to_string()];
         let term_blocks = collect_merged_term_blocks(&backend, "col", &mt, &tokens).unwrap();

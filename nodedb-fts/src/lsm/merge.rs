@@ -48,7 +48,7 @@ pub fn merge_segments(segments: &[SegmentReader]) -> Vec<(String, Vec<PostingBlo
 
         // Sort by doc_id and deduplicate (later segment wins on conflict).
         merged_postings.sort_by_key(|p| p.doc_id);
-        dedup_by_doc_id(&mut merged_postings);
+        dedup_postings(&mut merged_postings);
 
         let blocks = into_blocks(merged_postings);
         result.push((term.clone(), blocks));
@@ -74,12 +74,14 @@ pub fn merge_term_postings(
     all.extend(memtable_postings.iter().cloned());
 
     all.sort_by_key(|p| p.doc_id);
-    dedup_by_doc_id(&mut all);
+    dedup_postings(&mut all);
     all
 }
 
 /// Remove duplicate doc_ids, keeping the LAST occurrence (most recent).
-fn dedup_by_doc_id(postings: &mut Vec<CompactPosting>) {
+///
+/// Public so BMW query can use it when merging LSM + backend postings.
+pub fn dedup_postings(postings: &mut Vec<CompactPosting>) {
     if postings.len() <= 1 {
         return;
     }
@@ -154,7 +156,7 @@ mod tests {
     #[test]
     fn dedup_keeps_last() {
         let mut posts = vec![cp(0, 1), cp(0, 5), cp(1, 2)];
-        dedup_by_doc_id(&mut posts);
+        dedup_postings(&mut posts);
         assert_eq!(posts.len(), 2);
         assert_eq!(posts[0].doc_id, 0);
         assert_eq!(posts[0].term_freq, 5); // Last occurrence wins.
