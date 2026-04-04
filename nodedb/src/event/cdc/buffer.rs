@@ -237,6 +237,7 @@ mod tests {
             new_value: None,
             old_value: None,
             schema_version: 0,
+            field_diffs: None,
         }
     }
 

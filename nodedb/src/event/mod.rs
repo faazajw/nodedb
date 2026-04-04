@@ -6,6 +6,7 @@ pub mod consumer;
 pub mod consumer_helpers;
 pub mod crdt_sync;
 pub mod cross_shard;
+pub mod field_diff;
 pub mod kafka;
 pub mod metrics;
 pub mod plane;

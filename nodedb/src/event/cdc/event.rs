@@ -36,6 +36,11 @@ pub struct CdcEvent {
     /// schema changes by watching this field.
     #[serde(default)]
     pub schema_version: u64,
+    /// Per-field diffs for UPDATE operations.
+    /// Present when both `old_value` and `new_value` are available and differ.
+    /// Each entry describes a single field-level change with its dot-path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field_diffs: Option<Vec<super::super::field_diff::FieldDiff>>,
 }
 
 impl CdcEvent {
@@ -68,6 +73,7 @@ mod tests {
             new_value: Some(serde_json::json!({"id": 1, "total": 99.99})),
             old_value: None,
             schema_version: 0,
+            field_diffs: None,
         };
 
         let bytes = event.to_json_bytes();
@@ -91,6 +97,7 @@ mod tests {
             new_value: Some(serde_json::json!({"name": "Alice"})),
             old_value: Some(serde_json::json!({"name": "Bob"})),
             schema_version: 0,
+            field_diffs: None,
         };
 
         let bytes = event.to_msgpack_bytes();

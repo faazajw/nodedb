@@ -57,6 +57,7 @@ fn topic_buffer_publish_and_consume() {
             new_value: Some(serde_json::json!({"data": format!("message {i}")})),
             old_value: None,
             schema_version: 0,
+            field_diffs: None,
         });
     }
 
@@ -93,6 +94,7 @@ fn topic_retention_eviction() {
             new_value: None,
             old_value: None,
             schema_version: 0,
+            field_diffs: None,
         });
     }
 

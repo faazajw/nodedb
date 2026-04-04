@@ -46,6 +46,7 @@ pub fn process_write_event_for_mvs(event: &WriteEvent, registry: &MvRegistry, st
         new_value,
         old_value: None,
         schema_version: 0,
+        field_diffs: None,
     };
 
     for mv_state in &mv_states {
@@ -200,6 +201,7 @@ mod tests {
             new_value: Some(serde_json::json!({"total": total, "status": "active"})),
             old_value: None,
             schema_version: 0,
+            field_diffs: None,
         }
     }
 

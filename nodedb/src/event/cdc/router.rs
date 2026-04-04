@@ -94,6 +94,19 @@ impl CdcRouter {
                 }
             }
 
+            // Compute field-level diffs for UPDATE operations.
+            let field_diffs = if op_str == "UPDATE" {
+                match (&old_value, &new_value) {
+                    (Some(old), Some(new)) => {
+                        let diffs = crate::event::field_diff::compute_field_diffs(old, new);
+                        if diffs.is_empty() { None } else { Some(diffs) }
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            };
+
             let cdc_event = CdcEvent {
                 sequence: event.sequence,
                 partition: event.vshard_id.as_u16(),
@@ -106,6 +119,7 @@ impl CdcRouter {
                 new_value: new_value.clone(),
                 old_value: old_value.clone(),
                 schema_version: 0,
+                field_diffs: field_diffs.clone(),
             };
 
             let buffer = self.get_or_create_buffer(def.tenant_id, &def.name, &def.retention);
@@ -125,6 +139,7 @@ impl CdcRouter {
                     new_value: new_value.clone(),
                     old_value: None,
                     schema_version: 0,
+                    field_diffs: None,
                 };
                 buffer.push(correction);
                 trace!(

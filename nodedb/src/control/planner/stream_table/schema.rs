@@ -117,6 +117,7 @@ mod tests {
                 new_value: Some(serde_json::json!({"total": 99})),
                 old_value: None,
                 schema_version: 0,
+                field_diffs: None,
             },
             CdcEvent {
                 sequence: 2,
@@ -130,6 +131,7 @@ mod tests {
                 new_value: Some(serde_json::json!({"total": 50})),
                 old_value: Some(serde_json::json!({"total": 40})),
                 schema_version: 0,
+                field_diffs: None,
             },
         ];
 

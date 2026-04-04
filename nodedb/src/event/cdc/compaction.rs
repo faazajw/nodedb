@@ -112,6 +112,7 @@ mod tests {
             new_value: Some(serde_json::json!({"id": key_val, "name": format!("v{seq}")})),
             old_value: None,
             schema_version: 0,
+            field_diffs: None,
         }
     }
 

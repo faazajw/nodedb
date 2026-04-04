@@ -108,6 +108,7 @@ fn log_compaction_keeps_latest_per_key() {
         new_value: Some(serde_json::json!({"id": "u-1", "name": "Alice"})),
         old_value: None,
         schema_version: 0,
+        field_diffs: None,
     });
     buf.push(CdcEvent {
         sequence: 2,
@@ -121,6 +122,7 @@ fn log_compaction_keeps_latest_per_key() {
         new_value: Some(serde_json::json!({"id": "u-1", "name": "Bob"})),
         old_value: None,
         schema_version: 0,
+        field_diffs: None,
     });
 
     // Before compaction: both events present.

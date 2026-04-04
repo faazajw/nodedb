@@ -78,6 +78,7 @@ pub fn publish_to_topic(
         new_value: Some(value),
         old_value: None,
         schema_version: 0,
+        field_diffs: None,
     };
 
     buffer.push(event);
