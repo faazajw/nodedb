@@ -13,6 +13,16 @@
 //! - `0x22` ShapeDelta (server → client)
 //! - `0x23` ShapeUnsubscribe (client → server)
 //! - `0x30` VectorClockSync (bidirectional)
+//! - `0x40` TimeseriesPush (client → server)
+//! - `0x41` TimeseriesAck (server → client)
+//! - `0x50` ResyncRequest (bidirectional)
+//! - `0x52` Throttle (client → server)
+//! - `0x60` TokenRefresh (client → server)
+//! - `0x61` TokenRefreshAck (server → client)
+//! - `0x70` DefinitionSync (server → client)
+//! - `0x80` PresenceUpdate (client → server)
+//! - `0x81` PresenceBroadcast (server → all subscribers)
+//! - `0x82` PresenceLeave (server → all subscribers)
 //! - `0xFF` Ping/Pong (bidirectional)
 
 use std::collections::HashMap;
@@ -53,6 +63,14 @@ pub enum SyncMessageType {
     /// Definition sync (server → client, 0x70).
     /// Carries function/trigger/procedure definitions from Origin to Lite.
     DefinitionSync = 0x70,
+    /// Presence update (client → server, 0x80).
+    /// Ephemeral user state broadcast (cursor, selection, typing indicator).
+    PresenceUpdate = 0x80,
+    /// Presence broadcast (server → all subscribers except sender, 0x81).
+    PresenceBroadcast = 0x81,
+    /// Presence leave (server → all subscribers, 0x82).
+    /// Auto-emitted on WebSocket disconnect or TTL expiry.
+    PresenceLeave = 0x82,
     PingPong = 0xFF,
 }
 
@@ -76,6 +94,9 @@ impl SyncMessageType {
             0x60 => Some(Self::TokenRefresh),
             0x61 => Some(Self::TokenRefreshAck),
             0x70 => Some(Self::DefinitionSync),
+            0x80 => Some(Self::PresenceUpdate),
+            0x81 => Some(Self::PresenceBroadcast),
+            0x82 => Some(Self::PresenceLeave),
             0xFF => Some(Self::PingPong),
             _ => None,
         }
@@ -86,6 +107,7 @@ impl SyncMessageType {
 ///
 /// Layout: `[msg_type: 1B][length: 4B LE][body: N bytes]`
 /// Total header: 5 bytes.
+#[derive(Clone)]
 pub struct SyncFrame {
     pub msg_type: SyncMessageType,
     pub body: Vec<u8>,
@@ -416,6 +438,61 @@ pub struct DefinitionSyncMsg {
     pub payload: Vec<u8>,
 }
 
+// ─── Presence / Awareness Messages ─────────────────────────────────────────
+
+/// Presence update message (client → server, 0x80).
+///
+/// Sends ephemeral user state to a channel. The server broadcasts the state
+/// to all other subscribers of the same channel. Presence is NOT persisted,
+/// NOT CRDT-merged — it is fire-and-forget with latest-state-wins semantics.
+///
+/// Sending a `PresenceUpdate` implicitly subscribes the sender to the channel
+/// (if not already subscribed).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PresenceUpdateMsg {
+    /// Channel scoping key (e.g., `"doc:doc-123"`, `"workspace:ws-acme"`).
+    pub channel: String,
+    /// Opaque user state (MessagePack-encoded application-defined payload).
+    /// Common fields: user_id, user_name, cursor_position, selection_range,
+    /// active_document_id, color, avatar_url.
+    pub state: Vec<u8>,
+}
+
+/// A single peer's presence state within a channel.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PeerPresence {
+    /// User identifier.
+    pub user_id: String,
+    /// Opaque user state (same format as `PresenceUpdateMsg::state`).
+    pub state: Vec<u8>,
+    /// Milliseconds since this peer's last update.
+    pub last_seen_ms: u64,
+}
+
+/// Presence broadcast message (server → all subscribers except sender, 0x81).
+///
+/// Contains the full set of currently-present peers in the channel.
+/// Sent whenever any peer updates their state or leaves.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PresenceBroadcastMsg {
+    /// Channel this broadcast belongs to.
+    pub channel: String,
+    /// All currently-present peers and their latest state.
+    pub peers: Vec<PeerPresence>,
+}
+
+/// Presence leave message (server → all subscribers, 0x82).
+///
+/// Emitted when a peer disconnects (WebSocket close) or when their
+/// presence TTL expires (no heartbeat within `presence_ttl_ms`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PresenceLeaveMsg {
+    /// Channel the user left.
+    pub channel: String,
+    /// User who left.
+    pub user_id: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -478,7 +555,7 @@ mod tests {
     fn message_type_roundtrip() {
         for v in [
             0x01, 0x02, 0x10, 0x11, 0x12, 0x20, 0x21, 0x22, 0x23, 0x30, 0x40, 0x41, 0x50, 0x52,
-            0x60, 0x61, 0x70, 0xFF,
+            0x60, 0x61, 0x70, 0x80, 0x81, 0x82, 0xFF,
         ] {
             let mt = SyncMessageType::from_u8(v).unwrap();
             assert_eq!(mt as u8, v);
@@ -506,5 +583,71 @@ mod tests {
             .decode_body()
             .unwrap();
         assert_eq!(decoded.shape.shape_id, "s1");
+    }
+
+    #[test]
+    fn presence_update_roundtrip() {
+        let msg = PresenceUpdateMsg {
+            channel: "doc:doc-123".into(),
+            state: rmp_serde::to_vec_named(&serde_json::json!({
+                "user_id": "user-42",
+                "cursor": {"block_id": "blk-7", "offset": 42}
+            }))
+            .unwrap(),
+        };
+        let frame = SyncFrame::new_msgpack(SyncMessageType::PresenceUpdate, &msg).unwrap();
+        let bytes = frame.to_bytes();
+        assert_eq!(bytes[0], 0x80);
+        let decoded: PresenceUpdateMsg = SyncFrame::from_bytes(&bytes)
+            .unwrap()
+            .decode_body()
+            .unwrap();
+        assert_eq!(decoded.channel, "doc:doc-123");
+        assert!(!decoded.state.is_empty());
+    }
+
+    #[test]
+    fn presence_broadcast_roundtrip() {
+        let msg = PresenceBroadcastMsg {
+            channel: "doc:doc-123".into(),
+            peers: vec![
+                PeerPresence {
+                    user_id: "user-42".into(),
+                    state: vec![0xDE, 0xAD],
+                    last_seen_ms: 150,
+                },
+                PeerPresence {
+                    user_id: "user-99".into(),
+                    state: vec![0xBE, 0xEF],
+                    last_seen_ms: 2300,
+                },
+            ],
+        };
+        let frame = SyncFrame::new_msgpack(SyncMessageType::PresenceBroadcast, &msg).unwrap();
+        let decoded: PresenceBroadcastMsg = SyncFrame::from_bytes(&frame.to_bytes())
+            .unwrap()
+            .decode_body()
+            .unwrap();
+        assert_eq!(decoded.channel, "doc:doc-123");
+        assert_eq!(decoded.peers.len(), 2);
+        assert_eq!(decoded.peers[0].user_id, "user-42");
+        assert_eq!(decoded.peers[1].last_seen_ms, 2300);
+    }
+
+    #[test]
+    fn presence_leave_roundtrip() {
+        let msg = PresenceLeaveMsg {
+            channel: "doc:doc-123".into(),
+            user_id: "user-42".into(),
+        };
+        let frame = SyncFrame::new_msgpack(SyncMessageType::PresenceLeave, &msg).unwrap();
+        let bytes = frame.to_bytes();
+        assert_eq!(bytes[0], 0x82);
+        let decoded: PresenceLeaveMsg = SyncFrame::from_bytes(&bytes)
+            .unwrap()
+            .decode_body()
+            .unwrap();
+        assert_eq!(decoded.channel, "doc:doc-123");
+        assert_eq!(decoded.user_id, "user-42");
     }
 }

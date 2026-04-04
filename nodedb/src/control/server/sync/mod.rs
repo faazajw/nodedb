@@ -1,6 +1,7 @@
 pub mod async_dispatch;
 pub mod dlq;
 pub mod listener;
+pub mod presence;
 pub mod rate_limit;
 pub mod security;
 pub mod session;

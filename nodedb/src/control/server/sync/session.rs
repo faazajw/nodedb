@@ -625,6 +625,18 @@ impl SyncSession {
                     Some(self.handle_ping(&msg))
                 }
             }
+            // Presence frames are handled at the listener level (need async RwLock).
+            // If they reach here, it means the session is unauthenticated — ignore.
+            SyncMessageType::PresenceUpdate
+            | SyncMessageType::PresenceBroadcast
+            | SyncMessageType::PresenceLeave => {
+                debug!(
+                    session = %self.session_id,
+                    msg_type = frame.msg_type as u8,
+                    "presence frame ignored (handled at listener level)"
+                );
+                None
+            }
             _ => {
                 warn!(
                     session = %self.session_id,

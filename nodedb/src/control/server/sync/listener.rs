@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::net::TcpListener;
 use tracing::{info, warn};
 
-use super::wire::{DeltaPushMsg, SyncMessageType, TimeseriesPushMsg};
+use super::wire::{DeltaPushMsg, PresenceUpdateMsg, SyncMessageType, TimeseriesPushMsg};
 
 use crate::control::security::jwt::JwtConfig;
 use crate::control::state::SharedState;
@@ -91,6 +91,23 @@ pub async fn start_sync_listener(
 
     info!(addr = %state.config.listen_addr, "sync WebSocket listener started");
 
+    // Spawn presence TTL sweep timer (before moving `shared` into accept loop).
+    if let Some(ref shared) = shared {
+        let presence = Arc::clone(&shared.presence);
+        let sweep_interval_ms = {
+            // Use default sweep interval from config.
+            super::presence::PresenceConfig::default().sweep_interval_ms
+        };
+        tokio::spawn(async move {
+            let mut interval =
+                tokio::time::interval(std::time::Duration::from_millis(sweep_interval_ms));
+            loop {
+                interval.tick().await;
+                presence.write().await.sweep_expired();
+            }
+        });
+    }
+
     let state_clone = Arc::clone(&state);
     tokio::spawn(async move {
         accept_loop(listener, state_clone, shared).await;
@@ -165,6 +182,11 @@ async fn handle_sync_session(
     > = None;
     let mut crdt_registered = false;
 
+    // Presence: register a bounded outbound channel for this session.
+    // Presence broadcasts arrive here and are drained alongside CRDT deltas.
+    let mut presence_rx: Option<tokio::sync::mpsc::Receiver<super::wire::SyncFrame>> = None;
+    let mut presence_registered = false;
+
     while let Some(msg_result) = ws.next().await {
         match msg_result {
             Ok(Message::Binary(data)) => {
@@ -183,6 +205,22 @@ async fn handle_sync_session(
                             .is_err()
                         {
                             break;
+                        }
+                        continue;
+                    }
+
+                    // Handle PresenceUpdate at listener level (needs async RwLock).
+                    if frame.msg_type == SyncMessageType::PresenceUpdate
+                        && session.authenticated
+                        && let Some(shared) = shared
+                    {
+                        if let Some(msg) = frame.decode_body::<PresenceUpdateMsg>() {
+                            let user_id = session.username.as_deref().unwrap_or("anonymous");
+                            shared
+                                .presence
+                                .write()
+                                .await
+                                .handle_update(&session_id, user_id, &msg);
                         }
                         continue;
                     }
@@ -292,6 +330,36 @@ async fn handle_sync_session(
             crdt_registered = true;
         }
 
+        // Register for presence broadcasts once authenticated.
+        if session.authenticated
+            && !presence_registered
+            && let Some(shared) = shared
+        {
+            let (tx, rx) = tokio::sync::mpsc::channel(256);
+            shared
+                .presence
+                .write()
+                .await
+                .register_session(session_id.clone(), super::presence::SessionSender::new(tx));
+            presence_rx = Some(rx);
+            presence_registered = true;
+        }
+
+        // Drain outbound presence broadcasts and push to client.
+        if let Some(ref mut rx) = presence_rx {
+            while let Ok(frame) = rx.try_recv() {
+                use futures::SinkExt;
+                use tokio_tungstenite::tungstenite::Message;
+                if ws
+                    .send(Message::Binary(frame.to_bytes().into()))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        }
+
         // Drain outbound CRDT deltas and push to Lite device.
         if let Some(ref mut rx) = crdt_delivery_rx {
             while let Ok(delta) = rx.try_recv() {
@@ -329,6 +397,15 @@ async fn handle_sync_session(
     // Unregister from CRDT sync delivery.
     if crdt_registered && let Some(shared) = shared {
         shared.crdt_sync_delivery.unregister(&session_id);
+    }
+
+    // Unregister from presence: removes from all channels, broadcasts leave.
+    if presence_registered && let Some(shared) = shared {
+        shared
+            .presence
+            .write()
+            .await
+            .unregister_session(&session_id);
     }
 
     info!(

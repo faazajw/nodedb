@@ -274,4 +274,9 @@ pub struct SharedState {
 
     /// Highest WAL LSN confirmed delivered to Data Plane for timeseries catch-up.
     pub wal_catchup_lsn: AtomicU64,
+
+    /// Presence/Awareness manager: ephemeral user state broadcast channels.
+    /// Wrapped in `tokio::sync::RwLock` for concurrent reads (broadcast fan-out)
+    /// with exclusive writes (upsert/remove/sweep).
+    pub presence: Arc<tokio::sync::RwLock<crate::control::server::sync::presence::PresenceManager>>,
 }
