@@ -39,6 +39,8 @@ pub struct MemoryBackend {
     stats: RefCell<HashMap<String, (u32, u64)>>,
     /// Generic metadata blobs (DocIdMap, fieldnorms, etc.).
     meta: RefCell<HashMap<String, Vec<u8>>>,
+    /// Segment blobs: key → compressed segment bytes.
+    segments: RefCell<HashMap<String, Vec<u8>>>,
 }
 
 impl MemoryBackend {
@@ -150,6 +152,33 @@ impl FtsBackend for MemoryBackend {
         Ok(())
     }
 
+    fn write_segment(&self, key: &str, data: &[u8]) -> Result<(), Self::Error> {
+        self.segments
+            .borrow_mut()
+            .insert(key.to_string(), data.to_vec());
+        Ok(())
+    }
+
+    fn read_segment(&self, key: &str) -> Result<Option<Vec<u8>>, Self::Error> {
+        Ok(self.segments.borrow().get(key).cloned())
+    }
+
+    fn list_segments(&self, collection: &str) -> Result<Vec<String>, Self::Error> {
+        let prefix = format!("{collection}:seg:");
+        Ok(self
+            .segments
+            .borrow()
+            .keys()
+            .filter(|k| k.starts_with(&prefix))
+            .cloned()
+            .collect())
+    }
+
+    fn remove_segment(&self, key: &str) -> Result<(), Self::Error> {
+        self.segments.borrow_mut().remove(key);
+        Ok(())
+    }
+
     fn purge_collection(&self, collection: &str) -> Result<usize, Self::Error> {
         let prefix = format!("{collection}:");
         let mut postings = self.postings.borrow_mut();
@@ -162,6 +191,9 @@ impl FtsBackend for MemoryBackend {
         self.meta
             .borrow_mut()
             .retain(|k, _| !k.starts_with(&meta_prefix));
+        self.segments
+            .borrow_mut()
+            .retain(|k, _| !k.starts_with(&prefix));
         let after = postings.len() + doc_lengths.len();
         Ok(before - after)
     }
@@ -287,5 +319,51 @@ mod tests {
         let mut terms = backend.collection_terms("col").unwrap();
         terms.sort();
         assert_eq!(terms, vec!["hello", "world"]);
+    }
+
+    #[test]
+    fn segment_roundtrip() {
+        let backend = MemoryBackend::new();
+        let data = b"compressed segment bytes";
+        backend.write_segment("col:seg:id1", data).unwrap();
+        assert_eq!(
+            backend.read_segment("col:seg:id1").unwrap(),
+            Some(data.to_vec())
+        );
+        assert_eq!(backend.read_segment("col:seg:missing").unwrap(), None);
+    }
+
+    #[test]
+    fn segment_list_filters_by_collection() {
+        let backend = MemoryBackend::new();
+        backend.write_segment("col:seg:a", b"a").unwrap();
+        backend.write_segment("col:seg:b", b"b").unwrap();
+        backend.write_segment("other:seg:c", b"c").unwrap();
+
+        let mut segs = backend.list_segments("col").unwrap();
+        segs.sort();
+        assert_eq!(segs, vec!["col:seg:a", "col:seg:b"]);
+
+        let other = backend.list_segments("other").unwrap();
+        assert_eq!(other, vec!["other:seg:c"]);
+    }
+
+    #[test]
+    fn segment_remove() {
+        let backend = MemoryBackend::new();
+        backend.write_segment("col:seg:id1", b"data").unwrap();
+        backend.remove_segment("col:seg:id1").unwrap();
+        assert_eq!(backend.read_segment("col:seg:id1").unwrap(), None);
+    }
+
+    #[test]
+    fn purge_clears_segments() {
+        let backend = MemoryBackend::new();
+        backend.write_segment("col:seg:a", b"a").unwrap();
+        backend.write_segment("other:seg:b", b"b").unwrap();
+
+        backend.purge_collection("col").unwrap();
+        assert!(backend.list_segments("col").unwrap().is_empty());
+        assert_eq!(backend.list_segments("other").unwrap().len(), 1);
     }
 }

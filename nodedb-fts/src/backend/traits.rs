@@ -67,6 +67,18 @@ pub trait FtsBackend {
     /// Write a metadata blob by key.
     fn write_meta(&self, key: &str, value: &[u8]) -> Result<(), Self::Error>;
 
+    /// Write a segment blob. Key format: "{collection}:seg:{segment_id}".
+    fn write_segment(&self, key: &str, data: &[u8]) -> Result<(), Self::Error>;
+
+    /// Read a segment blob. Returns None if not found.
+    fn read_segment(&self, key: &str) -> Result<Option<Vec<u8>>, Self::Error>;
+
+    /// List all segment keys for a collection (prefix "{collection}:seg:").
+    fn list_segments(&self, collection: &str) -> Result<Vec<String>, Self::Error>;
+
+    /// Remove a segment blob.
+    fn remove_segment(&self, key: &str) -> Result<(), Self::Error>;
+
     /// Remove all entries for a collection prefix. Returns count of removed entries.
     fn purge_collection(&self, collection: &str) -> Result<usize, Self::Error>;
 }

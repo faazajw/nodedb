@@ -1,0 +1,191 @@
+//! Segment reader: reads term dictionary and decodes posting blocks on demand.
+
+use crate::block::PostingBlock;
+
+use super::format::{self, SegmentHeader, TermDictEntry};
+
+/// Reader for an immutable segment.
+///
+/// Holds a reference to the raw segment bytes and the parsed term dictionary.
+/// Posting blocks are decoded on demand (not all at once).
+pub struct SegmentReader {
+    /// Raw segment bytes.
+    data: Vec<u8>,
+    /// Parsed header.
+    header: SegmentHeader,
+    /// Parsed term dictionary (sorted by term).
+    term_dict: Vec<TermDictEntry>,
+}
+
+impl SegmentReader {
+    /// Open a segment from raw bytes. Returns `None` if malformed.
+    pub fn open(data: Vec<u8>) -> Option<Self> {
+        let header = format::parse_header(&data)?;
+        let dict_start = header.term_dict_offset as usize;
+        if dict_start > data.len() {
+            return None;
+        }
+        let term_dict = format::parse_term_dict(&data[dict_start..], header.num_terms)?;
+        Some(Self {
+            data,
+            header,
+            term_dict,
+        })
+    }
+
+    /// Number of terms in this segment.
+    pub fn num_terms(&self) -> usize {
+        self.term_dict.len()
+    }
+
+    /// Get the term dictionary entries (sorted by term).
+    pub fn term_dict(&self) -> &[TermDictEntry] {
+        &self.term_dict
+    }
+
+    /// Look up a term in the dictionary. Returns `None` if not found.
+    pub fn find_term(&self, term: &str) -> Option<&TermDictEntry> {
+        self.term_dict
+            .binary_search_by_key(&term, |e| e.term.as_str())
+            .ok()
+            .map(|idx| &self.term_dict[idx])
+    }
+
+    /// Read and decode posting blocks for a term.
+    ///
+    /// Returns empty vec if the term is not in this segment.
+    pub fn read_postings(&self, term: &str) -> Vec<PostingBlock> {
+        let Some(entry) = self.find_term(term) else {
+            return Vec::new();
+        };
+
+        let start = self.header.posting_data_offset as usize + entry.posting_offset as usize;
+        let end = start + entry.posting_len as usize;
+        if end > self.data.len() {
+            return Vec::new();
+        }
+
+        let buf = &self.data[start..end];
+        decode_term_blocks(buf)
+    }
+
+    /// Get all unique terms in this segment.
+    pub fn terms(&self) -> Vec<String> {
+        self.term_dict.iter().map(|e| e.term.clone()).collect()
+    }
+
+    /// Get the document frequency for a term.
+    pub fn df(&self, term: &str) -> u32 {
+        self.find_term(term).map(|e| e.df).unwrap_or(0)
+    }
+}
+
+/// Decode posting blocks from the term's posting data bytes.
+///
+/// Format: [num_blocks: u32 LE][for each: block_len: u32 LE, block_bytes]
+fn decode_term_blocks(buf: &[u8]) -> Vec<PostingBlock> {
+    if buf.len() < 4 {
+        return Vec::new();
+    }
+    let num_blocks = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
+    let mut pos = 4;
+    let mut blocks = Vec::with_capacity(num_blocks);
+
+    for _ in 0..num_blocks {
+        if pos + 4 > buf.len() {
+            break;
+        }
+        let block_len =
+            u32::from_le_bytes([buf[pos], buf[pos + 1], buf[pos + 2], buf[pos + 3]]) as usize;
+        pos += 4;
+        if pos + block_len > buf.len() {
+            break;
+        }
+        if let Some(block) = PostingBlock::from_bytes(&buf[pos..pos + block_len]) {
+            blocks.push(block);
+        }
+        pos += block_len;
+    }
+
+    blocks
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::block::CompactPosting;
+    use crate::codec::smallfloat;
+    use crate::lsm::segment::writer;
+    use std::collections::HashMap;
+
+    fn make_segment() -> Vec<u8> {
+        let mut postings = HashMap::new();
+        postings.insert(
+            "alpha".to_string(),
+            vec![
+                CompactPosting {
+                    doc_id: 0,
+                    term_freq: 2,
+                    fieldnorm: smallfloat::encode(50),
+                    positions: vec![0, 3],
+                },
+                CompactPosting {
+                    doc_id: 5,
+                    term_freq: 1,
+                    fieldnorm: smallfloat::encode(100),
+                    positions: vec![7],
+                },
+            ],
+        );
+        postings.insert(
+            "beta".to_string(),
+            vec![CompactPosting {
+                doc_id: 0,
+                term_freq: 1,
+                fieldnorm: smallfloat::encode(50),
+                positions: vec![1],
+            }],
+        );
+        writer::flush_to_segment(postings)
+    }
+
+    #[test]
+    fn open_and_read() {
+        let seg_data = make_segment();
+        let reader = SegmentReader::open(seg_data).unwrap();
+        assert_eq!(reader.num_terms(), 2);
+
+        let blocks = reader.read_postings("alpha");
+        assert_eq!(blocks.len(), 1); // 2 docs fit in 1 block.
+        assert_eq!(blocks[0].doc_ids, vec![0, 5]);
+        assert_eq!(blocks[0].term_freqs, vec![2, 1]);
+    }
+
+    #[test]
+    fn find_term() {
+        let seg_data = make_segment();
+        let reader = SegmentReader::open(seg_data).unwrap();
+
+        assert!(reader.find_term("alpha").is_some());
+        assert!(reader.find_term("beta").is_some());
+        assert!(reader.find_term("gamma").is_none());
+        assert_eq!(reader.df("alpha"), 2);
+        assert_eq!(reader.df("beta"), 1);
+    }
+
+    #[test]
+    fn missing_term_returns_empty() {
+        let seg_data = make_segment();
+        let reader = SegmentReader::open(seg_data).unwrap();
+        assert!(reader.read_postings("nonexistent").is_empty());
+    }
+
+    #[test]
+    fn terms_list() {
+        let seg_data = make_segment();
+        let reader = SegmentReader::open(seg_data).unwrap();
+        let mut terms = reader.terms();
+        terms.sort();
+        assert_eq!(terms, vec!["alpha", "beta"]);
+    }
+}

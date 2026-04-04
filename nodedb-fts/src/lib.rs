@@ -6,6 +6,7 @@ pub mod codec;
 pub mod fuzzy;
 pub mod highlight;
 pub mod index;
+pub mod lsm;
 pub mod posting;
 pub mod search;
 
