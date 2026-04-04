@@ -23,15 +23,20 @@ pub struct ShardDfReport {
     pub shard_id: u16,
     /// Total documents on this shard.
     pub total_docs: u64,
+    /// Sum of all document lengths on this shard (for global avg_doc_len).
+    pub total_token_sum: u64,
     /// Per-term document frequency: `term → count of docs containing term`.
     pub term_dfs: HashMap<String, u64>,
 }
 
-/// Global IDF values computed from all shard DF reports.
+/// Global IDF and avg_doc_len computed from all shard DF reports.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GlobalIdf {
     /// Total documents across all shards.
     pub total_docs: u64,
+    /// Global average document length (total_token_sum / total_docs).
+    /// Shards MUST use this instead of their local avg_doc_len for BM25.
+    pub avg_doc_len: f64,
     /// Per-term IDF: `term → idf_score`.
     pub term_idfs: HashMap<String, f64>,
 }
@@ -86,6 +91,12 @@ impl GlobalIdfCoordinator {
     /// where N = total docs, df(t) = docs containing term t.
     pub fn compute_global_idf(&mut self) -> &GlobalIdf {
         let total_docs: u64 = self.df_reports.iter().map(|r| r.total_docs).sum();
+        let total_token_sum: u64 = self.df_reports.iter().map(|r| r.total_token_sum).sum();
+        let avg_doc_len = if total_docs > 0 {
+            total_token_sum as f64 / total_docs as f64
+        } else {
+            1.0
+        };
 
         let mut global_dfs: HashMap<String, u64> = HashMap::new();
         for report in &self.df_reports {
@@ -104,6 +115,7 @@ impl GlobalIdfCoordinator {
 
         self.global_idf = Some(GlobalIdf {
             total_docs,
+            avg_doc_len,
             term_idfs,
         });
         // Safety: we just assigned Some above.
@@ -147,11 +159,13 @@ mod tests {
         coord.add_df_report(ShardDfReport {
             shard_id: 0,
             total_docs: 1000,
+            total_token_sum: 100_000,
             term_dfs: HashMap::from([("rust".into(), 50), ("database".into(), 200)]),
         });
         coord.add_df_report(ShardDfReport {
             shard_id: 1,
             total_docs: 1000,
+            total_token_sum: 120_000,
             term_dfs: HashMap::from([("rust".into(), 30), ("database".into(), 300)]),
         });
 
@@ -159,6 +173,8 @@ mod tests {
         let idf = coord.compute_global_idf();
 
         assert_eq!(idf.total_docs, 2000);
+        // Global avg_doc_len = (100_000 + 120_000) / 2000 = 110.0
+        assert!((idf.avg_doc_len - 110.0).abs() < f64::EPSILON);
         // "rust": df=80, N=2000 → idf = ln((2000-80+0.5)/(80+0.5)+1) ≈ 3.2
         assert!(idf.term_idfs["rust"] > 3.0);
         // "database": df=500, N=2000 → idf = ln((2000-500+0.5)/(500+0.5)+1) ≈ 1.4
@@ -206,6 +222,7 @@ mod tests {
         coord.add_df_report(ShardDfReport {
             shard_id: 0,
             total_docs: 10_000,
+            total_token_sum: 1_000_000,
             term_dfs: HashMap::from([("rare".into(), 5), ("common".into(), 9000)]),
         });
         let idf = coord.compute_global_idf();
