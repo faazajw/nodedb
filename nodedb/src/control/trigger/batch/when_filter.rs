@@ -38,14 +38,18 @@ pub fn filter_batch_by_when(
 /// Used both for WHEN clause substitution and for trigger body dispatch.
 pub fn build_row_bindings(row: &TriggerBatchRow, collection: &str, operation: &str) -> RowBindings {
     let new_row = row
-        .new_fields
-        .as_ref()
-        .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+        .new_fields()
+        .map(|m| {
+            m.iter()
+                .map(|(k, v)| (k.clone(), nodedb_types::Value::from(v.clone())))
+                .collect()
+        })
         .unwrap_or_default();
-    let old_row = row
-        .old_fields
-        .as_ref()
-        .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
+    let old_row = row.old_fields().map(|m| {
+        m.iter()
+            .map(|(k, v)| (k.clone(), nodedb_types::Value::from(v.clone())))
+            .collect()
+    });
 
     match operation {
         "INSERT" => RowBindings::after_insert(collection, new_row),
@@ -67,11 +71,7 @@ mod tests {
     fn row_with_field(key: &str, val: serde_json::Value) -> TriggerBatchRow {
         let mut map = serde_json::Map::new();
         map.insert(key.to_string(), val);
-        TriggerBatchRow {
-            new_fields: Some(map),
-            old_fields: None,
-            row_id: "r1".into(),
-        }
+        TriggerBatchRow::from_decoded(Some(map), None, "r1".into())
     }
 
     #[test]

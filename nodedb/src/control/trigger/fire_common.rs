@@ -216,7 +216,7 @@ pub async fn fire_before_triggers_with_mutation(
             && let Some(fields) = new_fields.as_mut()
         {
             for (field, value) in mutations {
-                fields.insert(field, value);
+                fields.insert(field, serde_json::Value::from(value));
             }
         }
     }
@@ -229,18 +229,20 @@ fn rebuild_bindings_with_new(
     original: &RowBindings,
     new_fields: &serde_json::Map<String, serde_json::Value>,
 ) -> RowBindings {
-    let new_row: HashMap<String, serde_json::Value> = new_fields
+    let new_row: HashMap<String, nodedb_types::Value> = new_fields
         .iter()
-        .map(|(k, v)| (k.clone(), v.clone()))
+        .map(|(k, v)| (k.clone(), nodedb_types::Value::from(v.clone())))
         .collect();
     original.with_new_row(new_row)
 }
 
-/// Convert a serde_json::Map to a HashMap for RowBindings.
+/// Convert a serde_json::Map to a HashMap<String, nodedb_types::Value> for RowBindings.
 pub fn map_to_hashmap(
     map: &serde_json::Map<String, serde_json::Value>,
-) -> HashMap<String, serde_json::Value> {
-    map.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+) -> HashMap<String, nodedb_types::Value> {
+    map.iter()
+        .map(|(k, v)| (k.clone(), nodedb_types::Value::from(v.clone())))
+        .collect()
 }
 
 /// Simple condition evaluation for WHEN clauses.

@@ -1,13 +1,13 @@
 //! Expression evaluation helpers for the statement executor.
 //!
 //! Evaluates SQL expressions via DataFusion and converts results to
-//! Rust types (bool, i64, serde_json::Value). Used by ASSIGN, IF/WHILE
+//! Rust types (bool, i64, nodedb_types::Value). Used by ASSIGN, IF/WHILE
 //! conditions, FOR bounds, and OUT parameter capture.
 
 use crate::control::state::SharedState;
 use crate::types::TenantId;
 
-use super::arrow_conv::arrow_scalar_to_json;
+use super::arrow_conv::arrow_scalar_to_value;
 
 /// Evaluate a SQL boolean condition.
 ///
@@ -82,35 +82,35 @@ pub async fn evaluate_int(
     })
 }
 
-/// Evaluate a SQL expression and return the result as a serde_json::Value.
+/// Evaluate a SQL expression and return the result as a `nodedb_types::Value`.
 ///
 /// Fast path for literal values (NULL, TRUE, FALSE, integers, floats, strings).
 /// Falls back to DataFusion for complex expressions.
-pub async fn evaluate_to_json(
+pub async fn evaluate_to_value(
     state: &SharedState,
     tenant_id: TenantId,
     expr: &str,
-) -> crate::Result<serde_json::Value> {
+) -> crate::Result<nodedb_types::Value> {
     let trimmed = expr.trim();
     if trimmed.eq_ignore_ascii_case("NULL") {
-        return Ok(serde_json::Value::Null);
+        return Ok(nodedb_types::Value::Null);
     }
     if trimmed.eq_ignore_ascii_case("TRUE") {
-        return Ok(serde_json::Value::Bool(true));
+        return Ok(nodedb_types::Value::Bool(true));
     }
     if trimmed.eq_ignore_ascii_case("FALSE") {
-        return Ok(serde_json::Value::Bool(false));
+        return Ok(nodedb_types::Value::Bool(false));
     }
     if let Ok(n) = trimmed.parse::<i64>() {
-        return Ok(serde_json::json!(n));
+        return Ok(nodedb_types::Value::Integer(n));
     }
     if let Ok(n) = trimmed.parse::<f64>() {
-        return Ok(serde_json::json!(n));
+        return Ok(nodedb_types::Value::Float(n));
     }
     // String literal: 'value'
     if trimmed.starts_with('\'') && trimmed.ends_with('\'') && trimmed.len() >= 2 {
         let inner = &trimmed[1..trimmed.len() - 1];
-        return Ok(serde_json::Value::String(inner.replace("''", "'")));
+        return Ok(nodedb_types::Value::String(inner.replace("''", "'")));
     }
 
     // Complex expression: evaluate via DataFusion.
@@ -118,11 +118,11 @@ pub async fn evaluate_to_json(
     for batch in &batches {
         if batch.num_rows() > 0 {
             let col = batch.column(0);
-            return Ok(arrow_scalar_to_json(col, 0));
+            return Ok(arrow_scalar_to_value(col, 0));
         }
     }
 
-    Ok(serde_json::Value::Null)
+    Ok(nodedb_types::Value::Null)
 }
 
 /// Execute a SQL expression via DataFusion and return the result batches.

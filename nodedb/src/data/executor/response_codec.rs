@@ -185,6 +185,71 @@ impl ColBuilder {
     }
 }
 
+/// Encode document rows with raw MessagePack passthrough for the data field.
+///
+/// Each row is `(doc_id, raw_msgpack_bytes)`. The raw bytes are written directly
+/// into the output without decoding to `serde_json::Value` first. This eliminates
+/// the decode→re-encode cycle that was the main serialization tax on document reads.
+///
+/// Output format: msgpack array of `{"id": "<doc_id>", "data": <raw_msgpack_value>}`.
+pub(super) fn encode_raw_document_rows(rows: &[(String, Vec<u8>)]) -> crate::Result<Vec<u8>> {
+    // Pre-estimate capacity: ~32 bytes overhead per row + data sizes.
+    let data_size: usize = rows.iter().map(|(id, d)| id.len() + d.len() + 16).sum();
+    let mut buf = Vec::with_capacity(data_size + 8);
+
+    // Write array header.
+    msgpack_write_array_header(&mut buf, rows.len());
+
+    for (id, data_bytes) in rows {
+        // Write map header (2 entries: "id" and "data").
+        buf.push(0x82); // fixmap with 2 entries
+
+        // Write "id" key + value.
+        msgpack_write_str(&mut buf, "id");
+        msgpack_write_str(&mut buf, id);
+
+        // Write "data" key.
+        msgpack_write_str(&mut buf, "data");
+
+        // Raw passthrough: write the msgpack bytes directly as the value.
+        // These bytes are already a valid msgpack map from storage.
+        buf.extend_from_slice(data_bytes);
+    }
+
+    Ok(buf)
+}
+
+/// Write a msgpack array header.
+fn msgpack_write_array_header(buf: &mut Vec<u8>, len: usize) {
+    if len < 16 {
+        buf.push(0x90 | len as u8);
+    } else if len <= u16::MAX as usize {
+        buf.push(0xDC);
+        buf.extend_from_slice(&(len as u16).to_be_bytes());
+    } else {
+        buf.push(0xDD);
+        buf.extend_from_slice(&(len as u32).to_be_bytes());
+    }
+}
+
+/// Write a msgpack string (key or value).
+fn msgpack_write_str(buf: &mut Vec<u8>, s: &str) {
+    let len = s.len();
+    if len < 32 {
+        buf.push(0xA0 | len as u8);
+    } else if len <= u8::MAX as usize {
+        buf.push(0xD9);
+        buf.push(len as u8);
+    } else if len <= u16::MAX as usize {
+        buf.push(0xDA);
+        buf.extend_from_slice(&(len as u16).to_be_bytes());
+    } else {
+        buf.push(0xDB);
+        buf.extend_from_slice(&(len as u32).to_be_bytes());
+    }
+    buf.extend_from_slice(s.as_bytes());
+}
+
 /// Encode a simple `{"key": count}` response (for insert confirmations).
 pub(super) fn encode_count(key: &str, count: usize) -> crate::Result<Vec<u8>> {
     let mut map = std::collections::BTreeMap::new();
@@ -374,5 +439,38 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed["key"], "value");
         assert_eq!(parsed["num"], 42);
+    }
+
+    #[test]
+    fn raw_document_rows_roundtrip() {
+        let doc1 = serde_json::json!({"name": "alice", "age": 30});
+        let doc2 = serde_json::json!({"name": "bob", "age": 25});
+        let msgpack1 = nodedb_types::json_to_msgpack(&doc1).unwrap();
+        let msgpack2 = nodedb_types::json_to_msgpack(&doc2).unwrap();
+
+        let rows = vec![
+            ("doc1".to_string(), msgpack1),
+            ("doc2".to_string(), msgpack2),
+        ];
+
+        let encoded = encode_raw_document_rows(&rows).unwrap();
+        let json = decode_payload_to_json(&encoded);
+        let parsed: Vec<serde_json::Value> = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0]["id"], "doc1");
+        assert_eq!(parsed[0]["data"]["name"], "alice");
+        assert_eq!(parsed[0]["data"]["age"], 30);
+        assert_eq!(parsed[1]["id"], "doc2");
+        assert_eq!(parsed[1]["data"]["name"], "bob");
+    }
+
+    #[test]
+    fn raw_document_rows_empty() {
+        let rows: Vec<(String, Vec<u8>)> = vec![];
+        let encoded = encode_raw_document_rows(&rows).unwrap();
+        let json = decode_payload_to_json(&encoded);
+        let parsed: Vec<serde_json::Value> = serde_json::from_str(&json).unwrap();
+        assert!(parsed.is_empty());
     }
 }

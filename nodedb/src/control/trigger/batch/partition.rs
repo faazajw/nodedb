@@ -77,8 +77,7 @@ pub fn partition_by_field(
     max_partitions: usize,
 ) -> PartitionResult {
     partition_batch(rows, max_partitions, |row| {
-        row.new_fields
-            .as_ref()
+        row.new_fields()
             .and_then(|m| m.get(field_name))
             .map(|v| match v {
                 serde_json::Value::String(s) => s.clone(),
@@ -98,11 +97,7 @@ mod tests {
             field.to_string(),
             serde_json::Value::String(val.to_string()),
         );
-        TriggerBatchRow {
-            new_fields: Some(map),
-            old_fields: None,
-            row_id: id.to_string(),
-        }
+        TriggerBatchRow::from_decoded(Some(map), None, id.to_string())
     }
 
     #[test]
@@ -159,16 +154,8 @@ mod tests {
     #[test]
     fn null_field_partitions_together() {
         let rows = vec![
-            TriggerBatchRow {
-                new_fields: Some(serde_json::Map::new()),
-                old_fields: None,
-                row_id: "r1".into(),
-            },
-            TriggerBatchRow {
-                new_fields: Some(serde_json::Map::new()),
-                old_fields: None,
-                row_id: "r2".into(),
-            },
+            TriggerBatchRow::from_decoded(Some(serde_json::Map::new()), None, "r1".into()),
+            TriggerBatchRow::from_decoded(Some(serde_json::Map::new()), None, "r2".into()),
         ];
 
         match partition_by_field(&rows, "missing", 32) {
@@ -190,8 +177,7 @@ mod tests {
 
         match partition_batch(&rows, 32, |row| {
             let score: i64 = row
-                .new_fields
-                .as_ref()
+                .new_fields()
                 .and_then(|m| m.get("score"))
                 .and_then(|v| v.as_str())
                 .and_then(|s| s.parse().ok())

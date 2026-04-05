@@ -449,7 +449,7 @@ fn before_insert_bindings_have_correct_tg_when() {
     use std::collections::HashMap;
 
     let mut row = HashMap::new();
-    row.insert("id".into(), serde_json::json!("doc-1"));
+    row.insert("id".into(), nodedb_types::Value::String("doc-1".into()));
     let bindings = RowBindings::before_insert("orders", row);
     let result = bindings.substitute("SELECT TG_WHEN, TG_OP");
     assert!(result.contains("'BEFORE'"), "got: {result}");
@@ -462,9 +462,9 @@ fn before_update_bindings_have_old_and_new() {
     use std::collections::HashMap;
 
     let mut old = HashMap::new();
-    old.insert("name".into(), serde_json::json!("Alice"));
+    old.insert("name".into(), nodedb_types::Value::String("Alice".into()));
     let mut new = HashMap::new();
-    new.insert("name".into(), serde_json::json!("Bob"));
+    new.insert("name".into(), nodedb_types::Value::String("Bob".into()));
 
     let bindings = RowBindings::before_update("users", old, new);
     let result = bindings.substitute("VALUES (OLD.name, NEW.name, TG_WHEN)");
@@ -479,7 +479,7 @@ fn before_delete_bindings_have_old_only() {
     use std::collections::HashMap;
 
     let mut old = HashMap::new();
-    old.insert("id".into(), serde_json::json!(42));
+    old.insert("id".into(), nodedb_types::Value::Integer(42));
     let bindings = RowBindings::before_delete("users", old);
     let result = bindings.substitute("VALUES (OLD.id, TG_OP)");
     assert!(result.contains("42"), "got: {result}");
@@ -513,7 +513,7 @@ fn with_new_row_replaces_new_fields() {
     use std::collections::HashMap;
 
     let mut original = HashMap::new();
-    original.insert("name".into(), serde_json::json!("Alice"));
+    original.insert("name".into(), nodedb_types::Value::String("Alice".into()));
     let bindings = RowBindings::before_insert("users", original);
 
     // Verify original.
@@ -522,7 +522,7 @@ fn with_new_row_replaces_new_fields() {
 
     // Replace NEW row.
     let mut updated = HashMap::new();
-    updated.insert("name".into(), serde_json::json!("Bob"));
+    updated.insert("name".into(), nodedb_types::Value::String("Bob".into()));
     let new_bindings = bindings.with_new_row(updated);
 
     let result = new_bindings.substitute("SELECT NEW.name");

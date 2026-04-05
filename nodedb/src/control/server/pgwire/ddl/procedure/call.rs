@@ -95,7 +95,7 @@ pub async fn call_procedure(
 /// Build a single-row result set from OUT parameter values.
 fn build_out_response(
     out_params: &[&crate::control::security::catalog::procedure_types::ProcedureParam],
-    out_values: &std::collections::HashMap<String, serde_json::Value>,
+    out_values: &std::collections::HashMap<String, nodedb_types::Value>,
 ) -> PgWireResult<Vec<Response>> {
     use futures::stream;
     use pgwire::api::results::{DataRowEncoder, QueryResponse};
@@ -120,9 +120,9 @@ fn build_out_response(
                 }
             });
         let text = match value {
-            Some(serde_json::Value::Null) | None => String::new(),
-            Some(serde_json::Value::String(s)) => s.clone(),
-            Some(v) => v.to_string(),
+            Some(nodedb_types::Value::Null) | None => String::new(),
+            Some(nodedb_types::Value::String(s)) => s.clone(),
+            Some(v) => v.to_sql_literal(),
         };
         let _ = encoder.encode_field(&text);
     }

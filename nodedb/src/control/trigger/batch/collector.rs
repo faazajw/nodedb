@@ -3,16 +3,138 @@
 //! Used by the Event Plane consumer to batch consecutive WriteEvents targeting
 //! the same collection before dispatching triggers. Instead of firing triggers
 //! per-row, the collector yields batches of up to `batch_size` rows.
+//!
+//! Rows store raw MessagePack bytes with lazy deserialization. Rows filtered
+//! out by WHEN clauses never pay the decode cost, and raw bytes are ~50%
+//! more compact than `serde_json::Map` in memory.
+
+use std::sync::Arc;
+use std::sync::OnceLock;
 
 /// A single row in a trigger batch.
-#[derive(Debug, Clone)]
+///
+/// Stores raw MessagePack bytes from the WriteEvent and decodes to
+/// `serde_json::Map` lazily on first access. This eliminates upfront
+/// deserialization at event ingestion time and avoids decoding rows
+/// that get filtered out by WHEN clauses.
+#[derive(Debug)]
 pub struct TriggerBatchRow {
-    /// NEW row fields (INSERT/UPDATE). None for DELETE.
-    pub new_fields: Option<serde_json::Map<String, serde_json::Value>>,
-    /// OLD row fields (UPDATE/DELETE). None for INSERT.
-    pub old_fields: Option<serde_json::Map<String, serde_json::Value>>,
-    /// Row identifier (for error blaming in future vectorized error handling).
+    /// Raw NEW value bytes (MessagePack). None for DELETE.
+    new_raw: Option<Arc<[u8]>>,
+    /// Raw OLD value bytes (MessagePack). None for INSERT.
+    old_raw: Option<Arc<[u8]>>,
+    /// Lazily decoded NEW fields.
+    new_cache: OnceLock<Option<serde_json::Map<String, serde_json::Value>>>,
+    /// Lazily decoded OLD fields.
+    old_cache: OnceLock<Option<serde_json::Map<String, serde_json::Value>>>,
+    /// Row identifier (for error blaming).
     pub row_id: String,
+}
+
+impl Clone for TriggerBatchRow {
+    fn clone(&self) -> Self {
+        Self {
+            new_raw: self.new_raw.clone(),
+            old_raw: self.old_raw.clone(),
+            // Clone decoded cache if present, otherwise it will re-decode lazily.
+            new_cache: self
+                .new_cache
+                .get()
+                .cloned()
+                .map_or_else(OnceLock::new, |v| {
+                    let cell = OnceLock::new();
+                    let _ = cell.set(v);
+                    cell
+                }),
+            old_cache: self
+                .old_cache
+                .get()
+                .cloned()
+                .map_or_else(OnceLock::new, |v| {
+                    let cell = OnceLock::new();
+                    let _ = cell.set(v);
+                    cell
+                }),
+            row_id: self.row_id.clone(),
+        }
+    }
+}
+
+impl TriggerBatchRow {
+    /// Create from raw MessagePack bytes (production path).
+    pub fn from_raw(
+        new_raw: Option<Arc<[u8]>>,
+        old_raw: Option<Arc<[u8]>>,
+        row_id: String,
+    ) -> Self {
+        Self {
+            new_raw,
+            old_raw,
+            new_cache: OnceLock::new(),
+            old_cache: OnceLock::new(),
+            row_id,
+        }
+    }
+
+    /// Create from pre-decoded fields (test convenience).
+    pub fn from_decoded(
+        new_fields: Option<serde_json::Map<String, serde_json::Value>>,
+        old_fields: Option<serde_json::Map<String, serde_json::Value>>,
+        row_id: String,
+    ) -> Self {
+        let new_cache = OnceLock::new();
+        let old_cache = OnceLock::new();
+        let _ = new_cache.set(new_fields);
+        let _ = old_cache.set(old_fields);
+        Self {
+            new_raw: None,
+            old_raw: None,
+            new_cache,
+            old_cache,
+            row_id,
+        }
+    }
+
+    /// Access NEW fields, decoding lazily from raw bytes if needed.
+    pub fn new_fields(&self) -> Option<&serde_json::Map<String, serde_json::Value>> {
+        self.new_cache
+            .get_or_init(|| {
+                self.new_raw
+                    .as_ref()
+                    .and_then(|bytes| decode_payload_to_map(bytes))
+            })
+            .as_ref()
+    }
+
+    /// Access OLD fields, decoding lazily from raw bytes if needed.
+    pub fn old_fields(&self) -> Option<&serde_json::Map<String, serde_json::Value>> {
+        self.old_cache
+            .get_or_init(|| {
+                self.old_raw
+                    .as_ref()
+                    .and_then(|bytes| decode_payload_to_map(bytes))
+            })
+            .as_ref()
+    }
+
+    /// Mutable access to NEW fields (for BEFORE trigger ASSIGN mutations).
+    /// Ensures the cache is initialized first.
+    pub fn new_fields_mut(&mut self) -> Option<&mut serde_json::Map<String, serde_json::Value>> {
+        // Force initialization if not yet decoded.
+        let _ = self.new_fields();
+        self.new_cache.get_mut().and_then(|opt| opt.as_mut())
+    }
+}
+
+/// Decode raw event payload bytes to a JSON map.
+fn decode_payload_to_map(bytes: &[u8]) -> Option<serde_json::Map<String, serde_json::Value>> {
+    if let Ok(serde_json::Value::Object(map)) = nodedb_types::json_from_msgpack(bytes) {
+        return Some(map);
+    }
+    if let Ok(serde_json::Value::Object(map)) = sonic_rs::from_slice::<serde_json::Value>(bytes) {
+        return Some(map);
+    }
+    None
 }
 
 /// A complete batch of rows for trigger dispatch.
@@ -127,11 +249,14 @@ impl TriggerBatchCollector {
 ///
 /// Returns `Some(TriggerBatch)` if the push completes or flushes a batch.
 /// Returns `None` for non-triggerable events or if the batch isn't full yet.
+///
+/// Stores raw bytes from the WriteEvent — no deserialization at ingestion time.
+/// The row decodes lazily when a trigger body or WHEN clause accesses the fields.
 pub fn push_write_event(
     collector: &mut TriggerBatchCollector,
     event: &crate::event::types::WriteEvent,
 ) -> Option<TriggerBatch> {
-    use crate::event::types::{EventSource, WriteOp, deserialize_event_payload};
+    use crate::event::types::{EventSource, WriteOp};
 
     // Only User-originated events fire triggers.
     if !matches!(event.source, EventSource::User) {
@@ -145,20 +270,11 @@ pub fn push_write_event(
         _ => return None,
     };
 
-    let new_fields = event
-        .new_value
-        .as_ref()
-        .and_then(|v| deserialize_event_payload(v));
-    let old_fields = event
-        .old_value
-        .as_ref()
-        .and_then(|v| deserialize_event_payload(v));
-
-    let row = TriggerBatchRow {
-        new_fields,
-        old_fields,
-        row_id: event.row_id.as_str().to_string(),
-    };
+    let row = TriggerBatchRow::from_raw(
+        event.new_value.clone(),
+        event.old_value.clone(),
+        event.row_id.as_str().to_string(),
+    );
 
     collector.push(&event.collection, op_str, event.tenant_id.as_u32(), row)
 }
@@ -168,11 +284,7 @@ mod tests {
     use super::*;
 
     fn row(id: &str) -> TriggerBatchRow {
-        TriggerBatchRow {
-            new_fields: Some(serde_json::Map::new()),
-            old_fields: None,
-            row_id: id.to_string(),
-        }
+        TriggerBatchRow::from_decoded(Some(serde_json::Map::new()), None, id.to_string())
     }
 
     #[test]

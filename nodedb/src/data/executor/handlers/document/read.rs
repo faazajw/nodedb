@@ -7,6 +7,35 @@ use crate::bridge::scan_filter::ScanFilter;
 use crate::data::executor::core_loop::CoreLoop;
 use crate::data::executor::task::ExecutionTask;
 
+/// Apply projection or computed columns to a decoded document.
+fn apply_projection(
+    data: serde_json::Value,
+    computed_cols: &[crate::bridge::expr_eval::ComputedColumn],
+    projection: &[String],
+) -> serde_json::Value {
+    if !computed_cols.is_empty() {
+        let mut out = serde_json::Map::with_capacity(computed_cols.len());
+        for cc in computed_cols {
+            out.insert(cc.alias.clone(), cc.expr.eval(&data));
+        }
+        serde_json::Value::Object(out)
+    } else if !projection.is_empty() {
+        if let serde_json::Value::Object(obj) = &data {
+            let mut out = serde_json::Map::with_capacity(projection.len());
+            for col in projection {
+                if let Some(val) = obj.get(col) {
+                    out.insert(col.clone(), val.clone());
+                }
+            }
+            serde_json::Value::Object(out)
+        } else {
+            data
+        }
+    } else {
+        data
+    }
+}
+
 impl CoreLoop {
     #[allow(clippy::too_many_arguments)]
     pub(in crate::data::executor) fn execute_document_scan(
@@ -110,9 +139,12 @@ impl CoreLoop {
                     }
                 };
 
-                // Evaluate window functions (after sort, before dedup/limit).
-                let sorted = if !window_specs.is_empty() {
-                    let mut rows: Vec<(String, serde_json::Value)> = sorted
+                let stream_chunk_size = self.query_tuning.stream_chunk_size;
+
+                // Window functions require decoded values; keep them decoded
+                // through dedup/projection to avoid re-encode→re-decode cycle.
+                if !window_specs.is_empty() {
+                    let mut decoded_rows: Vec<(String, serde_json::Value)> = sorted
                         .into_iter()
                         .map(|(id, val)| {
                             let doc = super::super::super::doc_format::decode_document(&val)
@@ -120,122 +152,74 @@ impl CoreLoop {
                             (id, doc)
                         })
                         .collect();
-                    crate::bridge::window_func::evaluate_window_functions(&mut rows, &window_specs);
-                    // Re-encode back to bytes for the rest of the pipeline.
-                    rows.into_iter()
-                        .map(|(id, doc)| {
-                            let bytes = super::super::super::doc_format::encode_to_msgpack(&doc);
-                            (id, bytes)
-                        })
-                        .collect()
-                } else {
-                    sorted
-                };
-
-                let deduped = if distinct {
-                    let mut seen = std::collections::HashSet::new();
-                    sorted
-                        .into_iter()
-                        .filter(|(_, value)| seen.insert(value.clone()))
-                        .collect()
-                } else {
-                    sorted
-                };
-
-                let result: Vec<_> = deduped
-                    .into_iter()
-                    .skip(offset)
-                    .take(limit)
-                    .map(|(doc_id, value)| {
-                        let data = super::super::super::doc_format::decode_document(&value)
-                            .unwrap_or(serde_json::Value::Null);
-
-                        // Apply projection: computed columns or simple column selection.
-                        let projected = if !computed_cols.is_empty() {
-                            // Evaluate computed expressions against the document.
-                            let mut out = serde_json::Map::with_capacity(computed_cols.len());
-                            for cc in &computed_cols {
-                                out.insert(cc.alias.clone(), cc.expr.eval(&data));
-                            }
-                            serde_json::Value::Object(out)
-                        } else if !projection.is_empty() {
-                            if let serde_json::Value::Object(obj) = &data {
-                                let mut out = serde_json::Map::with_capacity(projection.len());
-                                for col in projection {
-                                    if let Some(val) = obj.get(col) {
-                                        out.insert(col.clone(), val.clone());
-                                    }
-                                }
-                                serde_json::Value::Object(out)
-                            } else {
-                                data
-                            }
-                        } else {
-                            data
-                        };
-
-                        super::super::super::response_codec::DocumentRow {
-                            id: doc_id,
-                            data: projected,
-                        }
-                    })
-                    .collect();
-
-                // Stream results in chunks of `stream_chunk_size` rows.
-                // Each chunk is sent as a partial response except the last.
-                let stream_chunk_size = self.query_tuning.stream_chunk_size;
-
-                if result.len() <= stream_chunk_size {
-                    // Small result: send as single response (no streaming overhead).
-                    match super::super::super::response_codec::encode(&result) {
-                        Ok(payload) => self.response_with_payload(task, payload),
-                        Err(e) => self.response_error(
-                            task,
-                            ErrorCode::Internal {
-                                detail: e.to_string(),
-                            },
-                        ),
-                    }
-                } else {
-                    // Large result: stream in chunks via partial responses.
-                    let chunks: Vec<_> = result.chunks(stream_chunk_size).collect();
-                    let last_idx = chunks.len().saturating_sub(1);
-                    for (i, chunk) in chunks.iter().enumerate() {
-                        let is_last = i == last_idx;
-                        match super::super::super::response_codec::encode(&chunk.to_vec()) {
-                            Ok(payload) => {
-                                if is_last {
-                                    // Final chunk: return as the function's response.
-                                    return self.response_with_payload(task, payload);
-                                }
-                                // Partial chunk: push directly to response queue.
-                                let partial = self.response_partial(task, payload);
-                                let _ = self.response_tx.try_push(
-                                    crate::bridge::dispatch::BridgeResponse { inner: partial },
-                                );
-                            }
-                            Err(e) => {
-                                return self.response_error(
-                                    task,
-                                    ErrorCode::Internal {
-                                        detail: e.to_string(),
-                                    },
-                                );
-                            }
-                        }
-                    }
-                    // All chunks should have been sent and returned above.
-                    // If we reach here, the streaming loop exited unexpectedly.
-                    tracing::debug!(
-                        core = self.core_id,
-                        "streaming loop exited without final response"
+                    crate::bridge::window_func::evaluate_window_functions(
+                        &mut decoded_rows,
+                        &window_specs,
                     );
-                    self.response_error(
-                        task,
-                        ErrorCode::Internal {
-                            detail: "streaming response incomplete".into(),
-                        },
-                    )
+
+                    // Dedup on decoded values.
+                    let deduped: Vec<_> = if distinct {
+                        let mut seen = std::collections::HashSet::new();
+                        decoded_rows
+                            .into_iter()
+                            .filter(|(_, v)| seen.insert(v.to_string()))
+                            .collect()
+                    } else {
+                        decoded_rows
+                    };
+
+                    // Build response directly from decoded values (no re-encode).
+                    let result: Vec<_> = deduped
+                        .into_iter()
+                        .skip(offset)
+                        .take(limit)
+                        .map(|(doc_id, data)| {
+                            let projected = apply_projection(data, &computed_cols, projection);
+                            super::super::super::response_codec::DocumentRow {
+                                id: doc_id,
+                                data: projected,
+                            }
+                        })
+                        .collect();
+
+                    self.send_document_rows_transformed(task, &result, stream_chunk_size)
+                } else {
+                    // No window functions: work with raw bytes.
+                    let deduped = if distinct {
+                        let mut seen = std::collections::HashSet::new();
+                        sorted
+                            .into_iter()
+                            .filter(|(_, value)| seen.insert(value.clone()))
+                            .collect()
+                    } else {
+                        sorted
+                    };
+
+                    let needs_transform = !computed_cols.is_empty() || !projection.is_empty();
+
+                    if needs_transform {
+                        let result: Vec<_> = deduped
+                            .into_iter()
+                            .skip(offset)
+                            .take(limit)
+                            .map(|(doc_id, value)| {
+                                let data = super::super::super::doc_format::decode_document(&value)
+                                    .unwrap_or(serde_json::Value::Null);
+                                let projected = apply_projection(data, &computed_cols, projection);
+                                super::super::super::response_codec::DocumentRow {
+                                    id: doc_id,
+                                    data: projected,
+                                }
+                            })
+                            .collect();
+
+                        self.send_document_rows_transformed(task, &result, stream_chunk_size)
+                    } else {
+                        // Raw passthrough: skip decode+re-encode entirely.
+                        let rows: Vec<_> = deduped.into_iter().skip(offset).take(limit).collect();
+
+                        self.send_document_rows_raw(task, &rows, stream_chunk_size)
+                    }
                 }
             }
             Err(e) => self.response_error(
@@ -245,5 +229,127 @@ impl CoreLoop {
                 },
             ),
         }
+    }
+
+    /// Send transformed document rows (decoded → projected → re-encoded).
+    fn send_document_rows_transformed(
+        &mut self,
+        task: &ExecutionTask,
+        result: &Vec<super::super::super::response_codec::DocumentRow>,
+        chunk_size: usize,
+    ) -> Response {
+        if result.len() <= chunk_size {
+            match super::super::super::response_codec::encode(result) {
+                Ok(payload) => self.response_with_payload(task, payload),
+                Err(e) => self.response_error(
+                    task,
+                    ErrorCode::Internal {
+                        detail: e.to_string(),
+                    },
+                ),
+            }
+        } else {
+            self.stream_chunks_transformed(task, result, chunk_size)
+        }
+    }
+
+    /// Send raw document rows with msgpack passthrough (no decode+re-encode).
+    fn send_document_rows_raw(
+        &mut self,
+        task: &ExecutionTask,
+        rows: &[(String, Vec<u8>)],
+        chunk_size: usize,
+    ) -> Response {
+        if rows.len() <= chunk_size {
+            match super::super::super::response_codec::encode_raw_document_rows(rows) {
+                Ok(payload) => self.response_with_payload(task, payload),
+                Err(e) => self.response_error(
+                    task,
+                    ErrorCode::Internal {
+                        detail: e.to_string(),
+                    },
+                ),
+            }
+        } else {
+            self.stream_chunks_raw(task, rows, chunk_size)
+        }
+    }
+
+    /// Stream transformed document rows in chunks.
+    fn stream_chunks_transformed(
+        &mut self,
+        task: &ExecutionTask,
+        result: &[super::super::super::response_codec::DocumentRow],
+        chunk_size: usize,
+    ) -> Response {
+        let chunks: Vec<_> = result.chunks(chunk_size).collect();
+        let last_idx = chunks.len().saturating_sub(1);
+        for (i, chunk) in chunks.iter().enumerate() {
+            let is_last = i == last_idx;
+            match super::super::super::response_codec::encode(&chunk.to_vec()) {
+                Ok(payload) => {
+                    if is_last {
+                        return self.response_with_payload(task, payload);
+                    }
+                    let partial = self.response_partial(task, payload);
+                    let _ = self
+                        .response_tx
+                        .try_push(crate::bridge::dispatch::BridgeResponse { inner: partial });
+                }
+                Err(e) => {
+                    return self.response_error(
+                        task,
+                        ErrorCode::Internal {
+                            detail: e.to_string(),
+                        },
+                    );
+                }
+            }
+        }
+        self.response_error(
+            task,
+            ErrorCode::Internal {
+                detail: "streaming response incomplete".into(),
+            },
+        )
+    }
+
+    /// Stream raw document rows in chunks with msgpack passthrough.
+    fn stream_chunks_raw(
+        &mut self,
+        task: &ExecutionTask,
+        rows: &[(String, Vec<u8>)],
+        chunk_size: usize,
+    ) -> Response {
+        let chunks: Vec<_> = rows.chunks(chunk_size).collect();
+        let last_idx = chunks.len().saturating_sub(1);
+        for (i, chunk) in chunks.iter().enumerate() {
+            let is_last = i == last_idx;
+            match super::super::super::response_codec::encode_raw_document_rows(chunk) {
+                Ok(payload) => {
+                    if is_last {
+                        return self.response_with_payload(task, payload);
+                    }
+                    let partial = self.response_partial(task, payload);
+                    let _ = self
+                        .response_tx
+                        .try_push(crate::bridge::dispatch::BridgeResponse { inner: partial });
+                }
+                Err(e) => {
+                    return self.response_error(
+                        task,
+                        ErrorCode::Internal {
+                            detail: e.to_string(),
+                        },
+                    );
+                }
+            }
+        }
+        self.response_error(
+            task,
+            ErrorCode::Internal {
+                detail: "streaming response incomplete".into(),
+            },
+        )
     }
 }

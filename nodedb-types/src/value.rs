@@ -269,6 +269,122 @@ impl From<Geometry> for Value {
     }
 }
 
+impl From<Value> for serde_json::Value {
+    fn from(v: Value) -> Self {
+        match v {
+            Value::Null => serde_json::Value::Null,
+            Value::Bool(b) => serde_json::Value::Bool(b),
+            Value::Integer(i) => serde_json::json!(i),
+            Value::Float(f) => serde_json::json!(f),
+            Value::String(s) | Value::Uuid(s) | Value::Ulid(s) | Value::Regex(s) => {
+                serde_json::Value::String(s)
+            }
+            Value::Bytes(b) => {
+                let hex: String = b.iter().map(|byte| format!("{byte:02x}")).collect();
+                serde_json::Value::String(hex)
+            }
+            Value::Array(arr) | Value::Set(arr) => {
+                serde_json::Value::Array(arr.into_iter().map(serde_json::Value::from).collect())
+            }
+            Value::Object(map) => serde_json::Value::Object(
+                map.into_iter()
+                    .map(|(k, v)| (k, serde_json::Value::from(v)))
+                    .collect(),
+            ),
+            Value::DateTime(dt) => serde_json::Value::String(dt.to_string()),
+            Value::Duration(d) => serde_json::Value::String(d.to_string()),
+            Value::Decimal(d) => serde_json::Value::String(d.to_string()),
+            Value::Geometry(g) => serde_json::to_value(g).unwrap_or(serde_json::Value::Null),
+            Value::Range { .. } | Value::Record { .. } => serde_json::Value::Null,
+        }
+    }
+}
+
+impl From<serde_json::Value> for Value {
+    fn from(v: serde_json::Value) -> Self {
+        match v {
+            serde_json::Value::Null => Value::Null,
+            serde_json::Value::Bool(b) => Value::Bool(b),
+            serde_json::Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    Value::Integer(i)
+                } else if let Some(u) = n.as_u64() {
+                    Value::Integer(u as i64)
+                } else if let Some(f) = n.as_f64() {
+                    Value::Float(f)
+                } else {
+                    Value::Null
+                }
+            }
+            serde_json::Value::String(s) => Value::String(s),
+            serde_json::Value::Array(arr) => {
+                Value::Array(arr.into_iter().map(Value::from).collect())
+            }
+            serde_json::Value::Object(map) => {
+                Value::Object(map.into_iter().map(|(k, v)| (k, Value::from(v))).collect())
+            }
+        }
+    }
+}
+
+impl Value {
+    /// Convert to a SQL literal string for substitution into SQL text.
+    pub fn to_sql_literal(&self) -> String {
+        match self {
+            Value::Null => "NULL".into(),
+            Value::Bool(b) => if *b { "TRUE" } else { "FALSE" }.into(),
+            Value::Integer(i) => i.to_string(),
+            Value::Float(f) => f.to_string(),
+            Value::String(s) => format!("'{}'", s.replace('\'', "''")),
+            Value::Uuid(s) | Value::Ulid(s) | Value::Regex(s) => {
+                format!("'{}'", s.replace('\'', "''"))
+            }
+            Value::Bytes(b) => {
+                let hex: String = b.iter().map(|byte| format!("{byte:02x}")).collect();
+                format!("'\\x{hex}'")
+            }
+            Value::Array(arr) | Value::Set(arr) => {
+                let elements: Vec<String> = arr.iter().map(|v| v.to_sql_literal()).collect();
+                format!("ARRAY[{}]", elements.join(", "))
+            }
+            Value::Object(map) => {
+                let json_str = serde_json::to_string(&serde_json::Value::Object(
+                    map.iter()
+                        .map(|(k, v)| (k.clone(), value_to_json(v)))
+                        .collect(),
+                ))
+                .unwrap_or_default();
+                format!("'{}'", json_str.replace('\'', "''"))
+            }
+            Value::DateTime(dt) => format!("'{dt}'"),
+            Value::Duration(d) => format!("'{d}'"),
+            Value::Decimal(d) => d.to_string(),
+            Value::Geometry(g) => format!("'{}'", serde_json::to_string(g).unwrap_or_default()),
+            Value::Range { .. } | Value::Record { .. } => "NULL".into(),
+        }
+    }
+}
+
+/// Convert nodedb_types::Value back to serde_json::Value (for object serialization).
+fn value_to_json(v: &Value) -> serde_json::Value {
+    match v {
+        Value::Null => serde_json::Value::Null,
+        Value::Bool(b) => serde_json::Value::Bool(*b),
+        Value::Integer(i) => serde_json::json!(*i),
+        Value::Float(f) => serde_json::json!(*f),
+        Value::String(s) => serde_json::Value::String(s.clone()),
+        Value::Array(arr) | Value::Set(arr) => {
+            serde_json::Value::Array(arr.iter().map(value_to_json).collect())
+        }
+        Value::Object(map) => serde_json::Value::Object(
+            map.iter()
+                .map(|(k, v)| (k.clone(), value_to_json(v)))
+                .collect(),
+        ),
+        other => serde_json::Value::String(other.to_sql_literal()),
+    }
+}
+
 // ─── Manual zerompk implementation ──────────────────────────────────────────
 //
 // Cannot use derive because `rust_decimal::Decimal` is an external type.

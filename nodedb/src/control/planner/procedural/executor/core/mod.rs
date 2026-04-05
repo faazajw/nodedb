@@ -32,9 +32,9 @@ pub struct StatementExecutor<'a> {
     cascade_depth: u32,
     pub(super) event_source: crate::event::EventSource,
     /// Arc<Mutex> required (not RefCell) because execute_statement returns `+ Send` futures.
-    pub(super) new_mutations: Arc<Mutex<HashMap<String, serde_json::Value>>>,
+    pub(super) new_mutations: Arc<Mutex<HashMap<String, nodedb_types::Value>>>,
     pub(super) tx_ctx: Option<Arc<Mutex<ProcedureTransactionCtx>>>,
-    pub(super) out_values: Arc<Mutex<HashMap<String, serde_json::Value>>>,
+    pub(super) out_values: Arc<Mutex<HashMap<String, nodedb_types::Value>>>,
 }
 
 /// Control flow signal from statement execution.
@@ -85,12 +85,12 @@ impl<'a> StatementExecutor<'a> {
         self
     }
 
-    pub fn take_new_mutations(&self) -> HashMap<String, serde_json::Value> {
+    pub fn take_new_mutations(&self) -> HashMap<String, nodedb_types::Value> {
         let mut guard = self.new_mutations.lock().unwrap_or_else(|p| p.into_inner());
         std::mem::take(&mut *guard)
     }
 
-    pub fn take_out_values(&self) -> HashMap<String, serde_json::Value> {
+    pub fn take_out_values(&self) -> HashMap<String, nodedb_types::Value> {
         let mut guard = self.out_values.lock().unwrap_or_else(|p| p.into_inner());
         std::mem::take(&mut *guard)
     }

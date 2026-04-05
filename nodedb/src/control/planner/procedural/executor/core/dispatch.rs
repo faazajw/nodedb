@@ -18,7 +18,7 @@ impl<'a> StatementExecutor<'a> {
         let target_upper = target.to_uppercase();
         if let Some(field_name) = target_upper.strip_prefix("NEW.") {
             let bound_expr = bindings.substitute(&expr.sql);
-            let value = eval::evaluate_to_json(self.state, self.tenant_id, &bound_expr).await?;
+            let value = eval::evaluate_to_value(self.state, self.tenant_id, &bound_expr).await?;
             let mut guard = self.new_mutations.lock().unwrap_or_else(|p| p.into_inner());
             guard.insert(field_name.to_lowercase(), value);
         }
@@ -33,7 +33,7 @@ impl<'a> StatementExecutor<'a> {
         bindings: &RowBindings,
     ) -> crate::Result<()> {
         let bound_expr = bindings.substitute(&expr.sql);
-        let value = eval::evaluate_to_json(self.state, self.tenant_id, &bound_expr).await?;
+        let value = eval::evaluate_to_value(self.state, self.tenant_id, &bound_expr).await?;
         let mut guard = self.out_values.lock().unwrap_or_else(|p| p.into_inner());
         guard.insert("__return".to_string(), value);
         Ok(())
