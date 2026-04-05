@@ -1,4 +1,5 @@
 mod compaction;
+pub(crate) mod dense_array;
 pub mod index;
 pub mod memory;
 pub mod persist;

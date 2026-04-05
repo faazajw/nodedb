@@ -68,17 +68,17 @@ impl CsrIndex {
             nodes: self.id_to_node.clone(),
             labels: self.id_to_label.clone(),
             out_offsets: self.out_offsets.clone(),
-            out_targets: self.out_targets.clone(),
-            out_labels: self.out_labels.clone(),
+            out_targets: self.out_targets.to_vec(),
+            out_labels: self.out_labels.to_vec(),
             in_offsets: self.in_offsets.clone(),
-            in_targets: self.in_targets.clone(),
-            in_labels: self.in_labels.clone(),
+            in_targets: self.in_targets.to_vec(),
+            in_labels: self.in_labels.to_vec(),
             buffer_out: self.buffer_out.clone(),
             buffer_in: self.buffer_in.clone(),
             deleted: self.deleted_edges.iter().copied().collect(),
             has_weights: self.has_weights,
-            out_weights: self.out_weights.clone(),
-            in_weights: self.in_weights.clone(),
+            out_weights: self.out_weights.as_ref().map(|w| w.to_vec()),
+            in_weights: self.in_weights.as_ref().map(|w| w.to_vec()),
             buffer_out_weights: self.buffer_out_weights.clone(),
             buffer_in_weights: self.buffer_in_weights.clone(),
         };
@@ -102,13 +102,120 @@ impl CsrIndex {
     }
 
     /// Restore from rkyv-serialized bytes.
+    ///
+    /// On little-endian platforms (x86_64, ARM), dense arrays (targets, labels,
+    /// weights) are zero-copy: DenseArray points directly into the archived
+    /// buffer with no per-element parsing. On big-endian, falls back to full
+    /// deserialization.
     fn from_rkyv_checkpoint(bytes: &[u8]) -> Option<Self> {
-        // rkyv requires aligned data for zero-copy access.
         let mut aligned = rkyv::util::AlignedVec::<16>::with_capacity(bytes.len());
         aligned.extend_from_slice(bytes);
+
+        #[cfg(target_endian = "little")]
+        {
+            Self::from_rkyv_zero_copy(aligned)
+        }
+        #[cfg(not(target_endian = "little"))]
+        {
+            let snap: CsrSnapshotRkyv =
+                rkyv::from_bytes::<CsrSnapshotRkyv, rkyv::rancor::Error>(&aligned).ok()?;
+            Some(Self::from_snapshot_fields(snap))
+        }
+    }
+
+    /// Zero-copy restore on little-endian platforms.
+    ///
+    /// SAFETY: On little-endian, rkyv's `u32_le`/`u16_le`/`f64_le` have
+    /// identical memory layout to native `u32`/`u16`/`f64`. The pointer
+    /// casts are sound because `ArchivedVec<T>` stores contiguous `T_le`
+    /// values, and the `Arc<AlignedVec>` keeps the buffer alive.
+    #[cfg(target_endian = "little")]
+    fn from_rkyv_zero_copy(aligned: rkyv::util::AlignedVec) -> Option<Self> {
+        use super::dense_array::DenseArray;
+
+        let backing = std::sync::Arc::new(aligned);
+
+        // Access archived data (zero-copy reference into the buffer).
+        let archived =
+            rkyv::access::<rkyv::Archived<CsrSnapshotRkyv>, rkyv::rancor::Error>(&backing).ok()?;
+
+        // Zero-copy DenseArrays for dense CSR arrays.
+        let out_targets = unsafe {
+            let s = archived.out_targets.as_slice();
+            DenseArray::zero_copy(backing.clone(), s.as_ptr().cast::<u32>(), s.len())
+        };
+        let out_labels = unsafe {
+            let s = archived.out_labels.as_slice();
+            DenseArray::zero_copy(backing.clone(), s.as_ptr().cast::<u16>(), s.len())
+        };
+        let in_targets = unsafe {
+            let s = archived.in_targets.as_slice();
+            DenseArray::zero_copy(backing.clone(), s.as_ptr().cast::<u32>(), s.len())
+        };
+        let in_labels = unsafe {
+            let s = archived.in_labels.as_slice();
+            DenseArray::zero_copy(backing.clone(), s.as_ptr().cast::<u16>(), s.len())
+        };
+        let out_weights = archived.out_weights.as_ref().map(|w| unsafe {
+            let s = w.as_slice();
+            DenseArray::zero_copy(backing.clone(), s.as_ptr().cast::<f64>(), s.len())
+        });
+        let in_weights = archived.in_weights.as_ref().map(|w| unsafe {
+            let s = w.as_slice();
+            DenseArray::zero_copy(backing.clone(), s.as_ptr().cast::<f64>(), s.len())
+        });
+
+        // Deserialize mutable/small fields (strings, buffers, offsets).
         let snap: CsrSnapshotRkyv =
-            rkyv::from_bytes::<CsrSnapshotRkyv, rkyv::rancor::Error>(&aligned).ok()?;
-        Some(Self::from_snapshot_fields(snap))
+            rkyv::from_bytes::<CsrSnapshotRkyv, rkyv::rancor::Error>(&backing).ok()?;
+
+        let node_to_id: HashMap<String, u32> = snap
+            .nodes
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.clone(), i as u32))
+            .collect();
+        let label_to_id: HashMap<String, u16> = snap
+            .labels
+            .iter()
+            .enumerate()
+            .map(|(i, l)| (l.clone(), i as u16))
+            .collect();
+        let node_count = snap.nodes.len();
+        let access_counts = (0..node_count).map(|_| std::cell::Cell::new(0)).collect();
+        let buffer_out_weights = if snap.buffer_out_weights.len() == node_count {
+            snap.buffer_out_weights
+        } else {
+            vec![Vec::new(); node_count]
+        };
+        let buffer_in_weights = if snap.buffer_in_weights.len() == node_count {
+            snap.buffer_in_weights
+        } else {
+            vec![Vec::new(); node_count]
+        };
+
+        Some(Self {
+            node_to_id,
+            id_to_node: snap.nodes,
+            label_to_id,
+            id_to_label: snap.labels,
+            out_offsets: snap.out_offsets,
+            out_targets,
+            out_labels,
+            out_weights,
+            in_offsets: snap.in_offsets,
+            in_targets,
+            in_labels,
+            in_weights,
+            buffer_out: snap.buffer_out,
+            buffer_in: snap.buffer_in,
+            buffer_out_weights,
+            buffer_in_weights,
+            deleted_edges: snap.deleted.into_iter().collect(),
+            has_weights: snap.has_weights,
+            access_counts,
+            query_epoch: 0,
+        })
     }
 
     /// Restore from legacy MessagePack bytes.
@@ -169,13 +276,13 @@ impl CsrIndex {
             label_to_id,
             id_to_label: snap.labels,
             out_offsets: snap.out_offsets,
-            out_targets: snap.out_targets,
-            out_labels: snap.out_labels,
-            out_weights: snap.out_weights,
+            out_targets: snap.out_targets.into(),
+            out_labels: snap.out_labels.into(),
+            out_weights: snap.out_weights.map(Into::into),
             in_offsets: snap.in_offsets,
-            in_targets: snap.in_targets,
-            in_labels: snap.in_labels,
-            in_weights: snap.in_weights,
+            in_targets: snap.in_targets.into(),
+            in_labels: snap.in_labels.into(),
+            in_weights: snap.in_weights.map(Into::into),
             buffer_out: snap.buffer_out,
             buffer_in: snap.buffer_in,
             buffer_out_weights,

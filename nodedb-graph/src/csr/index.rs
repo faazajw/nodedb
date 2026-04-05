@@ -23,6 +23,8 @@
 
 use std::collections::{HashMap, HashSet, hash_map::Entry};
 
+use super::dense_array::DenseArray;
+
 // Re-export shared Direction from nodedb-types.
 pub use nodedb_types::graph::Direction;
 
@@ -37,19 +39,25 @@ pub struct CsrIndex {
     pub(crate) id_to_label: Vec<String>,
 
     // ── Dense CSR (read-only between compactions) ──
+    //
+    // Offsets are `Vec<u32>` (mutable — extended on node creation).
+    // Targets/labels/weights use `DenseArray<T>` for zero-copy mmap support:
+    // after cold start from rkyv checkpoint, these point directly into the
+    // archived buffer with no deserialization. Compaction replaces them with
+    // owned Vecs.
     /// `out_offsets[i]..out_offsets[i+1]` = range in `out_targets`/`out_labels`.
     /// Length: `num_nodes + 1`.
     pub(crate) out_offsets: Vec<u32>,
-    pub(crate) out_targets: Vec<u32>,
-    pub(crate) out_labels: Vec<u16>,
+    pub(crate) out_targets: DenseArray<u32>,
+    pub(crate) out_labels: DenseArray<u16>,
     /// Parallel edge weight array. `None` if graph has no weighted edges.
-    pub(crate) out_weights: Option<Vec<f64>>,
+    pub(crate) out_weights: Option<DenseArray<f64>>,
 
     pub(crate) in_offsets: Vec<u32>,
-    pub(crate) in_targets: Vec<u32>,
-    pub(crate) in_labels: Vec<u16>,
+    pub(crate) in_targets: DenseArray<u32>,
+    pub(crate) in_labels: DenseArray<u16>,
     /// Parallel inbound edge weight array. `None` if graph has no weighted edges.
-    pub(crate) in_weights: Option<Vec<f64>>,
+    pub(crate) in_weights: Option<DenseArray<f64>>,
 
     // ── Mutable write buffer ──
     /// Per-node outbound buffer: `buffer_out[node_id]` = `[(label_id, dst_id)]`.
@@ -91,12 +99,12 @@ impl CsrIndex {
             label_to_id: HashMap::new(),
             id_to_label: Vec::new(),
             out_offsets: vec![0],
-            out_targets: Vec::new(),
-            out_labels: Vec::new(),
+            out_targets: DenseArray::default(),
+            out_labels: DenseArray::default(),
             out_weights: None,
             in_offsets: vec![0],
-            in_targets: Vec::new(),
-            in_labels: Vec::new(),
+            in_targets: DenseArray::default(),
+            in_labels: DenseArray::default(),
             in_weights: None,
             buffer_out: Vec::new(),
             buffer_in: Vec::new(),

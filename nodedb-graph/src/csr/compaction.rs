@@ -108,16 +108,28 @@ impl CsrIndex {
         let (in_offsets, in_targets, in_labels) = Self::build_dense(&new_in_edges);
 
         self.out_offsets = out_offsets;
-        self.out_targets = out_targets;
-        self.out_labels = out_labels;
+        self.out_targets = out_targets.into();
+        self.out_labels = out_labels.into();
         self.in_offsets = in_offsets;
-        self.in_targets = in_targets;
-        self.in_labels = in_labels;
+        self.in_targets = in_targets.into();
+        self.in_labels = in_labels.into();
 
         // Build weight arrays (flatten per-node vecs into contiguous array).
         if self.has_weights {
-            self.out_weights = Some(new_out_weights.into_iter().flatten().collect());
-            self.in_weights = Some(new_in_weights.into_iter().flatten().collect());
+            self.out_weights = Some(
+                new_out_weights
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .into(),
+            );
+            self.in_weights = Some(
+                new_in_weights
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .into(),
+            );
         }
 
         // Clear buffer and deleted set.

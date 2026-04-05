@@ -13,10 +13,10 @@ impl CsrIndex {
 
         // Backfill existing dense arrays with 1.0.
         if !self.out_targets.is_empty() {
-            self.out_weights = Some(vec![1.0; self.out_targets.len()]);
+            self.out_weights = Some(vec![1.0; self.out_targets.len()].into());
         }
         if !self.in_targets.is_empty() {
-            self.in_weights = Some(vec![1.0; self.in_targets.len()]);
+            self.in_weights = Some(vec![1.0; self.in_targets.len()].into());
         }
 
         // Backfill existing buffer entries with 1.0.
