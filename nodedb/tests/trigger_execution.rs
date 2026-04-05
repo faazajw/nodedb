@@ -156,6 +156,7 @@ fn classify_point_update() {
         collection: "users".into(),
         document_id: "u-1".into(),
         updates: vec![],
+        returning: false,
     });
     let info = classify_dml_write(&plan).unwrap();
     assert_eq!(info.collection, "users");
