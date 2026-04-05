@@ -45,8 +45,7 @@ impl CoreLoop {
             for entry in range.flatten() {
                 let key = entry.0.value();
                 let value_bytes = entry.1.value();
-                if let Some(doc) = super::super::doc_format::decode_document(value_bytes)
-                    && filters.iter().all(|f| f.matches(&doc))
+                if filters.iter().all(|f| f.matches_binary(value_bytes))
                     && let Some(doc_id) = key.strip_prefix(&prefix)
                 {
                     ids.push(doc_id.to_string());

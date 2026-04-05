@@ -5,11 +5,9 @@
 //!
 //! Shared between Origin (Control Plane + Data Plane) and Lite.
 
-pub mod aggregate;
 pub mod like;
 pub mod parse;
 
-pub use aggregate::compute_aggregate;
 pub use like::sql_like_match;
 pub use parse::parse_simple_predicates;
 
@@ -329,24 +327,5 @@ mod tests {
     fn ilike_case_insensitive() {
         assert!(sql_like_match("Hello", "hello", true));
         assert!(sql_like_match("WORLD", "%world%", true));
-    }
-
-    #[test]
-    fn aggregate_count() {
-        let docs = vec![json!({"x": 1}), json!({"x": 2}), json!({"x": 3})];
-        assert_eq!(compute_aggregate("count", "x", &docs), json!(3));
-    }
-
-    #[test]
-    fn aggregate_sum() {
-        let docs = vec![json!({"v": 10}), json!({"v": 20}), json!({"v": 30})];
-        assert_eq!(compute_aggregate("sum", "v", &docs), json!(60.0));
-    }
-
-    #[test]
-    fn aggregate_min_max() {
-        let docs = vec![json!({"v": 5}), json!({"v": 1}), json!({"v": 9})];
-        assert_eq!(compute_aggregate("min", "v", &docs), json!(1));
-        assert_eq!(compute_aggregate("max", "v", &docs), json!(9));
     }
 }

@@ -24,5 +24,5 @@ pub use fusion::{
     DEFAULT_RRF_K, FusedResult, RankedResult, reciprocal_rank_fusion,
     reciprocal_rank_fusion_weighted,
 };
-pub use scan_filter::{ScanFilter, compute_aggregate};
+pub use scan_filter::ScanFilter;
 pub use window::{FrameBound, WindowFrame, WindowFuncSpec, evaluate_window_functions};

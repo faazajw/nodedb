@@ -500,4 +500,88 @@ mod tests {
         assert_eq!(count, 3);
         assert_eq!(read_i64(&buf, data_offset), Some(10));
     }
+
+    // ── Canonical encoding guarantee tests ─────────────────────────────
+
+    #[test]
+    fn canonical_integer_smallest_representation() {
+        // fixint (0-127): single byte
+        let buf = encode(&json!(42));
+        assert_eq!(buf.len(), 1);
+        assert_eq!(buf[0], 42);
+
+        // 0 as fixint
+        let buf = encode(&json!(0));
+        assert_eq!(buf.len(), 1);
+        assert_eq!(buf[0], 0);
+
+        // 127 as fixint
+        let buf = encode(&json!(127));
+        assert_eq!(buf.len(), 1);
+        assert_eq!(buf[0], 127);
+
+        // 128 should NOT be fixint. JSON parses as i64, so zerompk uses
+        // int16 (0xd1) since 128 > i8::MAX. This is canonical for signed path.
+        let buf = encode(&json!(128));
+        assert_eq!(buf[0], 0xd1); // int16 tag
+        assert_eq!(buf.len(), 3); // tag + 2 bytes
+
+        // negative fixint (-32 to -1)
+        let buf = encode(&json!(-1));
+        assert_eq!(buf.len(), 1);
+        assert_eq!(buf[0], 0xff); // -1 as negative fixint
+
+        let buf = encode(&json!(-32));
+        assert_eq!(buf.len(), 1);
+        assert_eq!(buf[0], 0xe0); // -32 as negative fixint
+    }
+
+    #[test]
+    fn canonical_map_keys_sorted() {
+        // Keys should be lexicographically sorted in msgpack output.
+        // Encode with keys in non-sorted order in JSON source.
+        let buf = encode(&json!({"z": 1, "a": 2, "m": 3}));
+
+        // Parse map and verify keys come out sorted
+        let (count, mut pos) = map_header(&buf, 0).unwrap();
+        assert_eq!(count, 3);
+
+        let mut keys = Vec::new();
+        for _ in 0..count {
+            let key = read_str(&buf, pos).unwrap();
+            keys.push(key.to_string());
+            pos = skip_value(&buf, pos).unwrap(); // skip key
+            pos = skip_value(&buf, pos).unwrap(); // skip value
+        }
+        assert_eq!(keys, vec!["a", "m", "z"]);
+    }
+
+    #[test]
+    fn canonical_deterministic_bytes() {
+        // Same logical document encoded twice must produce identical bytes.
+        let doc1 = encode(&json!({"name": "alice", "age": 30, "active": true}));
+        let doc2 = encode(&json!({"age": 30, "active": true, "name": "alice"}));
+        assert_eq!(
+            doc1, doc2,
+            "same logical doc must produce identical msgpack bytes"
+        );
+    }
+
+    #[test]
+    fn canonical_nested_map_keys_sorted() {
+        let buf = encode(&json!({"outer": {"z": 1, "a": 2}}));
+        // Extract the inner map
+        let (start, _end) = crate::msgpack_scan::field::extract_field(&buf, 0, "outer").unwrap();
+
+        let (count, mut pos) = map_header(&buf, start).unwrap();
+        assert_eq!(count, 2);
+
+        let key1 = read_str(&buf, pos).unwrap();
+        pos = skip_value(&buf, pos).unwrap();
+        pos = skip_value(&buf, pos).unwrap();
+        let key2 = read_str(&buf, pos).unwrap();
+
+        assert_eq!(key1, "a");
+        assert_eq!(key2, "z");
+    }
 }

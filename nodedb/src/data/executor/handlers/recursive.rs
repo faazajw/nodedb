@@ -85,18 +85,19 @@ impl CoreLoop {
         let mut seen_keys: HashSet<String> = HashSet::new();
 
         for (_doc_id, value) in &all_docs {
+            if !base_preds.iter().all(|f| f.matches_binary(value)) {
+                continue;
+            }
             let Some(doc) = super::super::doc_format::decode_document(value) else {
                 continue;
             };
-            if base_preds.iter().all(|f| f.matches(&doc)) {
-                let key = if distinct {
-                    sonic_rs::to_string(&doc).unwrap_or_default()
-                } else {
-                    String::new()
-                };
-                if !distinct || seen_keys.insert(key) {
-                    results.push(doc);
-                }
+            let key = if distinct {
+                sonic_rs::to_string(&doc).unwrap_or_default()
+            } else {
+                String::new()
+            };
+            if !distinct || seen_keys.insert(key) {
+                results.push(doc);
             }
         }
 
@@ -121,18 +122,19 @@ impl CoreLoop {
                 if results.len() + new_rows.len() >= limit {
                     break;
                 }
+                if !recursive_preds.iter().all(|f| f.matches_binary(value)) {
+                    continue;
+                }
                 let Some(doc) = super::super::doc_format::decode_document(value) else {
                     continue;
                 };
-                if recursive_preds.iter().all(|f| f.matches(&doc)) {
-                    let key = if distinct {
-                        sonic_rs::to_string(&doc).unwrap_or_default()
-                    } else {
-                        doc_id.clone()
-                    };
-                    if !distinct || seen_keys.insert(key) {
-                        new_rows.push(doc);
-                    }
+                let key = if distinct {
+                    sonic_rs::to_string(&doc).unwrap_or_default()
+                } else {
+                    doc_id.clone()
+                };
+                if !distinct || seen_keys.insert(key) {
+                    new_rows.push(doc);
                 }
             }
 

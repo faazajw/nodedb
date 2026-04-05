@@ -106,10 +106,7 @@ impl CoreLoop {
         } else {
             self.sparse
                 .scan_documents_filtered(tid, collection, fetch_limit, &|value: &[u8]| {
-                    let Some(doc) = super::super::super::doc_format::decode_document(value) else {
-                        return false;
-                    };
-                    filter_predicates.iter().all(|f| f.matches(&doc))
+                    filter_predicates.iter().all(|f| f.matches_binary(value))
                 })
         };
 

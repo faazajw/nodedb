@@ -4,10 +4,15 @@
 //! `serde_json::Value` or `nodedb_types::Value`. Field extraction, numeric
 //! reads, comparisons, and hashing all work on raw byte offsets.
 
+pub mod aggregate;
 pub mod compare;
 pub mod field;
+pub mod filter;
+pub mod group_key;
 pub mod reader;
 
+pub use aggregate::compute_aggregate_binary;
 pub use compare::{compare_field_bytes, hash_field_bytes};
 pub use field::{extract_field, extract_path};
+pub use group_key::build_group_key;
 pub use reader::{array_header, read_bool, read_f64, read_i64, read_null, read_str, skip_value};

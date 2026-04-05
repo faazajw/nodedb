@@ -4,9 +4,10 @@ use sonic_rs;
 use tracing::debug;
 
 use crate::bridge::envelope::{ErrorCode, Response};
-use crate::bridge::scan_filter::{ScanFilter, compute_aggregate};
+use crate::bridge::scan_filter::ScanFilter;
 use crate::data::executor::core_loop::CoreLoop;
 use crate::data::executor::task::ExecutionTask;
+use nodedb_query::msgpack_scan;
 
 /// Build a cache key for an aggregate query.
 ///
@@ -236,89 +237,25 @@ impl CoreLoop {
                     }
                 };
 
-                let mut groups: std::collections::HashMap<String, Vec<serde_json::Value>> =
+                // ── Binary scan path (zero deserialization) ───
+                // Filter + group + aggregate directly on raw msgpack bytes.
+                let mut binary_groups: std::collections::HashMap<String, Vec<usize>> =
                     std::collections::HashMap::new();
 
-                // Determine which fields we actually need to extract.
-                // This avoids full document deserialization when possible.
-                let mut needed_fields: Vec<&str> = Vec::new();
-                for f in group_by {
-                    if !needed_fields.contains(&f.as_str()) {
-                        needed_fields.push(f.as_str());
+                for (i, (_, value)) in docs.iter().enumerate() {
+                    // Binary filter evaluation — no decode needed.
+                    if !filter_predicates.iter().all(|f| f.matches_binary(value)) {
+                        continue;
                     }
-                }
-                for (_, field) in aggregates {
-                    if field != "*" && !needed_fields.contains(&field.as_str()) {
-                        needed_fields.push(field.as_str());
-                    }
-                }
-
-                // If filters are present, we need full deserialization for
-                // filter evaluation (filters can reference any field).
-                let needs_full_deser = !filter_predicates.is_empty();
-
-                for (_, value) in &docs {
-                    if needs_full_deser {
-                        // Full deserialization path (filters need arbitrary field access).
-                        let Some(doc) = super::super::doc_format::decode_document(value) else {
-                            continue;
-                        };
-                        if !filter_predicates.iter().all(|f| f.matches(&doc)) {
-                            continue;
-                        }
-                        let key = if group_by.is_empty() {
-                            "__all__".to_string()
-                        } else {
-                            let key_parts: Vec<serde_json::Value> = group_by
-                                .iter()
-                                .map(|field| {
-                                    doc.get(field.as_str())
-                                        .cloned()
-                                        .unwrap_or(serde_json::Value::Null)
-                                })
-                                .collect();
-                            sonic_rs::to_string(&key_parts).unwrap_or_else(|_| "[]".into())
-                        };
-                        groups.entry(key).or_default().push(doc);
-                    } else {
-                        // Targeted extraction path: only extract needed fields.
-                        let extracted =
-                            super::super::doc_format::extract_fields(value, &needed_fields);
-
-                        // Build group key from extracted fields.
-                        let key = if group_by.is_empty() {
-                            "__all__".to_string()
-                        } else {
-                            let key_parts: Vec<serde_json::Value> = group_by
-                                .iter()
-                                .map(|field| {
-                                    let idx =
-                                        needed_fields.iter().position(|&n| n == field.as_str());
-                                    idx.and_then(|i| extracted[i].clone())
-                                        .unwrap_or(serde_json::Value::Null)
-                                })
-                                .collect();
-                            sonic_rs::to_string(&key_parts).unwrap_or_else(|_| "[]".into())
-                        };
-
-                        // Build a partial document with only the needed fields.
-                        let mut doc_map = serde_json::Map::new();
-                        for (i, &field_name) in needed_fields.iter().enumerate() {
-                            if let Some(val) = &extracted[i] {
-                                doc_map.insert(field_name.to_string(), val.clone());
-                            }
-                        }
-                        groups
-                            .entry(key)
-                            .or_default()
-                            .push(serde_json::Value::Object(doc_map));
-                    }
+                    let key = msgpack_scan::build_group_key(value, group_by);
+                    binary_groups.entry(key).or_default().push(i);
                 }
 
                 let mut results: Vec<serde_json::Value> = Vec::new();
-                for (group_key, group_docs) in &groups {
+                for (group_key, doc_indices) in &binary_groups {
                     let mut row = serde_json::Map::new();
 
+                    // Insert group-by field values into the result row.
                     if !group_by.is_empty()
                         && let Ok(parts) = sonic_rs::from_str::<Vec<serde_json::Value>>(group_key)
                     {
@@ -328,33 +265,30 @@ impl CoreLoop {
                         }
                     }
 
+                    // Collect raw doc slices for this group.
+                    let group_docs: Vec<&[u8]> =
+                        doc_indices.iter().map(|&i| docs[i].1.as_slice()).collect();
+
                     for (op, field) in aggregates {
                         let agg_key = format!("{op}_{field}").replace('*', "all");
-                        let val = compute_aggregate(op, field, group_docs);
-                        row.insert(agg_key, val);
+                        let val = msgpack_scan::compute_aggregate_binary(op, field, &group_docs);
+                        // Convert nodedb_types::Value → serde_json::Value at result boundary.
+                        let json_val: serde_json::Value = val.into();
+                        row.insert(agg_key, json_val);
                     }
 
-                    // Nested sub-aggregation: within each group, further group
-                    // by sub_group_by fields and compute sub_aggregates.
+                    // Nested sub-aggregation on raw bytes.
                     if !sub_group_by.is_empty() && !sub_aggregates.is_empty() {
-                        let mut sub_groups: std::collections::HashMap<
-                            String,
-                            Vec<serde_json::Value>,
-                        > = std::collections::HashMap::new();
-                        for doc in group_docs {
-                            let key_parts: Vec<serde_json::Value> = sub_group_by
-                                .iter()
-                                .map(|f| doc.get(f).cloned().unwrap_or(serde_json::Value::Null))
-                                .collect();
-                            let sub_key =
-                                sonic_rs::to_string(&key_parts).unwrap_or_else(|_| "[]".into());
-                            sub_groups.entry(sub_key).or_default().push(doc.clone());
+                        let mut sub_groups: std::collections::HashMap<String, Vec<&[u8]>> =
+                            std::collections::HashMap::new();
+                        for &doc_bytes in &group_docs {
+                            let sub_key = msgpack_scan::build_group_key(doc_bytes, sub_group_by);
+                            sub_groups.entry(sub_key).or_default().push(doc_bytes);
                         }
 
                         let mut sub_results = Vec::new();
                         for (sub_key, sub_docs) in &sub_groups {
                             let mut sub_row = serde_json::Map::new();
-                            // Parse sub-group key back into fields.
                             if let Ok(parts) = sonic_rs::from_str::<Vec<serde_json::Value>>(sub_key)
                             {
                                 for (i, field) in sub_group_by.iter().enumerate() {
@@ -365,8 +299,10 @@ impl CoreLoop {
                             }
                             for (op, field) in sub_aggregates {
                                 let agg_key = format!("{op}_{field}").replace('*', "all");
-                                let val = compute_aggregate(op, field, sub_docs);
-                                sub_row.insert(agg_key, val);
+                                let val =
+                                    msgpack_scan::compute_aggregate_binary(op, field, sub_docs);
+                                let json_val: serde_json::Value = val.into();
+                                sub_row.insert(agg_key, json_val);
                             }
                             sub_results.push(serde_json::Value::Object(sub_row));
                         }
