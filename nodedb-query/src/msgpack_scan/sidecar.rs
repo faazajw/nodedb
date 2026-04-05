@@ -301,7 +301,7 @@ impl<'a> SidecarFieldIndex<'a> {
             let e = &self.entries[i];
             let value_offset = e.value_offset as usize;
             let value_len = e.value_len as usize;
-            if verify_entry(&self.msgpack, value_offset, value_len, field) {
+            if verify_entry(self.msgpack, value_offset, value_len, field) {
                 let value_end = value_offset + value_len;
                 return Some((value_offset, value_end));
             }
@@ -455,7 +455,7 @@ mod tests {
     fn sidecar_matches_field_index() {
         use crate::msgpack_scan::index::FieldIndex;
 
-        let raw = encode(&json!({"alpha": 100, "beta": "foo", "gamma": 3.14}));
+        let raw = encode(&json!({"alpha": 100, "beta": "foo", "gamma": 3.125}));
         let indexed = build_sidecar(&raw).unwrap();
         let fi = FieldIndex::build(&raw, 0).unwrap();
 

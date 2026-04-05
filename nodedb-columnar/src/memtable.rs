@@ -558,7 +558,7 @@ impl ColumnarMemtable {
     /// columns. Improves compression and enables integer-based GROUP BY /
     /// WHERE evaluation on the resulting segment.
     pub fn drain_optimized(&mut self) -> (ColumnarSchema, Vec<ColumnData>, usize) {
-        self.try_dict_encode_columns(DICT_ENCODE_MAX_CARDINALITY as u32);
+        self.try_dict_encode_columns(DICT_ENCODE_MAX_CARDINALITY);
         self.drain()
     }
 }

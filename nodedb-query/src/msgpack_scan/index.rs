@@ -233,7 +233,7 @@ mod tests {
             (*s >> 33) as u8
         };
 
-        let mut buf = vec![0u8; 128];
+        let mut buf = [0u8; 128];
         for _ in 0..1000 {
             let len = (next(&mut state) as usize % 128) + 1;
             for b in buf[..len].iter_mut() {

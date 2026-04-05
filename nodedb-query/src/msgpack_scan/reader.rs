@@ -873,10 +873,7 @@ mod tests {
         // Build a buffer with 200 levels of fixarray (each containing 1 element)
         // fixarray tag for 1 element = 0x91
         let depth = 200usize;
-        let mut buf = Vec::with_capacity(depth + 1);
-        for _ in 0..depth {
-            buf.push(0x91u8); // fixarray(1) — opens 1-element array
-        }
+        let mut buf = vec![0x91u8; depth]; // fixarray(1) — opens 1-element array
         buf.push(0xc0u8); // nil at the innermost leaf
 
         // skip_value must return None because nesting > MAX_DEPTH
