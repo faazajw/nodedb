@@ -62,6 +62,19 @@ pub enum QueryOp {
         limit: usize,
     },
 
+    /// Sort-merge join: both sides pre-sorted by join key.
+    /// Optimal when both collections have index-ordered scans or
+    /// when the planner sorts both sides before joining.
+    SortMergeJoin {
+        left_collection: String,
+        right_collection: String,
+        on: Vec<(String, String)>,
+        join_type: String,
+        limit: usize,
+        /// If true, both sides are assumed pre-sorted by join key (skip sort phase).
+        pre_sorted: bool,
+    },
+
     /// Multi-facet aggregation: compute facet counts for multiple fields
     /// in a single query, sharing the filter evaluation across all facets.
     FacetCounts {

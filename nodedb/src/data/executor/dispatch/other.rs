@@ -76,6 +76,24 @@ impl CoreLoop {
                 *limit,
             ),
 
+            PhysicalPlan::Query(QueryOp::SortMergeJoin {
+                left_collection,
+                right_collection,
+                on,
+                join_type,
+                limit,
+                pre_sorted,
+            }) => self.execute_sort_merge_join(
+                task,
+                tid,
+                left_collection,
+                right_collection,
+                on,
+                join_type,
+                *limit,
+                *pre_sorted,
+            ),
+
             PhysicalPlan::Query(QueryOp::RecursiveScan {
                 collection,
                 base_filters,
