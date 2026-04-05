@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use futures::stream;
 use pgwire::api::results::{DataRowEncoder, QueryResponse, Response, Tag};
+use sonic_rs;
 
 use crate::bridge::envelope::PhysicalPlan;
 use crate::bridge::physical_plan::{
@@ -156,7 +157,7 @@ fn extract_affected_count(payload: &[u8]) -> Option<u64> {
     if payload.is_empty() {
         return None;
     }
-    let v: serde_json::Value = serde_json::from_slice(payload).ok()?;
+    let v: serde_json::Value = sonic_rs::from_slice(payload).ok()?;
     v.get("affected")
         .or_else(|| v.get("truncated"))
         .or_else(|| v.get("inserted"))
@@ -192,7 +193,7 @@ pub(super) fn payload_to_response(payload: &[u8], kind: PlanKind) -> Response {
                 // a single giant row for large result sets.
                 if matches!(kind, PlanKind::MultiRow)
                     && let Ok(serde_json::Value::Array(items)) =
-                        serde_json::from_str::<serde_json::Value>(&text)
+                        sonic_rs::from_str::<serde_json::Value>(&text)
                 {
                     let row_schema = schema.clone();
                     let rows: Vec<_> = items

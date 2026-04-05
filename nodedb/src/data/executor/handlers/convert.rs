@@ -6,6 +6,8 @@
 //! For `TO document` or `TO kv`: no re-encoding needed — sparse engine
 //! stores raw bytes regardless of type.
 
+use sonic_rs;
+
 use nodedb_types::columnar::{ColumnDef, StrictSchema};
 
 use crate::bridge::envelope::{ErrorCode, Response};
@@ -50,7 +52,7 @@ impl CoreLoop {
                     "target_type": target_type,
                     "collection": collection,
                 });
-                let payload = serde_json::to_vec(&result).unwrap_or_default();
+                let payload = sonic_rs::to_vec(&result).unwrap_or_default();
                 self.response_with_payload(task, payload)
             }
             other => self.response_error(
@@ -139,7 +141,7 @@ impl CoreLoop {
             "target_type": "strict",
             "collection": collection,
         });
-        let payload = serde_json::to_vec(&result).unwrap_or_default();
+        let payload = sonic_rs::to_vec(&result).unwrap_or_default();
         self.response_with_payload(task, payload)
     }
 }

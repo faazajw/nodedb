@@ -27,6 +27,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use sha2::{Digest, Sha256};
+use sonic_rs;
 use tracing::warn;
 
 use super::wire::DeltaPushMsg;
@@ -111,7 +112,7 @@ fn extract_exp_from_token(token: &str) -> Option<u64> {
         return None;
     }
     let payload = base64_url_decode(parts[1])?;
-    let claims: serde_json::Value = serde_json::from_slice(&payload).ok()?;
+    let claims: serde_json::Value = sonic_rs::from_slice(&payload).ok()?;
     claims.get("exp")?.as_u64()
 }
 
@@ -247,7 +248,7 @@ fn delta_to_document_value(delta_bytes: &[u8]) -> serde_json::Value {
         return value;
     }
     // Try raw JSON.
-    if let Ok(value) = serde_json::from_slice::<serde_json::Value>(delta_bytes) {
+    if let Ok(value) = sonic_rs::from_slice::<serde_json::Value>(delta_bytes) {
         return value;
     }
     // Opaque CRDT delta — return empty object (all field predicates pass vacuously).

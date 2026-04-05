@@ -39,30 +39,30 @@ impl CoreLoop {
 
         let result: Result<Vec<u8>, crate::Error> = match algorithm {
             // ── Graphalytics (5 core algorithms) ──
-            GraphAlgorithm::PageRank => algo::pagerank::run(&self.csr, params).to_json(),
-            GraphAlgorithm::Wcc => algo::wcc::run(&self.csr).to_json(),
+            GraphAlgorithm::PageRank => algo::pagerank::run(&self.csr, params).to_msgpack(),
+            GraphAlgorithm::Wcc => algo::wcc::run(&self.csr).to_msgpack(),
             GraphAlgorithm::LabelPropagation => {
-                algo::label_propagation::run(&self.csr, params).to_json()
+                algo::label_propagation::run(&self.csr, params).to_msgpack()
             }
             GraphAlgorithm::Lcc => algo::lcc::run(
                 &self.csr,
                 self.graph_tuning.lcc_high_degree_threshold,
                 self.graph_tuning.lcc_sample_pairs,
             )
-            .to_json(),
+            .to_msgpack(),
             GraphAlgorithm::Sssp => {
-                algo::sssp::run(&self.csr, params).and_then(|batch| batch.to_json())
+                algo::sssp::run(&self.csr, params).and_then(|batch| batch.to_msgpack())
             }
             // ── Centrality suite ──
-            GraphAlgorithm::Betweenness => algo::betweenness::run(&self.csr, params).to_json(),
-            GraphAlgorithm::Closeness => algo::closeness::run(&self.csr).to_json(),
-            GraphAlgorithm::Harmonic => algo::harmonic::run(&self.csr).to_json(),
-            GraphAlgorithm::Degree => algo::degree::run(&self.csr, params).to_json(),
+            GraphAlgorithm::Betweenness => algo::betweenness::run(&self.csr, params).to_msgpack(),
+            GraphAlgorithm::Closeness => algo::closeness::run(&self.csr).to_msgpack(),
+            GraphAlgorithm::Harmonic => algo::harmonic::run(&self.csr).to_msgpack(),
+            GraphAlgorithm::Degree => algo::degree::run(&self.csr, params).to_msgpack(),
             // ── Extended algorithms ──
-            GraphAlgorithm::Louvain => algo::louvain::run(&self.csr, params).to_json(),
-            GraphAlgorithm::Triangles => algo::triangles::run(&self.csr, params).to_json(),
-            GraphAlgorithm::Diameter => algo::diameter::run(&self.csr, params).to_json(),
-            GraphAlgorithm::KCore => algo::kcore::run(&self.csr).to_json(),
+            GraphAlgorithm::Louvain => algo::louvain::run(&self.csr, params).to_msgpack(),
+            GraphAlgorithm::Triangles => algo::triangles::run(&self.csr, params).to_msgpack(),
+            GraphAlgorithm::Diameter => algo::diameter::run(&self.csr, params).to_msgpack(),
+            GraphAlgorithm::KCore => algo::kcore::run(&self.csr).to_msgpack(),
         };
 
         match result {

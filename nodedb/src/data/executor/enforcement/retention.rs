@@ -1,6 +1,8 @@
 //! Retention and legal hold enforcement: reject DELETE operations that
 //! violate data retention policies or active legal holds.
 
+use sonic_rs;
+
 use crate::bridge::envelope::ErrorCode;
 use crate::bridge::physical_plan::EnforcementOptions;
 
@@ -170,9 +172,9 @@ pub fn extract_created_at_secs(doc_bytes: &[u8]) -> Option<u64> {
     let val: serde_json::Value = if is_msgpack {
         nodedb_types::json_from_msgpack(doc_bytes)
             .ok()
-            .or_else(|| serde_json::from_slice(doc_bytes).ok())?
+            .or_else(|| sonic_rs::from_slice(doc_bytes).ok())?
     } else {
-        serde_json::from_slice(doc_bytes).ok()?
+        sonic_rs::from_slice(doc_bytes).ok()?
     };
 
     let obj = val.as_object()?;

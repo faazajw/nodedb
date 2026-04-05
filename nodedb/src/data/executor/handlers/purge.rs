@@ -7,6 +7,7 @@
 //! then in-memory state (vectors, timeseries, KV, CRDT, caches).
 //! Idempotent: safe to re-run after a crash (missing data is a no-op).
 
+use sonic_rs;
 use tracing::{info, warn};
 
 use crate::bridge::envelope::{ErrorCode, Response};
@@ -164,7 +165,7 @@ impl CoreLoop {
             "spatial_indexes_removed": spatial_removed,
         });
 
-        match serde_json::to_vec(&summary) {
+        match sonic_rs::to_vec(&summary) {
             Ok(payload) => self.response_with_payload(task, payload),
             Err(_) => self.response_ok(task),
         }

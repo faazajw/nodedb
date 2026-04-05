@@ -9,6 +9,7 @@
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::IntoResponse;
+use sonic_rs;
 
 use crate::bridge::envelope::{PhysicalPlan, Status};
 use crate::control::security::identity::{required_permission, role_grants_permission};
@@ -198,7 +199,7 @@ fn decode_payload_to_json(payload: &[u8]) -> Result<serde_json::Value, ()> {
     }
 
     // Try JSON passthrough.
-    if let Ok(val) = serde_json::from_slice::<serde_json::Value>(payload) {
+    if let Ok(val) = sonic_rs::from_slice::<serde_json::Value>(payload) {
         return Ok(val);
     }
 
@@ -308,7 +309,7 @@ pub async fn query_ndjson(
                     crate::data::executor::response_codec::decode_payload_to_json(&resp.payload);
                 // Try to parse as array and emit each element as a line.
                 if let Ok(serde_json::Value::Array(items)) =
-                    serde_json::from_str::<serde_json::Value>(&json_str)
+                    sonic_rs::from_str::<serde_json::Value>(&json_str)
                 {
                     for item in &items {
                         ndjson.push_str(&item.to_string());

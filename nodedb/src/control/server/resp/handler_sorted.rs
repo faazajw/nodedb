@@ -5,6 +5,8 @@
 //! These commands operate on a sorted index (created via CREATE SORTED INDEX).
 //! The sorted index name is the RESP session's current collection (SELECT db).
 
+use sonic_rs;
+
 use crate::bridge::envelope::{PhysicalPlan, Status};
 use crate::bridge::physical_plan::KvOp;
 use crate::control::state::SharedState;
@@ -159,7 +161,7 @@ pub(super) async fn handle_zrange(
     match dispatch_kv(state, session, plan).await {
         Ok(resp) if resp.status == Status::Ok => {
             let rows: Vec<serde_json::Value> =
-                serde_json::from_slice(&resp.payload).unwrap_or_default();
+                sonic_rs::from_slice(&resp.payload).unwrap_or_default();
             let total = rows.len() as i64;
 
             let actual_start = if start < 0 {
@@ -227,7 +229,7 @@ pub(super) async fn handle_zscore(
         Ok(resp) if resp.status == Status::Ok => {
             let payload_text =
                 crate::data::executor::response_codec::decode_payload_to_json(&resp.payload);
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&payload_text)
+            if let Ok(json) = sonic_rs::from_str::<serde_json::Value>(&payload_text)
                 && let Some(serde_json::Value::String(score)) = json.get("score")
             {
                 if score == "null" {

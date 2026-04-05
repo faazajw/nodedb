@@ -4,6 +4,7 @@
 //! Fast: only scans recent rows, not full history.
 
 use pgwire::error::PgWireResult;
+use sonic_rs;
 
 use crate::bridge::envelope::PhysicalPlan;
 use crate::control::security::identity::AuthenticatedIdentity;
@@ -50,7 +51,7 @@ pub async fn balance_as_of(
         .map_err(|e| sqlstate_error("XX000", &format!("point get failed: {e}")))?;
 
     let doc_json = crate::data::executor::response_codec::decode_payload_to_json(&get_resp.payload);
-    let doc: serde_json::Value = serde_json::from_str(&doc_json).unwrap_or(serde_json::Value::Null);
+    let doc: serde_json::Value = sonic_rs::from_str(&doc_json).unwrap_or(serde_json::Value::Null);
 
     let current_balance = doc
         .get(&column)
@@ -95,7 +96,7 @@ pub async fn balance_as_of(
 
     let source_json =
         crate::data::executor::response_codec::decode_payload_to_json(&source_resp.payload);
-    let source_docs: Vec<serde_json::Value> = serde_json::from_str(&source_json)
+    let source_docs: Vec<serde_json::Value> = sonic_rs::from_str(&source_json)
         .map_err(|e| sqlstate_error("22P02", &format!("invalid JSON in source scan: {e}")))?;
 
     // Sum value_expr for source rows where join_column = key AND created_at > as_of.
@@ -112,7 +113,7 @@ pub async fn balance_as_of(
         }
 
         let created_at = crate::data::executor::enforcement::retention::extract_created_at_secs(
-            &serde_json::to_vec(src_doc)
+            &sonic_rs::to_vec(src_doc)
                 .map_err(|e| sqlstate_error("XX000", &format!("serialization failed: {e}")))?,
         );
         if let Some(ts) = created_at {

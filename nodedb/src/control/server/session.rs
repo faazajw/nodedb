@@ -1,3 +1,4 @@
+use sonic_rs;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -180,7 +181,7 @@ impl Session {
     ) -> crate::Result<Vec<u8>> {
         // Parse the JSON request body.
         let body: serde_json::Value =
-            serde_json::from_slice(payload).map_err(|e| crate::Error::BadRequest {
+            sonic_rs::from_slice(payload).map_err(|e| crate::Error::BadRequest {
                 detail: format!("invalid JSON: {e}"),
             })?;
 
@@ -367,7 +368,7 @@ impl Session {
                     });
                 }
                 let policy_json =
-                    serde_json::to_string(policy).map_err(|e| crate::Error::BadRequest {
+                    sonic_rs::to_string(policy).map_err(|e| crate::Error::BadRequest {
                         detail: format!("invalid policy JSON: {e}"),
                     })?;
                 PhysicalPlan::Crdt(CrdtOp::SetPolicy {

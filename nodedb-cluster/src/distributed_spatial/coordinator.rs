@@ -5,6 +5,7 @@
 
 use super::merge::{ShardSpatialResult, SpatialResultMerger};
 use crate::wire::{VShardEnvelope, VShardMessageType};
+use sonic_rs;
 
 /// Scatter-gather coordinator for distributed spatial queries.
 pub struct SpatialScatterGather {
@@ -40,13 +41,13 @@ impl SpatialScatterGather {
             "collection": collection,
             "field": field,
             "predicate": predicate,
-            "query_geometry": serde_json::from_slice::<serde_json::Value>(query_geometry_json)
+            "query_geometry": sonic_rs::from_slice::<serde_json::Value>(query_geometry_json)
                 .unwrap_or(serde_json::Value::Null),
             "distance_meters": distance_meters,
             "limit": limit,
         });
         // Safety: json!() macro output is always serializable.
-        let payload_bytes = serde_json::to_vec(&payload).expect("json! is always serializable");
+        let payload_bytes = sonic_rs::to_vec(&payload).expect("json! is always serializable");
 
         self.shard_ids
             .iter()

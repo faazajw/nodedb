@@ -3,6 +3,7 @@
 //! Reads a file from the local filesystem and inserts documents into a collection.
 //! Each line/record becomes a document. The first column or "id" field is the doc ID.
 
+use sonic_rs;
 use std::io::BufRead;
 use std::time::Duration;
 
@@ -70,7 +71,7 @@ pub async fn copy_from(
                     continue;
                 }
 
-                let doc: serde_json::Value = serde_json::from_str(line).map_err(|e| {
+                let doc: serde_json::Value = sonic_rs::from_str(line).map_err(|e| {
                     sqlstate_error("22P02", &format!("invalid JSON at line {}: {e}", count + 1))
                 })?;
 
@@ -84,7 +85,7 @@ pub async fn copy_from(
                     })
                     .unwrap_or_else(nodedb_types::id_gen::uuid_v7);
 
-                let value = serde_json::to_vec(&doc).unwrap_or_default();
+                let value = sonic_rs::to_vec(&doc).unwrap_or_default();
 
                 let plan = PhysicalPlan::Document(DocumentOp::PointPut {
                     collection: collection.to_string(),
@@ -161,7 +162,7 @@ pub async fn copy_from(
                     })
                     .unwrap_or_else(nodedb_types::id_gen::uuid_v7);
 
-                let value = serde_json::to_vec(&obj).unwrap_or_default();
+                let value = sonic_rs::to_vec(&obj).unwrap_or_default();
 
                 let plan = PhysicalPlan::Document(DocumentOp::PointPut {
                     collection: collection.to_string(),

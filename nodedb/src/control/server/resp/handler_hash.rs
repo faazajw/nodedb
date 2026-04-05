@@ -1,5 +1,7 @@
 //! Hash field RESP command handlers: HGET, HMGET, HSET, FLUSHDB.
 
+use sonic_rs;
+
 use crate::bridge::envelope::{PhysicalPlan, Status};
 use crate::bridge::physical_plan::KvOp;
 use crate::control::state::SharedState;
@@ -29,7 +31,7 @@ pub(super) async fn handle_hget(
 
     match dispatch_kv(state, session, plan).await {
         Ok(resp) if resp.status == Status::Ok => {
-            let json: serde_json::Value = serde_json::from_slice(&resp.payload).unwrap_or_default();
+            let json: serde_json::Value = sonic_rs::from_slice(&resp.payload).unwrap_or_default();
             match json.get(&field) {
                 Some(serde_json::Value::Null) | None => RespValue::nil(),
                 Some(serde_json::Value::String(s)) => RespValue::bulk_str(s),
@@ -64,7 +66,7 @@ pub(super) async fn handle_hmget(
 
     match dispatch_kv(state, session, plan).await {
         Ok(resp) if resp.status == Status::Ok => {
-            let json: serde_json::Value = serde_json::from_slice(&resp.payload).unwrap_or_default();
+            let json: serde_json::Value = sonic_rs::from_slice(&resp.payload).unwrap_or_default();
             let items: Vec<RespValue> = fields
                 .iter()
                 .map(|f| match json.get(f) {
@@ -96,7 +98,7 @@ pub(super) async fn handle_hset(
             let field = std::str::from_utf8(&pair[0]).ok()?.to_string();
             let json_value =
                 serde_json::Value::String(String::from_utf8_lossy(&pair[1]).into_owned());
-            Some((field, serde_json::to_vec(&json_value).ok()?))
+            Some((field, sonic_rs::to_vec(&json_value).ok()?))
         })
         .collect();
 

@@ -11,6 +11,8 @@
 
 use std::collections::HashSet;
 
+use sonic_rs;
+
 use crate::bridge::envelope::{PhysicalPlan, Response};
 use crate::bridge::physical_plan::GraphOp;
 use crate::control::scatter_gather;
@@ -92,7 +94,7 @@ pub async fn cross_core_bfs_with_options(
             if !resp.payload.is_empty() {
                 let json_text =
                     crate::data::executor::response_codec::decode_payload_to_json(&resp.payload);
-                if let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(&json_text) {
+                if let Ok(arr) = sonic_rs::from_str::<Vec<serde_json::Value>>(&json_text) {
                     for item in arr {
                         if let Some(neighbor) = item.get("node").and_then(|v| v.as_str()) {
                             local_hop_results.push(neighbor.to_string());

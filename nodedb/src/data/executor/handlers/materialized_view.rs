@@ -4,6 +4,7 @@
 //! the target (view) collection. Removes orphaned target docs that
 //! no longer exist in the source.
 
+use sonic_rs;
 use std::collections::HashSet;
 
 use crate::bridge::envelope::{ErrorCode, Response};
@@ -93,7 +94,7 @@ impl CoreLoop {
             "source": source_collection,
             "view": view_name,
         });
-        let payload = serde_json::to_vec(&result).unwrap_or_default();
+        let payload = sonic_rs::to_vec(&result).unwrap_or_default();
         self.response_with_payload(task, payload)
     }
 }

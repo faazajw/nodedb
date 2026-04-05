@@ -1,5 +1,7 @@
 //! Shared parsing helpers used across collection DDL sub-modules.
 
+use sonic_rs;
+
 /// Reconstruct uppercase SQL from split parts for keyword detection.
 pub(super) fn sql_upper_from_parts(parts: &[&str]) -> String {
     parts.join(" ").to_uppercase()
@@ -203,7 +205,7 @@ pub(super) fn parse_origin_column_def(
                     let (parsed_expr, deps) =
                         nodedb_query::expr_parse::parse_generated_expr(expr_text)
                             .map_err(|e| format!("invalid GENERATED expression: {e}"))?;
-                    let expr_json = serde_json::to_string(&parsed_expr)
+                    let expr_json = sonic_rs::to_string(&parsed_expr)
                         .map_err(|e| format!("failed to serialize expression: {e}"))?;
                     col.generated_expr = Some(expr_json);
                     col.generated_deps = deps;

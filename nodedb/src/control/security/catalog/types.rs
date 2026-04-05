@@ -5,6 +5,7 @@
 //! SystemCatalog struct is in `system_catalog.rs`.
 
 use redb::TableDefinition;
+use sonic_rs;
 
 // Re-export types from split modules so internal `use super::types::*` still works.
 pub use super::auth_types::*;
@@ -290,7 +291,7 @@ impl StoredCollection {
     pub fn get_timeseries_config(&self) -> Option<serde_json::Value> {
         self.timeseries_config
             .as_ref()
-            .and_then(|s| serde_json::from_str(s).ok())
+            .and_then(|s| sonic_rs::from_str(s).ok())
     }
 }
 

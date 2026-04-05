@@ -4,6 +4,8 @@
 //! the document, looks up the period status in the reference collection, and
 //! rejects the write if the status is not in the allowed set.
 
+use sonic_rs;
+
 use crate::bridge::envelope::ErrorCode;
 use crate::bridge::physical_plan::PeriodLockConfig;
 use crate::engine::sparse::btree::SparseEngine;
@@ -86,7 +88,7 @@ fn extract_field_string(bytes: &[u8], field_name: &str) -> Option<String> {
     if is_msgpack && let Ok(val) = nodedb_types::json_from_msgpack(bytes) {
         return val.get(field_name)?.as_str().map(String::from);
     }
-    if let Ok(val) = serde_json::from_slice::<serde_json::Value>(bytes) {
+    if let Ok(val) = sonic_rs::from_slice::<serde_json::Value>(bytes) {
         return val.get(field_name)?.as_str().map(String::from);
     }
     None

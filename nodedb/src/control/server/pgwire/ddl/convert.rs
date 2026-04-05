@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use pgwire::api::results::Response;
 use pgwire::error::PgWireResult;
+use sonic_rs;
 
 use crate::bridge::envelope::PhysicalPlan;
 use crate::bridge::physical_plan::MetaOp;
@@ -192,7 +193,7 @@ fn parse_column_defs_to_json(s: &str) -> PgWireResult<String> {
         return Err(sqlstate_error("42601", "at least one column required"));
     }
 
-    serde_json::to_string(&columns)
+    sonic_rs::to_string(&columns)
         .map_err(|e| sqlstate_error("XX000", &format!("schema serialization: {e}")))
 }
 

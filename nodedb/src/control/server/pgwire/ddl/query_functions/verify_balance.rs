@@ -8,6 +8,7 @@ use std::sync::Arc;
 use futures::stream;
 use pgwire::api::results::{DataRowEncoder, QueryResponse, Response};
 use pgwire::error::PgWireResult;
+use sonic_rs;
 
 use crate::bridge::envelope::PhysicalPlan;
 use crate::control::security::identity::AuthenticatedIdentity;
@@ -78,7 +79,7 @@ pub async fn verify_balance(
             .map_err(|e| sqlstate_error("XX000", &format!("target scan failed: {e}")))?;
     let target_json =
         crate::data::executor::response_codec::decode_payload_to_json(&target_resp.payload);
-    let target_docs: Vec<serde_json::Value> = serde_json::from_str(&target_json)
+    let target_docs: Vec<serde_json::Value> = sonic_rs::from_str(&target_json)
         .map_err(|e| sqlstate_error("22P02", &format!("invalid JSON in target scan: {e}")))?;
 
     // Scan all source rows.
@@ -100,7 +101,7 @@ pub async fn verify_balance(
             .map_err(|e| sqlstate_error("XX000", &format!("source scan failed: {e}")))?;
     let source_json =
         crate::data::executor::response_codec::decode_payload_to_json(&source_resp.payload);
-    let source_docs: Vec<serde_json::Value> = serde_json::from_str(&source_json)
+    let source_docs: Vec<serde_json::Value> = sonic_rs::from_str(&source_json)
         .map_err(|e| sqlstate_error("22P02", &format!("invalid JSON in source scan: {e}")))?;
 
     // For each target row, recompute balance from source rows.

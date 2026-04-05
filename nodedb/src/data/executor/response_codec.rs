@@ -16,6 +16,7 @@
 //! would be 5-10x but at the cost of schema rigidity and significant type
 //! boilerplate across 13 handler files.
 
+use sonic_rs;
 use std::sync::Arc;
 
 use datafusion::arrow::array::{ArrayRef, Float64Array, Int64Array, StringArray};
@@ -222,7 +223,7 @@ pub fn decode_payload_to_json(payload: &[u8]) -> String {
 
     // Try MessagePack → JSON.
     match nodedb_types::json_from_msgpack(payload) {
-        Ok(value) => serde_json::to_string(&value)
+        Ok(value) => sonic_rs::to_string(&value)
             .unwrap_or_else(|_| String::from_utf8_lossy(payload).into_owned()),
         Err(_) => String::from_utf8_lossy(payload).into_owned(),
     }

@@ -6,6 +6,8 @@
 //! Pattern: `WHERE ST_DWithin(geometry_column, geo_point(-73.98, 40.75), 500)`
 //! becomes a SpatialScan with predicate=DWithin, query_geometry=Point, distance=500.
 
+use sonic_rs;
+
 use crate::bridge::physical_plan::SpatialPredicate;
 
 /// A recognized spatial predicate extracted from a WHERE clause.
@@ -45,7 +47,7 @@ pub fn try_extract_spatial_predicate(
             }
             let (field, geom) = extract_field_and_geometry(&args[0], &args[1])?;
             let distance = args[2].as_f64().unwrap_or(0.0);
-            let query_geometry = serde_json::to_vec(&geom).ok()?;
+            let query_geometry = sonic_rs::to_vec(&geom).ok()?;
             Some(ExtractedSpatialFilter {
                 field,
                 predicate: SpatialPredicate::DWithin,
@@ -60,7 +62,7 @@ pub fn try_extract_spatial_predicate(
             }
             // The geometry arg is the container (first arg for contains).
             let (field, geom) = extract_field_and_geometry_contains(&args[0], &args[1])?;
-            let query_geometry = serde_json::to_vec(&geom).ok()?;
+            let query_geometry = sonic_rs::to_vec(&geom).ok()?;
             Some(ExtractedSpatialFilter {
                 field,
                 predicate: SpatialPredicate::Contains,
@@ -73,7 +75,7 @@ pub fn try_extract_spatial_predicate(
                 return None;
             }
             let (field, geom) = extract_field_and_geometry(&args[0], &args[1])?;
-            let query_geometry = serde_json::to_vec(&geom).ok()?;
+            let query_geometry = sonic_rs::to_vec(&geom).ok()?;
             Some(ExtractedSpatialFilter {
                 field,
                 predicate: SpatialPredicate::Intersects,
@@ -87,7 +89,7 @@ pub fn try_extract_spatial_predicate(
                 return None;
             }
             let (field, geom) = extract_field_and_geometry(&args[0], &args[1])?;
-            let query_geometry = serde_json::to_vec(&geom).ok()?;
+            let query_geometry = sonic_rs::to_vec(&geom).ok()?;
             Some(ExtractedSpatialFilter {
                 field,
                 predicate: SpatialPredicate::Within,

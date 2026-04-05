@@ -9,6 +9,9 @@
 //! Each batch is wrapped in `begin_transaction` / `commit_transaction`.
 
 #[cfg(feature = "kafka")]
+use sonic_rs;
+
+#[cfg(feature = "kafka")]
 use std::sync::Arc;
 #[cfg(feature = "kafka")]
 use std::time::Duration;
@@ -202,13 +205,13 @@ fn serialize_event(
 ) -> Result<Vec<u8>, String> {
     match format {
         super::config::KafkaFormat::Json => {
-            serde_json::to_vec(event).map_err(|e| format!("JSON serialize: {e}"))
+            sonic_rs::to_vec(event).map_err(|e| format!("JSON serialize: {e}"))
         }
         super::config::KafkaFormat::Avro => {
             // Avro serialization uses the same JSON representation for now.
             // Full Avro schema registry integration is a future enhancement —
             // the config field and wire path are ready for it.
-            serde_json::to_vec(event).map_err(|e| format!("Avro (JSON fallback) serialize: {e}"))
+            sonic_rs::to_vec(event).map_err(|e| format!("Avro (JSON fallback) serialize: {e}"))
         }
     }
 }

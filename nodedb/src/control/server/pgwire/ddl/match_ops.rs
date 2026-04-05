@@ -6,6 +6,7 @@ use std::sync::Arc;
 use futures::stream;
 use pgwire::api::results::{DataRowEncoder, QueryResponse, Response};
 use pgwire::error::PgWireResult;
+use sonic_rs;
 
 use crate::bridge::physical_plan::GraphOp;
 use crate::control::security::identity::AuthenticatedIdentity;
@@ -75,7 +76,7 @@ fn match_payload_to_response(
     }
 
     let json_text = response_codec::decode_payload_to_json(payload);
-    let rows: Vec<serde_json::Value> = serde_json::from_str(&json_text)
+    let rows: Vec<serde_json::Value> = sonic_rs::from_str(&json_text)
         .map_err(|e| sqlstate_error("XX000", &format!("invalid match result JSON: {e}")))?;
 
     let mut pgwire_rows = Vec::with_capacity(rows.len());

@@ -8,6 +8,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use sonic_rs;
+
 use tokio::sync::watch;
 use tracing::{debug, info, trace, warn};
 
@@ -185,7 +187,7 @@ async fn deliver_event(
     event: &CdcEvent,
     stream_name: &str,
 ) -> bool {
-    let body = match serde_json::to_vec(event) {
+    let body = match sonic_rs::to_vec(event) {
         Ok(b) => b,
         Err(e) => {
             tracing::warn!(

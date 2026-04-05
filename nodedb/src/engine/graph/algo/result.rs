@@ -10,6 +10,8 @@ use datafusion::arrow::array::{ArrayRef, Float64Array, Int64Array, StringArray};
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::arrow::record_batch::RecordBatch;
 
+use sonic_rs;
+
 use super::params::{AlgoColumnType, GraphAlgorithm};
 
 /// A batch of algorithm results ready for Arrow/DataFusion consumption.
@@ -144,9 +146,23 @@ impl AlgoResultBatch {
         })
     }
 
+    /// Serialize the result batch as MessagePack bytes.
+    ///
+    /// Writes directly to MessagePack without building intermediate
+    /// `serde_json::Value` objects. The Control Plane converts to JSON
+    /// via `decode_payload_to_json()` for pgwire/REST responses.
+    ///
+    /// Format: msgpack array of maps, e.g. `[{"node_id": "alice", "rank": 0.42}, ...]`.
+    pub fn to_msgpack(&self) -> Result<Vec<u8>, crate::Error> {
+        zerompk::to_msgpack_vec(self).map_err(|e| crate::Error::Internal {
+            detail: format!("msgpack serialization: {e}"),
+        })
+    }
+
     /// Serialize the result batch as JSON (for pgwire/REST response).
     ///
     /// Returns a JSON array of objects: `[{"node_id": "alice", "rank": 0.42}, ...]`.
+    /// Used by tests; production code uses `to_msgpack()` + `decode_payload_to_json()`.
     pub fn to_json(&self) -> Result<Vec<u8>, crate::Error> {
         let schema = self.algorithm.result_schema();
         let mut rows = Vec::with_capacity(self.row_count);
@@ -171,9 +187,40 @@ impl AlgoResultBatch {
             rows.push(serde_json::Value::Object(obj));
         }
 
-        serde_json::to_vec(&rows).map_err(|e| crate::Error::Internal {
+        sonic_rs::to_vec(&rows).map_err(|e| crate::Error::Internal {
             detail: format!("json serialization: {e}"),
         })
+    }
+}
+
+impl zerompk::ToMessagePack for AlgoResultBatch {
+    fn write<W: zerompk::Write>(&self, writer: &mut W) -> zerompk::Result<()> {
+        let schema = self.algorithm.result_schema();
+        let num_cols = schema.len();
+
+        writer.write_array_len(self.row_count)?;
+
+        for row_idx in 0..self.row_count {
+            writer.write_map_len(num_cols)?;
+
+            for (col_idx, &(col_name, _)) in schema.iter().enumerate() {
+                let (col_type, vec_idx) = self.column_map[col_idx];
+                writer.write_string(col_name)?;
+                match col_type {
+                    AlgoColumnType::Text => {
+                        writer.write_string(&self.text_columns[vec_idx][row_idx])?;
+                    }
+                    AlgoColumnType::Float64 => {
+                        writer.write_f64(self.f64_columns[vec_idx][row_idx])?;
+                    }
+                    AlgoColumnType::Int64 => {
+                        writer.write_i64(self.i64_columns[vec_idx][row_idx])?;
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 

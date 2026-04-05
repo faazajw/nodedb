@@ -1,5 +1,6 @@
 //! HashJoin and NestedLoopJoin execution handlers.
 
+use sonic_rs;
 use tracing::debug;
 
 use crate::bridge::envelope::{ErrorCode, Response};
@@ -48,7 +49,7 @@ fn extract_join_key(doc: &serde_json::Value, keys: &[&str], doc_id: &str) -> Str
             .iter()
             .map(|k| doc.get(*k).cloned().unwrap_or(serde_json::Value::Null))
             .collect();
-        serde_json::to_string(&parts).unwrap_or_else(|_| "[]".into())
+        sonic_rs::to_string(&parts).unwrap_or_else(|_| "[]".into())
     }
 }
 

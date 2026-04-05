@@ -1,5 +1,7 @@
 //! DML plan conversion for plain and spatial columnar collections.
 
+use sonic_rs;
+
 use crate::bridge::envelope::PhysicalPlan;
 use crate::bridge::physical_plan::ColumnarOp;
 use crate::control::planner::physical::PhysicalTask;
@@ -41,7 +43,7 @@ impl PlanConverter {
                         nodedb_types::json_from_msgpack(value_bytes).unwrap_or_default();
                     json_rows.push(row);
                 }
-                let payload = serde_json::to_vec(&json_rows).unwrap_or_default();
+                let payload = sonic_rs::to_vec(&json_rows).unwrap_or_default();
 
                 Ok(vec![PhysicalTask {
                     tenant_id,

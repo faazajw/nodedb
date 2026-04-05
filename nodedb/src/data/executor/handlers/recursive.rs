@@ -4,6 +4,7 @@
 //! repeatedly executes the recursive query until no new rows are
 //! produced (fixed point) or max_iterations is reached.
 
+use sonic_rs;
 use std::collections::HashSet;
 
 use crate::bridge::envelope::{ErrorCode, Response};
@@ -89,7 +90,7 @@ impl CoreLoop {
             };
             if base_preds.iter().all(|f| f.matches(&doc)) {
                 let key = if distinct {
-                    serde_json::to_string(&doc).unwrap_or_default()
+                    sonic_rs::to_string(&doc).unwrap_or_default()
                 } else {
                     String::new()
                 };
@@ -125,7 +126,7 @@ impl CoreLoop {
                 };
                 if recursive_preds.iter().all(|f| f.matches(&doc)) {
                     let key = if distinct {
-                        serde_json::to_string(&doc).unwrap_or_default()
+                        sonic_rs::to_string(&doc).unwrap_or_default()
                     } else {
                         doc_id.clone()
                     };

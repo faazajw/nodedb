@@ -6,6 +6,7 @@
 
 use pgwire::api::results::{Response, Tag};
 use pgwire::error::PgWireResult;
+use sonic_rs;
 
 use crate::bridge::physical_plan::{DocumentOp, VectorOp};
 use crate::control::security::identity::AuthenticatedIdentity;
@@ -135,7 +136,7 @@ fn parse_write_statement(
         }
     }
 
-    let value_bytes = serde_json::to_vec(&fields).unwrap_or_default();
+    let value_bytes = sonic_rs::to_vec(&fields).unwrap_or_default();
     let has_returning = upper.contains("RETURNING");
 
     Some(Ok(ParsedInsert {
@@ -161,8 +162,7 @@ fn returning_response(
         "id".to_string(),
         serde_json::Value::String(doc_id.to_string()),
     );
-    let json_str =
-        serde_json::to_string(&serde_json::Value::Object(result_doc)).unwrap_or_default();
+    let json_str = sonic_rs::to_string(&serde_json::Value::Object(result_doc)).unwrap_or_default();
     let schema = std::sync::Arc::new(vec![super::super::types::text_field("result")]);
     let mut encoder = DataRowEncoder::new(schema.clone());
     let _ = encoder.encode_field(&json_str);

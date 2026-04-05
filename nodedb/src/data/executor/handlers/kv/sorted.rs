@@ -4,6 +4,7 @@ use tracing::debug;
 
 use crate::bridge::envelope::{ErrorCode, Response};
 use crate::data::executor::core_loop::CoreLoop;
+use crate::data::executor::response_codec;
 use crate::data::executor::task::ExecutionTask;
 use crate::engine::kv::current_ms;
 use crate::engine::kv::sorted_index::key::{SortColumn, SortDirection, SortKeyEncoder};
@@ -78,13 +79,14 @@ impl CoreLoop {
 
         let backfilled = self.kv_engine.register_sorted_index(tid, collection, def);
 
-        let payload = serde_json::json!({
+        let result = serde_json::json!({
             "index": index_name,
             "backfilled": backfilled,
-        })
-        .to_string()
-        .into_bytes();
-        self.response_with_payload(task, payload)
+        });
+        match response_codec::encode_json(&result) {
+            Ok(payload) => self.response_with_payload(task, payload),
+            Err(e) => self.response_error(task, e),
+        }
     }
 
     pub(in crate::data::executor) fn execute_kv_drop_sorted_index(
@@ -96,10 +98,11 @@ impl CoreLoop {
         debug!(core = self.core_id, %index_name, "kv drop sorted index");
 
         if self.kv_engine.drop_sorted_index(tid, index_name) {
-            let payload = serde_json::json!({ "dropped": index_name })
-                .to_string()
-                .into_bytes();
-            self.response_with_payload(task, payload)
+            let result = serde_json::json!({ "dropped": index_name });
+            match response_codec::encode_json(&result) {
+                Ok(payload) => self.response_with_payload(task, payload),
+                Err(e) => self.response_error(task, e),
+            }
         } else {
             self.response_error(task, ErrorCode::NotFound)
         }
@@ -119,14 +122,14 @@ impl CoreLoop {
             .kv_engine
             .sorted_index_rank(tid, index_name, primary_key, now_ms)
         {
-            Some(rank) => {
-                let payload = serde_json::json!({ "rank": rank }).to_string().into_bytes();
-                self.response_with_payload(task, payload)
-            }
-            None => {
-                let payload = serde_json::json!({ "rank": null }).to_string().into_bytes();
-                self.response_with_payload(task, payload)
-            }
+            Some(rank) => match response_codec::encode_json(&serde_json::json!({ "rank": rank })) {
+                Ok(payload) => self.response_with_payload(task, payload),
+                Err(e) => self.response_error(task, e),
+            },
+            None => match response_codec::encode_json(&serde_json::json!({ "rank": null })) {
+                Ok(payload) => self.response_with_payload(task, payload),
+                Err(e) => self.response_error(task, e),
+            },
         }
     }
 
@@ -154,8 +157,10 @@ impl CoreLoop {
                         })
                     })
                     .collect();
-                let payload = serde_json::to_vec(&rows).unwrap_or_default();
-                self.response_with_payload(task, payload)
+                match response_codec::encode_json_vec(&rows) {
+                    Ok(payload) => self.response_with_payload(task, payload),
+                    Err(e) => self.response_error(task, e),
+                }
             }
             None => self.response_error(task, ErrorCode::NotFound),
         }
@@ -186,8 +191,10 @@ impl CoreLoop {
                         })
                     })
                     .collect();
-                let payload = serde_json::to_vec(&rows).unwrap_or_default();
-                self.response_with_payload(task, payload)
+                match response_codec::encode_json_vec(&rows) {
+                    Ok(payload) => self.response_with_payload(task, payload),
+                    Err(e) => self.response_error(task, e),
+                }
             }
             None => self.response_error(task, ErrorCode::NotFound),
         }
@@ -203,12 +210,10 @@ impl CoreLoop {
         let now_ms = current_ms();
 
         match self.kv_engine.sorted_index_count(tid, index_name, now_ms) {
-            Some(count) => {
-                let payload = serde_json::json!({ "count": count })
-                    .to_string()
-                    .into_bytes();
-                self.response_with_payload(task, payload)
-            }
+            Some(count) => match response_codec::encode_count("count", count as usize) {
+                Ok(payload) => self.response_with_payload(task, payload),
+                Err(e) => self.response_error(task, e),
+            },
             None => self.response_error(task, ErrorCode::NotFound),
         }
     }
@@ -229,15 +234,15 @@ impl CoreLoop {
             Some(sort_key) => {
                 let b64 =
                     base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &sort_key);
-                let payload = serde_json::json!({ "score": b64 }).to_string().into_bytes();
-                self.response_with_payload(task, payload)
+                match response_codec::encode_json(&serde_json::json!({ "score": b64 })) {
+                    Ok(payload) => self.response_with_payload(task, payload),
+                    Err(e) => self.response_error(task, e),
+                }
             }
-            None => {
-                let payload = serde_json::json!({ "score": null })
-                    .to_string()
-                    .into_bytes();
-                self.response_with_payload(task, payload)
-            }
+            None => match response_codec::encode_json(&serde_json::json!({ "score": null })) {
+                Ok(payload) => self.response_with_payload(task, payload),
+                Err(e) => self.response_error(task, e),
+            },
         }
     }
 }

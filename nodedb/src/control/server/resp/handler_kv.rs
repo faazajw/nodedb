@@ -1,5 +1,7 @@
 //! Core KV RESP command handlers: GET, SET, DEL, EXISTS, MGET, MSET, INCR, DECR, GETSET.
 
+use sonic_rs;
+
 use crate::bridge::envelope::{PhysicalPlan, Status};
 use crate::bridge::physical_plan::KvOp;
 use crate::control::state::SharedState;
@@ -187,7 +189,7 @@ pub(super) async fn handle_mget(
     match dispatch_kv(state, session, plan).await {
         Ok(resp) if resp.status == Status::Ok => {
             let values: Vec<serde_json::Value> =
-                serde_json::from_slice(&resp.payload).unwrap_or_default();
+                sonic_rs::from_slice(&resp.payload).unwrap_or_default();
             let items: Vec<RespValue> = values
                 .into_iter()
                 .map(|v| match v {
@@ -362,7 +364,7 @@ pub(super) async fn handle_incrbyfloat(
             // Return the new value as a bulk string (Redis convention).
             let payload_text =
                 crate::data::executor::response_codec::decode_payload_to_json(&resp.payload);
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&payload_text)
+            if let Ok(json) = sonic_rs::from_str::<serde_json::Value>(&payload_text)
                 && let Some(v) = json.get("value")
             {
                 return RespValue::bulk(v.to_string().into_bytes());
@@ -396,7 +398,7 @@ pub(super) async fn handle_getset(
         Ok(resp) => {
             let payload_text =
                 crate::data::executor::response_codec::decode_payload_to_json(&resp.payload);
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&payload_text)
+            if let Ok(json) = sonic_rs::from_str::<serde_json::Value>(&payload_text)
                 && let Some(serde_json::Value::String(b64)) = json.get("old_value")
                 && let Ok(data) =
                     base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64)

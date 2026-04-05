@@ -11,6 +11,8 @@
 //! Aggregation uses typed `AggAccum` accumulators merged across all data
 //! sources. JSON is constructed once for the final response.
 
+use sonic_rs;
+
 use crate::bridge::envelope::{ErrorCode, Payload, Response, Status};
 use crate::data::executor::core_loop::CoreLoop;
 use crate::data::executor::task::ExecutionTask;
@@ -463,7 +465,7 @@ impl CoreLoop {
             }
         }
 
-        let json = serde_json::to_vec(&results).unwrap_or_default();
+        let json = sonic_rs::to_vec(&results).unwrap_or_default();
         self.response_with_payload(task, json)
     }
 
@@ -700,7 +702,7 @@ impl CoreLoop {
                     "collection": collection,
                     "dedup_skipped": true,
                 });
-                let json = serde_json::to_vec(&result).unwrap_or_default();
+                let json = sonic_rs::to_vec(&result).unwrap_or_default();
                 return Response {
                     request_id: task.request.request_id,
                     status: Status::Ok,
@@ -887,7 +889,7 @@ impl CoreLoop {
                             "collection": collection,
                         })
                     };
-                let json = serde_json::to_vec(&result).unwrap_or_default();
+                let json = sonic_rs::to_vec(&result).unwrap_or_default();
                 Response {
                     request_id: task.request.request_id,
                     status: Status::Ok,

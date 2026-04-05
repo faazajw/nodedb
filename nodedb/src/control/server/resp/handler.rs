@@ -1,5 +1,7 @@
 //! RESP command handlers: translate Redis commands into KvOp dispatches.
 
+use sonic_rs;
+
 use crate::bridge::envelope::{PhysicalPlan, Status};
 use crate::bridge::physical_plan::KvOp;
 use crate::control::server::dispatch_utils;
@@ -296,7 +298,7 @@ async fn handle_scan(cmd: &RespCommand, session: &RespSession, state: &SharedSta
 
     match dispatch_kv(state, session, plan).await {
         Ok(resp) if resp.status == Status::Ok => {
-            let json: serde_json::Value = serde_json::from_slice(&resp.payload).unwrap_or_default();
+            let json: serde_json::Value = sonic_rs::from_slice(&resp.payload).unwrap_or_default();
 
             let next_cursor = json
                 .get("cursor")
@@ -344,7 +346,7 @@ async fn handle_keys(cmd: &RespCommand, session: &RespSession, state: &SharedSta
 
     match dispatch_kv(state, session, plan).await {
         Ok(resp) if resp.status == Status::Ok => {
-            let json: serde_json::Value = serde_json::from_slice(&resp.payload).unwrap_or_default();
+            let json: serde_json::Value = sonic_rs::from_slice(&resp.payload).unwrap_or_default();
             let entries = json
                 .get("entries")
                 .and_then(|v| v.as_array())
@@ -384,7 +386,7 @@ async fn handle_dbsize(session: &RespSession, state: &SharedState) -> RespValue 
 
     match dispatch_kv(state, session, plan).await {
         Ok(resp) if resp.status == Status::Ok => {
-            let json: serde_json::Value = serde_json::from_slice(&resp.payload).unwrap_or_default();
+            let json: serde_json::Value = sonic_rs::from_slice(&resp.payload).unwrap_or_default();
             let count = json.get("count").and_then(|v| v.as_i64()).unwrap_or(0);
             RespValue::integer(count)
         }
@@ -451,6 +453,6 @@ pub(super) fn parse_json_field_i64(
     payload: &crate::bridge::envelope::Payload,
     field: &str,
 ) -> Option<i64> {
-    let json: serde_json::Value = serde_json::from_slice(payload).ok()?;
+    let json: serde_json::Value = sonic_rs::from_slice(payload).ok()?;
     json.get(field)?.as_i64()
 }

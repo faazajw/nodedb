@@ -1,5 +1,6 @@
 //! TRUNCATE and ESTIMATE_COUNT handlers.
 
+use sonic_rs;
 use tracing::{debug, warn};
 
 use crate::bridge::envelope::{ErrorCode, Response};
@@ -65,7 +66,7 @@ impl CoreLoop {
 
         debug!(core = self.core_id, %collection, truncated, "truncate complete");
         let payload = serde_json::json!({ "truncated": truncated });
-        self.response_with_payload(task, serde_json::to_vec(&payload).unwrap_or_default())
+        self.response_with_payload(task, sonic_rs::to_vec(&payload).unwrap_or_default())
     }
 
     /// ESTIMATE_COUNT: return approximate row count from HLL cardinality stats.
@@ -85,7 +86,7 @@ impl CoreLoop {
                     "row_count": stats.row_count,
                     "null_count": stats.null_count,
                 });
-                self.response_with_payload(task, serde_json::to_vec(&payload).unwrap_or_default())
+                self.response_with_payload(task, sonic_rs::to_vec(&payload).unwrap_or_default())
             }
             Ok(None) => {
                 let payload = serde_json::json!({
@@ -95,7 +96,7 @@ impl CoreLoop {
                     "row_count": 0,
                     "null_count": 0,
                 });
-                self.response_with_payload(task, serde_json::to_vec(&payload).unwrap_or_default())
+                self.response_with_payload(task, sonic_rs::to_vec(&payload).unwrap_or_default())
             }
             Err(e) => self.response_error(
                 task,

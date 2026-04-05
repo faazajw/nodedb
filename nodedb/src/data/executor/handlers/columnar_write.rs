@@ -4,6 +4,8 @@
 //! objects). Creates the memtable on first insert with schema inferred
 //! from the first row.
 
+use sonic_rs;
+
 use crate::bridge::envelope::{ErrorCode, Payload, Response, Status};
 use crate::data::executor::core_loop::CoreLoop;
 use crate::data::executor::task::ExecutionTask;
@@ -21,7 +23,7 @@ impl CoreLoop {
         _format: &str,
     ) -> Response {
         // Parse JSON payload: expect array of objects or single object.
-        let rows: Vec<serde_json::Value> = match serde_json::from_slice(payload) {
+        let rows: Vec<serde_json::Value> = match sonic_rs::from_slice(payload) {
             Ok(serde_json::Value::Array(arr)) => arr,
             Ok(obj @ serde_json::Value::Object(_)) => vec![obj],
             Ok(_) => {
@@ -139,7 +141,7 @@ impl CoreLoop {
             "accepted": accepted,
             "collection": collection,
         });
-        let json = serde_json::to_vec(&result).unwrap_or_default();
+        let json = sonic_rs::to_vec(&result).unwrap_or_default();
         Response {
             request_id: task.request.request_id,
             status: Status::Ok,

@@ -2,6 +2,7 @@
 
 use pgwire::api::results::{Response, Tag};
 use pgwire::error::PgWireResult;
+use sonic_rs;
 
 use crate::control::security::audit::AuditEvent;
 use crate::control::security::catalog::StoredCollection;
@@ -448,11 +449,10 @@ fn build_generated_column_specs(
     // Strict/columnar collections store their schema JSON in timeseries_config
     // (reused for schema storage until StoredCollection gets a dedicated field).
     let schema_json = coll.timeseries_config.as_deref().unwrap_or("");
-    if let Ok(schema) = serde_json::from_str::<nodedb_types::columnar::StrictSchema>(schema_json) {
+    if let Ok(schema) = sonic_rs::from_str::<nodedb_types::columnar::StrictSchema>(schema_json) {
         for col in &schema.columns {
             if let Some(ref expr_json) = col.generated_expr
-                && let Ok(expr) =
-                    serde_json::from_str::<crate::bridge::expr_eval::SqlExpr>(expr_json)
+                && let Ok(expr) = sonic_rs::from_str::<crate::bridge::expr_eval::SqlExpr>(expr_json)
             {
                 specs.push(crate::bridge::physical_plan::GeneratedColumnSpec {
                     name: col.name.clone(),
@@ -468,7 +468,7 @@ fn build_generated_column_specs(
         if field_def.is_generated
             && !field_def.value_expr.is_empty()
             && let Ok(expr) =
-                serde_json::from_str::<crate::bridge::expr_eval::SqlExpr>(&field_def.value_expr)
+                sonic_rs::from_str::<crate::bridge::expr_eval::SqlExpr>(&field_def.value_expr)
             && !specs.iter().any(|s| s.name == field_def.name)
         {
             specs.push(crate::bridge::physical_plan::GeneratedColumnSpec {

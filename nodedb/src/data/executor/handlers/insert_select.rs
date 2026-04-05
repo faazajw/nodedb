@@ -1,5 +1,6 @@
 //! INSERT ... SELECT handler: copy documents from source to target collection.
 
+use sonic_rs;
 use tracing::debug;
 
 use crate::bridge::envelope::{ErrorCode, Response};
@@ -99,6 +100,6 @@ impl CoreLoop {
 
         debug!(core = self.core_id, %target_collection, inserted, "insert select complete");
         let payload = serde_json::json!({ "inserted": inserted });
-        self.response_with_payload(task, serde_json::to_vec(&payload).unwrap_or_default())
+        self.response_with_payload(task, sonic_rs::to_vec(&payload).unwrap_or_default())
     }
 }

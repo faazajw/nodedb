@@ -1,5 +1,6 @@
 //! Aggregate handler: GROUP BY, HAVING, and aggregate function execution.
 
+use sonic_rs;
 use tracing::debug;
 
 use crate::bridge::envelope::{ErrorCode, Response};
@@ -276,7 +277,7 @@ impl CoreLoop {
                                         .unwrap_or(serde_json::Value::Null)
                                 })
                                 .collect();
-                            serde_json::to_string(&key_parts).unwrap_or_else(|_| "[]".into())
+                            sonic_rs::to_string(&key_parts).unwrap_or_else(|_| "[]".into())
                         };
                         groups.entry(key).or_default().push(doc);
                     } else {
@@ -297,7 +298,7 @@ impl CoreLoop {
                                         .unwrap_or(serde_json::Value::Null)
                                 })
                                 .collect();
-                            serde_json::to_string(&key_parts).unwrap_or_else(|_| "[]".into())
+                            sonic_rs::to_string(&key_parts).unwrap_or_else(|_| "[]".into())
                         };
 
                         // Build a partial document with only the needed fields.
@@ -319,7 +320,7 @@ impl CoreLoop {
                     let mut row = serde_json::Map::new();
 
                     if !group_by.is_empty()
-                        && let Ok(parts) = serde_json::from_str::<Vec<serde_json::Value>>(group_key)
+                        && let Ok(parts) = sonic_rs::from_str::<Vec<serde_json::Value>>(group_key)
                     {
                         for (i, field) in group_by.iter().enumerate() {
                             let val = parts.get(i).cloned().unwrap_or(serde_json::Value::Null);
@@ -346,7 +347,7 @@ impl CoreLoop {
                                 .map(|f| doc.get(f).cloned().unwrap_or(serde_json::Value::Null))
                                 .collect();
                             let sub_key =
-                                serde_json::to_string(&key_parts).unwrap_or_else(|_| "[]".into());
+                                sonic_rs::to_string(&key_parts).unwrap_or_else(|_| "[]".into());
                             sub_groups.entry(sub_key).or_default().push(doc.clone());
                         }
 
@@ -354,8 +355,7 @@ impl CoreLoop {
                         for (sub_key, sub_docs) in &sub_groups {
                             let mut sub_row = serde_json::Map::new();
                             // Parse sub-group key back into fields.
-                            if let Ok(parts) =
-                                serde_json::from_str::<Vec<serde_json::Value>>(sub_key)
+                            if let Ok(parts) = sonic_rs::from_str::<Vec<serde_json::Value>>(sub_key)
                             {
                                 for (i, field) in sub_group_by.iter().enumerate() {
                                     let val =

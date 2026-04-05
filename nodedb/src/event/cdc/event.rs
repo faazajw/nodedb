@@ -5,6 +5,7 @@
 
 use nodedb_types::json_msgpack::JsonValue;
 use serde::{Deserialize, Serialize};
+use sonic_rs;
 
 /// A formatted CDC event ready for consumer delivery.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,7 +48,7 @@ pub struct CdcEvent {
 impl CdcEvent {
     /// Serialize to JSON bytes.
     pub fn to_json_bytes(&self) -> Vec<u8> {
-        serde_json::to_vec(self).unwrap_or_default()
+        sonic_rs::to_vec(self).unwrap_or_default()
     }
 
     /// Serialize to MessagePack bytes.

@@ -1,5 +1,6 @@
 //! Upsert handler: insert if absent, merge fields if present.
 
+use sonic_rs;
 use tracing::debug;
 
 use crate::bridge::envelope::{ErrorCode, Response};
@@ -41,7 +42,7 @@ impl CoreLoop {
                 };
 
                 // Parse incoming value as JSON.
-                let new_fields: serde_json::Value = match serde_json::from_slice(value) {
+                let new_fields: serde_json::Value = match sonic_rs::from_slice(value) {
                     Ok(v) => v,
                     Err(_) => {
                         return self.response_error(

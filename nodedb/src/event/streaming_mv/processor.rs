@@ -5,6 +5,7 @@
 //! values and aggregate inputs from the event's new_value, and
 //! incrementally updates each MV's state.
 
+use sonic_rs;
 use tracing::trace;
 
 use crate::event::cdc::event::CdcEvent;
@@ -28,7 +29,7 @@ pub fn process_write_event_for_mvs(event: &WriteEvent, registry: &MvRegistry, st
     let new_value: Option<serde_json::Value> = event.new_value.as_ref().and_then(|bytes| {
         nodedb_types::json_from_msgpack(bytes)
             .ok()
-            .or_else(|| serde_json::from_slice(bytes).ok())
+            .or_else(|| sonic_rs::from_slice(bytes).ok())
     });
 
     let op_str = event.op.to_string();

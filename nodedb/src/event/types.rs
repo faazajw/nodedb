@@ -8,6 +8,8 @@
 
 use std::sync::Arc;
 
+use sonic_rs;
+
 use crate::types::{Lsn, TenantId, VShardId};
 
 /// Identifies a row within a collection. Wraps the document/row ID string.
@@ -159,7 +161,7 @@ pub fn deserialize_event_payload(
     if let Ok(serde_json::Value::Object(map)) = nodedb_types::json_from_msgpack(bytes) {
         return Some(map);
     }
-    if let Ok(serde_json::Value::Object(map)) = serde_json::from_slice::<serde_json::Value>(bytes) {
+    if let Ok(serde_json::Value::Object(map)) = sonic_rs::from_slice::<serde_json::Value>(bytes) {
         return Some(map);
     }
     None

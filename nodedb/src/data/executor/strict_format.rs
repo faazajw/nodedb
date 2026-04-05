@@ -4,6 +4,8 @@
 //! Converts between the JSON representation used by the SQL planner and the
 //! compact Binary Tuple format stored in redb.
 
+use sonic_rs;
+
 use nodedb_types::columnar::{ColumnType, StrictSchema};
 use nodedb_types::value::Value;
 
@@ -18,7 +20,7 @@ pub(super) fn json_to_binary_tuple(
     schema: &StrictSchema,
 ) -> Result<Vec<u8>, String> {
     let doc: serde_json::Value =
-        serde_json::from_slice(json_bytes).map_err(|e| format!("invalid JSON: {e}"))?;
+        sonic_rs::from_slice(json_bytes).map_err(|e| format!("invalid JSON: {e}"))?;
 
     let obj = doc
         .as_object()

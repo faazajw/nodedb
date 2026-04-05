@@ -14,6 +14,7 @@
 use futures::stream;
 use pgwire::api::results::{DataRowEncoder, QueryResponse, Response};
 use pgwire::error::PgWireResult;
+use sonic_rs;
 
 use crate::bridge::envelope::{PhysicalPlan, Status};
 use crate::bridge::physical_plan::KvOp;
@@ -219,7 +220,7 @@ async fn scan_all_entries(
 
         let payload_text =
             crate::data::executor::response_codec::decode_payload_to_json(&resp.payload);
-        let json: serde_json::Value = serde_json::from_str(&payload_text).unwrap_or_default();
+        let json: serde_json::Value = sonic_rs::from_str(&payload_text).unwrap_or_default();
 
         let entries = json.get("entries").and_then(|e| e.as_array());
         let next_cursor = json.get("cursor").and_then(|c| c.as_str()).unwrap_or("0");

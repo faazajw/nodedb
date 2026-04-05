@@ -11,6 +11,7 @@
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use sonic_rs;
 use tracing::debug;
 
 use crate::control::state::SharedState;
@@ -58,7 +59,7 @@ pub fn publish_to_topic(
 
     // Parse payload as JSON (or wrap raw string in a JSON object).
     let value: serde_json::Value =
-        serde_json::from_str(payload).unwrap_or_else(|_| serde_json::json!({"message": payload}));
+        sonic_rs::from_str(payload).unwrap_or_else(|_| serde_json::json!({"message": payload}));
 
     // Get or create the topic's buffer via the CdcRouter buffer pool.
     let buffer = get_or_create_topic_buffer(state, tenant_id, topic_name, &topic.retention);

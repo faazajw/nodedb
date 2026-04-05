@@ -15,6 +15,7 @@ use std::sync::Arc;
 use futures::stream;
 use pgwire::api::results::{DataRowEncoder, QueryResponse, Response};
 use pgwire::error::PgWireResult;
+use sonic_rs;
 
 use crate::bridge::envelope::PhysicalPlan;
 use crate::bridge::physical_plan::GraphOp;
@@ -95,7 +96,7 @@ pub async fn create_graph_index(
     // Parse the scan payload as a JSON array of documents.
     let payload_json =
         crate::data::executor::response_codec::decode_payload_to_json(&scan_resp.payload);
-    let docs: Vec<serde_json::Value> = serde_json::from_str(&payload_json)
+    let docs: Vec<serde_json::Value> = sonic_rs::from_str(&payload_json)
         .map_err(|e| sqlstate_error("22P02", &format!("invalid JSON in scan response: {e}")))?;
 
     // For each document with a parent_id, add an edge: parent_id → doc_id.
@@ -214,7 +215,7 @@ pub async fn tree_sum(
     // Parse BFS result as JSON array of node IDs.
     let bfs_json =
         crate::data::executor::response_codec::decode_payload_to_json(&bfs_result.payload);
-    let bfs_nodes: Vec<String> = serde_json::from_str::<Vec<serde_json::Value>>(&bfs_json)
+    let bfs_nodes: Vec<String> = sonic_rs::from_str::<Vec<serde_json::Value>>(&bfs_json)
         .unwrap_or_default()
         .into_iter()
         .filter_map(|v| v.as_str().map(String::from))
@@ -270,7 +271,7 @@ pub async fn tree_sum(
             {
                 let doc_json =
                     crate::data::executor::response_codec::decode_payload_to_json(&resp.payload);
-                if let Ok(doc) = serde_json::from_str::<serde_json::Value>(&doc_json)
+                if let Ok(doc) = sonic_rs::from_str::<serde_json::Value>(&doc_json)
                     && let Some(val) = doc.get(&sum_column)
                 {
                     total += json_to_decimal(val);
@@ -332,7 +333,7 @@ pub async fn tree_children(
 
     let bfs_json =
         crate::data::executor::response_codec::decode_payload_to_json(&bfs_result.payload);
-    let node_ids: Vec<String> = serde_json::from_str::<Vec<serde_json::Value>>(&bfs_json)
+    let node_ids: Vec<String> = sonic_rs::from_str::<Vec<serde_json::Value>>(&bfs_json)
         .unwrap_or_default()
         .into_iter()
         .filter_map(|v| v.as_str().map(String::from))

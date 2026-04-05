@@ -7,6 +7,7 @@
 use std::collections::HashSet;
 
 use crate::control::security::catalog::column_stats::StoredColumnStats;
+use sonic_rs;
 
 /// Collect column statistics from JSON scan results.
 ///
@@ -103,7 +104,7 @@ enum FieldValue {
 
 /// Extract a field value from a JSON row string.
 fn extract_field_from_json(json_str: &str, field_name: &str) -> FieldValue {
-    let parsed: Result<serde_json::Value, _> = serde_json::from_str(json_str);
+    let parsed: Result<serde_json::Value, _> = sonic_rs::from_str(json_str);
     let Ok(obj) = parsed else {
         return FieldValue::Null;
     };

@@ -1,5 +1,6 @@
 //! KV field-level operation handlers: FieldGet, FieldSet.
 
+use sonic_rs;
 use tracing::debug;
 
 use crate::bridge::envelope::{ErrorCode, Response};
@@ -46,7 +47,7 @@ impl CoreLoop {
             })
             .collect();
 
-        let payload = serde_json::to_vec(&result).unwrap_or_default();
+        let payload = sonic_rs::to_vec(&result).unwrap_or_default();
         self.response_with_payload(task, payload)
     }
 
@@ -73,7 +74,7 @@ impl CoreLoop {
         // Merge field updates, tracking how many fields are new (not previously existing).
         let mut fields_added = 0u64;
         for (field, value_bytes) in updates {
-            let new_value: serde_json::Value = serde_json::from_slice(value_bytes).unwrap_or(
+            let new_value: serde_json::Value = sonic_rs::from_slice(value_bytes).unwrap_or(
                 serde_json::Value::String(String::from_utf8_lossy(value_bytes).into_owned()),
             );
             if !doc.contains_key(field) {

@@ -7,6 +7,7 @@ use std::sync::Arc;
 use futures::stream;
 use pgwire::api::results::{DataRowEncoder, QueryResponse, Response};
 use pgwire::error::PgWireResult;
+use sonic_rs;
 
 use crate::bridge::envelope::PhysicalPlan;
 use crate::control::security::identity::AuthenticatedIdentity;
@@ -57,7 +58,7 @@ pub async fn temporal_lookup(
 
     let payload_json =
         crate::data::executor::response_codec::decode_payload_to_json(&scan_resp.payload);
-    let docs: Vec<serde_json::Value> = serde_json::from_str(&payload_json)
+    let docs: Vec<serde_json::Value> = sonic_rs::from_str(&payload_json)
         .map_err(|e| sqlstate_error("22P02", &format!("invalid JSON in scan response: {e}")))?;
 
     // Find the row with latest time_column <= as_of for the given key.

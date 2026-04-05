@@ -112,9 +112,7 @@ impl<'a> zerompk::FromMessagePack<'a> for JsonValue {
 /// SAFETY CONTRACT: This function relies on the reader returning Err WITHOUT
 /// advancing the cursor when a marker byte doesn't match. This is guaranteed
 /// by zerompk::SliceReader (used by from_msgpack) but NOT by IOReader.
-fn read_json_from_reader<'a, R: zerompk::Read<'a>>(
-    reader: &mut R,
-) -> zerompk::Result<JsonValue> {
+fn read_json_from_reader<'a, R: zerompk::Read<'a>>(reader: &mut R) -> zerompk::Result<JsonValue> {
     // Try nil (0xC0)
     if reader.read_nil().is_ok() {
         return Ok(JsonValue(serde_json::Value::Null));
@@ -330,32 +328,32 @@ fn read_value(c: &mut Cursor<'_>) -> zerompk::Result<serde_json::Value> {
         m @ 0xA0..=0xBF => {
             let len = (m & 0x1F) as usize;
             let bytes = c.take_n(len)?;
-            let s = String::from_utf8(bytes.to_vec())
-                .map_err(|_| zerompk::Error::InvalidMarker(0))?;
+            let s =
+                String::from_utf8(bytes.to_vec()).map_err(|_| zerompk::Error::InvalidMarker(0))?;
             Ok(serde_json::Value::String(s))
         }
         // str 8
         0xD9 => {
             let len = c.take()? as usize;
             let bytes = c.take_n(len)?;
-            let s = String::from_utf8(bytes.to_vec())
-                .map_err(|_| zerompk::Error::InvalidMarker(0))?;
+            let s =
+                String::from_utf8(bytes.to_vec()).map_err(|_| zerompk::Error::InvalidMarker(0))?;
             Ok(serde_json::Value::String(s))
         }
         // str 16
         0xDA => {
             let len = c.read_u16_be()? as usize;
             let bytes = c.take_n(len)?;
-            let s = String::from_utf8(bytes.to_vec())
-                .map_err(|_| zerompk::Error::InvalidMarker(0))?;
+            let s =
+                String::from_utf8(bytes.to_vec()).map_err(|_| zerompk::Error::InvalidMarker(0))?;
             Ok(serde_json::Value::String(s))
         }
         // str 32
         0xDB => {
             let len = c.read_u32_be()? as usize;
             let bytes = c.take_n(len)?;
-            let s = String::from_utf8(bytes.to_vec())
-                .map_err(|_| zerompk::Error::InvalidMarker(0))?;
+            let s =
+                String::from_utf8(bytes.to_vec()).map_err(|_| zerompk::Error::InvalidMarker(0))?;
             Ok(serde_json::Value::String(s))
         }
 

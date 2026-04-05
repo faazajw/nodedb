@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use nodedb_types::protocol::TextFields;
+use sonic_rs;
 
 use crate::bridge::envelope::PhysicalPlan;
 use crate::bridge::physical_plan::GraphOp;
@@ -128,7 +129,7 @@ pub(crate) fn build_edge_put(fields: &TextFields) -> crate::Result<PhysicalPlan>
     let props = fields
         .properties
         .as_ref()
-        .map(|v| serde_json::to_string(v).unwrap_or_default())
+        .map(|v| sonic_rs::to_string(v).unwrap_or_default())
         .unwrap_or_default();
     Ok(PhysicalPlan::Graph(GraphOp::EdgePut {
         src_id: src.clone(),

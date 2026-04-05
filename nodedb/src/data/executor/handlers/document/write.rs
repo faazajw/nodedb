@@ -1,5 +1,6 @@
 //! Document write handlers: PointPut, BatchInsert, Upsert, Register, IndexLookup, DropIndex.
 
+use sonic_rs;
 use tracing::debug;
 
 use crate::bridge::envelope::{ErrorCode, Response};
@@ -146,7 +147,7 @@ impl CoreLoop {
         match doc_engine.index_lookup(collection, path, value) {
             Ok(doc_ids) => {
                 let payload = serde_json::json!(doc_ids);
-                match serde_json::to_vec(&payload) {
+                match sonic_rs::to_vec(&payload) {
                     Ok(bytes) => self.response_with_payload(task, bytes),
                     Err(e) => self.response_error(
                         task,

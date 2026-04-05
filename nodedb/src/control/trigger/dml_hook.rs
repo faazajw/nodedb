@@ -11,6 +11,8 @@
 //!
 //! ASYNC AFTER triggers are handled by the Event Plane via WriteEvents — not here.
 
+use sonic_rs;
+
 use crate::bridge::physical_plan::DocumentOp;
 use crate::control::security::catalog::trigger_types::TriggerExecutionMode;
 use crate::control::security::identity::AuthenticatedIdentity;
@@ -147,7 +149,7 @@ fn deserialize_value_to_fields(value: &[u8]) -> serde_json::Map<String, serde_js
     if let Ok(serde_json::Value::Object(map)) = nodedb_types::json_from_msgpack(value) {
         return map;
     }
-    if let Ok(serde_json::Value::Object(map)) = serde_json::from_slice::<serde_json::Value>(value) {
+    if let Ok(serde_json::Value::Object(map)) = sonic_rs::from_slice::<serde_json::Value>(value) {
         return map;
     }
     serde_json::Map::new()
@@ -188,7 +190,7 @@ pub async fn fetch_old_row(
     if let Ok(serde_json::Value::Object(map)) = nodedb_types::json_from_msgpack(bytes) {
         return map;
     }
-    if let Ok(serde_json::Value::Object(map)) = serde_json::from_slice::<serde_json::Value>(bytes) {
+    if let Ok(serde_json::Value::Object(map)) = sonic_rs::from_slice::<serde_json::Value>(bytes) {
         return map;
     }
 

@@ -7,6 +7,8 @@
 //! module works directly on DataFusion `Expr` — the form available in the
 //! plan converter's `Filter` handler.
 
+use sonic_rs;
+
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::prelude::*;
 
@@ -170,9 +172,9 @@ fn expr_to_geojson(expr: &Expr) -> Option<Vec<u8>> {
             let s = lit.to_string();
             let trimmed = s.trim_matches('\'').trim_matches('"');
             // Validate it looks like GeoJSON (has "type" key).
-            let parsed: serde_json::Value = serde_json::from_str(trimmed).ok()?;
+            let parsed: serde_json::Value = sonic_rs::from_str(trimmed).ok()?;
             if parsed.get("type").is_some() {
-                Some(serde_json::to_vec(&parsed).ok()?)
+                Some(sonic_rs::to_vec(&parsed).ok()?)
             } else {
                 None
             }
@@ -187,7 +189,7 @@ fn expr_to_geojson(expr: &Expr) -> Option<Vec<u8>> {
                 "type": "Point",
                 "coordinates": [lng, lat]
             });
-            Some(serde_json::to_vec(&geojson).ok()?)
+            Some(sonic_rs::to_vec(&geojson).ok()?)
         }
         _ => None,
     }

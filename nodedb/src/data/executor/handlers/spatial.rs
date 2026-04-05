@@ -4,6 +4,7 @@
 //! on insert (see `handlers/point.rs`). Spatial queries use the R-tree for
 //! fast bbox candidate selection, then refine with exact predicates.
 
+use sonic_rs;
 use tracing::debug;
 
 use crate::bridge::envelope::{ErrorCode, Response};
@@ -105,7 +106,7 @@ impl CoreLoop {
             Some(rt) => rt,
             None => {
                 // Should not happen (has_index was true), but handle gracefully.
-                let json = serde_json::to_vec(&Vec::<serde_json::Value>::new()).unwrap_or_default();
+                let json = sonic_rs::to_vec(&Vec::<serde_json::Value>::new()).unwrap_or_default();
                 return self.response_with_payload(task, json);
             }
         };
@@ -169,7 +170,7 @@ impl CoreLoop {
             results.push(project_doc(&doc, doc_id, projection));
         }
 
-        let json = serde_json::to_vec(&results).unwrap_or_default();
+        let json = sonic_rs::to_vec(&results).unwrap_or_default();
         self.response_with_payload(task, json)
     }
 
@@ -246,7 +247,7 @@ impl CoreLoop {
             results.push(project_doc(&doc, doc_id, projection));
         }
 
-        let json = serde_json::to_vec(&results).unwrap_or_default();
+        let json = sonic_rs::to_vec(&results).unwrap_or_default();
         self.response_with_payload(task, json)
     }
 }

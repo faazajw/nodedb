@@ -6,6 +6,7 @@ use std::sync::Arc;
 use futures::stream;
 use pgwire::api::results::{DataRowEncoder, QueryResponse, Response, Tag};
 use pgwire::error::PgWireResult;
+use sonic_rs;
 
 use crate::bridge::envelope::PhysicalPlan;
 use crate::bridge::physical_plan::GraphOp;
@@ -311,7 +312,7 @@ fn algo_payload_to_query_response(
     let json_text = response_codec::decode_payload_to_json(payload);
 
     // Parse the JSON array of result objects.
-    let rows: Vec<serde_json::Value> = serde_json::from_str(&json_text)
+    let rows: Vec<serde_json::Value> = sonic_rs::from_str(&json_text)
         .map_err(|e| sqlstate_error("XX000", &format!("invalid algorithm result JSON: {e}")))?;
 
     let mut pgwire_rows = Vec::with_capacity(rows.len());

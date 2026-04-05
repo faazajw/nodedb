@@ -13,6 +13,7 @@
 use futures::stream;
 use pgwire::api::results::{DataRowEncoder, FieldInfo, QueryResponse, Response};
 use pgwire::error::PgWireResult;
+use sonic_rs;
 
 use crate::bridge::physical_plan::{KvOp, PhysicalPlan};
 use crate::control::security::identity::AuthenticatedIdentity;
@@ -422,7 +423,7 @@ async fn dispatch_and_respond_rows(
             let schema = std::sync::Arc::new(vec![text_field("rank"), text_field("key")]);
 
             let rows_json: Vec<serde_json::Value> =
-                serde_json::from_slice(&resp.payload).unwrap_or_default();
+                sonic_rs::from_slice(&resp.payload).unwrap_or_default();
 
             let mut rows = Vec::with_capacity(rows_json.len());
             for row in &rows_json {

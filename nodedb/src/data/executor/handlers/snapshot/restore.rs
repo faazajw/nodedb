@@ -1,5 +1,6 @@
 //! Tenant snapshot restoration: import Data Plane state for all engines.
 
+use sonic_rs;
 use tracing::{info, warn};
 
 use crate::bridge::envelope::{ErrorCode, Response};
@@ -131,7 +132,7 @@ impl CoreLoop {
             "crdt_restored": crdt_written,
             "timeseries_restored": ts_written,
         });
-        match serde_json::to_vec(&result) {
+        match sonic_rs::to_vec(&result) {
             Ok(p) => self.response_with_payload(task, p),
             Err(e) => self.response_error(
                 task,

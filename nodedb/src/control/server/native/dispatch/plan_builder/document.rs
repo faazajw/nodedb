@@ -3,6 +3,7 @@
 use nodedb_types::CollectionType;
 use nodedb_types::columnar::ColumnarProfile;
 use nodedb_types::protocol::TextFields;
+use sonic_rs;
 
 use crate::bridge::envelope::PhysicalPlan;
 use crate::bridge::physical_plan::{DocumentOp, KvOp, TimeseriesOp};
@@ -154,7 +155,7 @@ pub(crate) fn build_batch_insert(
         .iter()
         .map(|d| {
             let value_bytes =
-                serde_json::to_vec(&d.fields).map_err(|e| crate::Error::Serialization {
+                sonic_rs::to_vec(&d.fields).map_err(|e| crate::Error::Serialization {
                     format: "json".into(),
                     detail: format!("failed to serialize document '{}': {e}", d.id),
                 })?;

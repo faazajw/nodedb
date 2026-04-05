@@ -1,6 +1,7 @@
 //! CRDT plan builders.
 
 use nodedb_types::protocol::TextFields;
+use sonic_rs;
 
 use crate::bridge::envelope::PhysicalPlan;
 use crate::bridge::physical_plan::CrdtOp;
@@ -53,7 +54,7 @@ pub(crate) fn build_alter_policy(
         .ok_or_else(|| crate::Error::BadRequest {
             detail: "missing 'policy'".to_string(),
         })?;
-    let policy_json = serde_json::to_string(policy).map_err(|e| crate::Error::BadRequest {
+    let policy_json = sonic_rs::to_string(policy).map_err(|e| crate::Error::BadRequest {
         detail: format!("invalid policy: {e}"),
     })?;
     Ok(PhysicalPlan::Crdt(CrdtOp::SetPolicy {

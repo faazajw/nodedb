@@ -6,6 +6,7 @@
 //! index-backed counting (if the field has a secondary index) or via HashMap
 //! counting over the matching documents.
 
+use sonic_rs;
 use std::collections::{HashMap, HashSet};
 
 use tracing::debug;
@@ -84,13 +85,13 @@ impl CoreLoop {
         // Cache the result.
         let cache_key = facet_cache_key(tid, collection, fields, filter_bytes);
         if self.aggregate_cache.len() < 256
-            && let Ok(bytes) = serde_json::to_vec(&serde_json::Value::Object(facet_result.clone()))
+            && let Ok(bytes) = sonic_rs::to_vec(&serde_json::Value::Object(facet_result.clone()))
         {
             self.aggregate_cache.insert(cache_key, bytes);
         }
 
         let payload =
-            serde_json::to_vec(&serde_json::Value::Object(facet_result)).unwrap_or_default();
+            sonic_rs::to_vec(&serde_json::Value::Object(facet_result)).unwrap_or_default();
         self.response_with_payload(task, payload)
     }
 

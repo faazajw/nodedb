@@ -5,6 +5,7 @@
 
 use super::merge::{ShardSearchResult, VectorHit, VectorMerger};
 use crate::wire::{VShardEnvelope, VShardMessageType};
+use sonic_rs;
 
 /// Scatter-gather coordinator for distributed k-NN vector search.
 pub struct VectorScatterGather {
@@ -45,7 +46,7 @@ impl VectorScatterGather {
             "ef_search": ef_search,
             "has_filter": filter_bitmap.is_some(),
         });
-        let mut payload_bytes = serde_json::to_vec(&payload).expect("json! is always serializable");
+        let mut payload_bytes = sonic_rs::to_vec(&payload).expect("json! is always serializable");
 
         // Append filter bitmap as raw bytes after JSON (length-prefixed).
         if let Some(bitmap) = filter_bitmap {

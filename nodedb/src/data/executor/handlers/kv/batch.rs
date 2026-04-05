@@ -1,5 +1,6 @@
 //! KV batch operation handlers: BatchGet, BatchPut.
 
+use sonic_rs;
 use tracing::debug;
 
 use crate::bridge::envelope::Response;
@@ -30,7 +31,7 @@ impl CoreLoop {
                 None => serde_json::Value::Null,
             })
             .collect();
-        let payload = serde_json::to_vec(&json_results).unwrap_or_default();
+        let payload = sonic_rs::to_vec(&json_results).unwrap_or_default();
         self.response_with_payload(task, payload)
     }
 

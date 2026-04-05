@@ -7,6 +7,7 @@
 
 use pgwire::api::results::Response;
 use pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
+use sonic_rs;
 
 use crate::bridge::envelope::PhysicalPlan;
 use crate::bridge::physical_plan::QueryOp;
@@ -110,7 +111,7 @@ pub(super) async fn execute_search_with_facets_sql(
     // Step 3: Assemble combined response.
     let results_json: Vec<serde_json::Value> = search_results
         .iter()
-        .filter_map(|s| serde_json::from_str(s).ok())
+        .filter_map(|s| sonic_rs::from_str(s).ok())
         .collect();
 
     let facets_json: serde_json::Value = if facet_resp.payload.is_empty() {
@@ -118,7 +119,7 @@ pub(super) async fn execute_search_with_facets_sql(
     } else {
         let text =
             crate::data::executor::response_codec::decode_payload_to_json(&facet_resp.payload);
-        serde_json::from_str(&text).unwrap_or(serde_json::json!({}))
+        sonic_rs::from_str(&text).unwrap_or(serde_json::json!({}))
     };
 
     let combined = serde_json::json!({
@@ -126,7 +127,7 @@ pub(super) async fn execute_search_with_facets_sql(
         "facets": facets_json,
     });
 
-    let payload = serde_json::to_vec(&combined).unwrap_or_default();
+    let payload = sonic_rs::to_vec(&combined).unwrap_or_default();
     Ok(vec![payload_to_response(&payload, PlanKind::MultiRow)])
 }
 

@@ -14,6 +14,7 @@ use axum::extract::{Path, Query, State};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use futures::stream::Stream;
 use serde::Deserialize;
+use sonic_rs;
 
 use super::super::auth::AppState;
 use crate::control::state::SharedState;
@@ -130,7 +131,7 @@ pub async fn stream_events(
             };
             if !result.events.is_empty() {
                 for event in &result.events {
-                    let json = serde_json::to_string(event).unwrap_or_default();
+                    let json = sonic_rs::to_string(event).unwrap_or_default();
                     yield Ok(Event::default()
                         .event("change")
                         .id(format!("{}:{}", event.partition, event.lsn))

@@ -10,6 +10,8 @@
 //! first byte (MessagePack maps start with 0x80-0x8F for fixmap, 0xDE for
 //! map16, 0xDF for map32; JSON objects start with `{` = 0x7B).
 
+use sonic_rs;
+
 /// Convert a document byte blob to `serde_json::Value`.
 ///
 /// Auto-detects the format: MessagePack, JSON, or Binary Tuple.
@@ -32,7 +34,7 @@ pub(super) fn decode_document(bytes: &[u8]) -> Option<serde_json::Value> {
     }
 
     // Fall back to JSON.
-    serde_json::from_slice(bytes).ok()
+    sonic_rs::from_slice(bytes).ok()
 
     // Note: Binary Tuple bytes are NOT auto-detected here because decoding
     // requires the schema. For strict collections, callers must check
@@ -72,7 +74,7 @@ pub(super) fn extract_fields(bytes: &[u8], field_names: &[&str]) -> Vec<Option<s
     }
 
     // JSON fallback.
-    if let Ok(doc) = serde_json::from_slice::<serde_json::Value>(bytes) {
+    if let Ok(doc) = sonic_rs::from_slice::<serde_json::Value>(bytes) {
         field_names
             .iter()
             .map(|name| doc.get(*name).cloned())
@@ -129,7 +131,7 @@ fn rmpv_to_json(val: &rmpv::Value) -> serde_json::Value {
 pub(super) fn encode_to_msgpack(value: &serde_json::Value) -> Vec<u8> {
     nodedb_types::json_to_msgpack(value).unwrap_or_else(|_| {
         // Fallback: store as JSON if MessagePack encoding fails.
-        serde_json::to_vec(value).unwrap_or_default()
+        sonic_rs::to_vec(value).unwrap_or_default()
     })
 }
 
@@ -151,7 +153,7 @@ pub(super) fn json_to_msgpack(bytes: &[u8]) -> Vec<u8> {
     }
 
     // Try parsing as JSON and converting to MessagePack.
-    match serde_json::from_slice::<serde_json::Value>(bytes) {
+    match sonic_rs::from_slice::<serde_json::Value>(bytes) {
         Ok(value) => encode_to_msgpack(&value),
         Err(_) => bytes.to_vec(), // Unknown format — store as-is.
     }

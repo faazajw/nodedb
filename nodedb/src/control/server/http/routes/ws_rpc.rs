@@ -26,6 +26,7 @@ use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{State, WebSocketUpgrade};
 use axum::response::IntoResponse;
 use futures::{SinkExt, StreamExt};
+use sonic_rs;
 use tracing::debug;
 
 use super::super::auth::AppState;
@@ -163,7 +164,7 @@ async fn process_message(
     text: &str,
     live_tx: &tokio::sync::mpsc::Sender<String>,
 ) -> (String, Option<String>) {
-    let req: serde_json::Value = match serde_json::from_str(text) {
+    let req: serde_json::Value = match sonic_rs::from_str(text) {
         Ok(v) => v,
         Err(e) => {
             return (
@@ -335,7 +336,7 @@ async fn execute_sql(
                 if !r.payload.is_empty() {
                     let json =
                         crate::data::executor::response_codec::decode_payload_to_json(&r.payload);
-                    match serde_json::from_str::<serde_json::Value>(&json) {
+                    match sonic_rs::from_str::<serde_json::Value>(&json) {
                         Ok(v) => results.push(v),
                         Err(_) => results.push(serde_json::Value::String(json)),
                     }

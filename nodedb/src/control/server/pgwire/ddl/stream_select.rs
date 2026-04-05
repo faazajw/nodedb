@@ -13,6 +13,7 @@ use std::sync::Arc;
 use futures::stream;
 use pgwire::api::results::{DataRowEncoder, QueryResponse, Response};
 use pgwire::error::PgWireResult;
+use sonic_rs;
 
 use crate::control::security::identity::AuthenticatedIdentity;
 use crate::control::state::SharedState;
@@ -114,13 +115,13 @@ pub async fn select_from_stream(
         let new_val = event
             .new_value
             .as_ref()
-            .map(|v| serde_json::to_string(v).unwrap_or_default())
+            .map(|v| sonic_rs::to_string(v).unwrap_or_default())
             .unwrap_or_default();
         let _ = encoder.encode_field(&new_val);
         let old_val = event
             .old_value
             .as_ref()
-            .map(|v| serde_json::to_string(v).unwrap_or_default())
+            .map(|v| sonic_rs::to_string(v).unwrap_or_default())
             .unwrap_or_default();
         let _ = encoder.encode_field(&old_val);
         rows.push(Ok(encoder.take_row()));

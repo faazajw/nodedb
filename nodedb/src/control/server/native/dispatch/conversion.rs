@@ -3,6 +3,7 @@
 use nodedb_types::Value;
 use nodedb_types::conversion::json_to_value_display;
 use nodedb_types::protocol::NativeResponse;
+use sonic_rs;
 
 /// Convert a crate-level error into a NativeResponse.
 pub(crate) fn error_to_native(seq: u64, e: &crate::Error) -> NativeResponse {
@@ -25,7 +26,7 @@ pub(crate) fn error_to_native(seq: u64, e: &crate::Error) -> NativeResponse {
 /// - Single object: `{"id":"1","name":"Alice"}` → one row
 /// - Scalar/string: just wrap as a single "result" column
 pub(crate) fn parse_json_to_columns_rows(json_text: &str) -> (Vec<String>, Vec<Vec<Value>>) {
-    if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_text) {
+    if let Ok(val) = sonic_rs::from_str::<serde_json::Value>(json_text) {
         match val {
             serde_json::Value::Array(arr) if !arr.is_empty() => {
                 if let Some(first) = arr.first().and_then(|v| v.as_object()) {

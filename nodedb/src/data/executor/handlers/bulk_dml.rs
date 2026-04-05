@@ -3,6 +3,7 @@
 //! These operate on document sets matching ScanFilter predicates,
 //! unlike PointUpdate/PointDelete which require `WHERE id = 'x'`.
 
+use sonic_rs;
 use tracing::{debug, warn};
 
 use crate::bridge::envelope::{ErrorCode, Response};
@@ -124,7 +125,7 @@ impl CoreLoop {
                     };
                     if let Some(obj) = doc.as_object_mut() {
                         for (field, value_bytes) in updates {
-                            let val: serde_json::Value = match serde_json::from_slice(value_bytes) {
+                            let val: serde_json::Value = match sonic_rs::from_slice(value_bytes) {
                                 Ok(v) => v,
                                 Err(_) => serde_json::Value::String(
                                     String::from_utf8_lossy(value_bytes).into_owned(),
@@ -180,11 +181,11 @@ impl CoreLoop {
 
         if returning && affected > 0 {
             let payload =
-                serde_json::to_vec(&serde_json::Value::Array(returned_docs)).unwrap_or_default();
+                sonic_rs::to_vec(&serde_json::Value::Array(returned_docs)).unwrap_or_default();
             self.response_with_payload(task, payload)
         } else {
             let payload = serde_json::json!({ "affected": affected });
-            self.response_with_payload(task, serde_json::to_vec(&payload).unwrap_or_default())
+            self.response_with_payload(task, sonic_rs::to_vec(&payload).unwrap_or_default())
         }
     }
 
@@ -256,6 +257,6 @@ impl CoreLoop {
 
         debug!(core = self.core_id, %collection, affected, "bulk delete complete");
         let payload = serde_json::json!({ "affected": affected });
-        self.response_with_payload(task, serde_json::to_vec(&payload).unwrap_or_default())
+        self.response_with_payload(task, sonic_rs::to_vec(&payload).unwrap_or_default())
     }
 }

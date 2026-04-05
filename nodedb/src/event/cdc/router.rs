@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use sonic_rs;
 use tracing::trace;
 
 use super::buffer::StreamBuffer;
@@ -246,7 +247,7 @@ pub struct BufferStats {
 fn deserialize_to_json(bytes: &[u8]) -> Option<serde_json::Value> {
     nodedb_types::json_from_msgpack(bytes)
         .ok()
-        .or_else(|| serde_json::from_slice::<serde_json::Value>(bytes).ok())
+        .or_else(|| sonic_rs::from_slice::<serde_json::Value>(bytes).ok())
 }
 
 #[cfg(test)]

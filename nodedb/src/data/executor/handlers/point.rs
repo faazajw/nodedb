@@ -1,6 +1,7 @@
 //! Point operation handlers: PointGet, PointPut, PointDelete, PointUpdate.
 
 use redb::WriteTransaction;
+use sonic_rs;
 use tracing::{debug, warn};
 
 use crate::bridge::envelope::{ErrorCode, Response};
@@ -65,7 +66,7 @@ impl CoreLoop {
                     && let Some(json) =
                         super::super::strict_format::binary_tuple_to_json(&data, schema)
                 {
-                    let json_bytes = serde_json::to_vec(&json).unwrap_or_default();
+                    let json_bytes = sonic_rs::to_vec(&json).unwrap_or_default();
                     if !super::rls_eval::rls_check_msgpack_bytes(rls_filters, &json_bytes) {
                         return self.response_error(task, ErrorCode::NotFound);
                     }
@@ -80,7 +81,7 @@ impl CoreLoop {
         if let Some(ref schema) = strict_schema
             && let Some(json) = super::super::strict_format::binary_tuple_to_json(&data, schema)
         {
-            let json_bytes = serde_json::to_vec(&json).unwrap_or_default();
+            let json_bytes = sonic_rs::to_vec(&json).unwrap_or_default();
             return self.response_with_payload(task, json_bytes);
         }
 
@@ -300,7 +301,7 @@ impl CoreLoop {
                 // Apply field-level updates.
                 if let Some(obj) = doc.as_object_mut() {
                     for (field, value_bytes) in updates {
-                        let val: serde_json::Value = match serde_json::from_slice(value_bytes) {
+                        let val: serde_json::Value = match sonic_rs::from_slice(value_bytes) {
                             Ok(v) => v,
                             Err(_) => serde_json::Value::String(
                                 String::from_utf8_lossy(value_bytes).into_owned(),
@@ -331,7 +332,7 @@ impl CoreLoop {
                         && let crate::bridge::physical_plan::StorageMode::Strict { ref schema } =
                             config.storage_mode
                     {
-                        let json_bytes = serde_json::to_vec(&doc).unwrap_or_default();
+                        let json_bytes = sonic_rs::to_vec(&doc).unwrap_or_default();
                         match super::super::strict_format::json_to_binary_tuple(&json_bytes, schema)
                         {
                             Ok(bytes) => bytes,
@@ -382,14 +383,14 @@ impl CoreLoop {
                                     serde_json::Value::String(document_id.to_string()),
                                 );
                             }
-                            let payload = serde_json::to_vec(&serde_json::Value::Array(vec![doc]))
+                            let payload = sonic_rs::to_vec(&serde_json::Value::Array(vec![doc]))
                                 .unwrap_or_default();
                             self.response_with_payload(task, payload)
                         } else {
                             let payload = serde_json::json!({ "affected": 1u64 });
                             self.response_with_payload(
                                 task,
-                                serde_json::to_vec(&payload).unwrap_or_default(),
+                                sonic_rs::to_vec(&payload).unwrap_or_default(),
                             )
                         }
                     }
@@ -438,7 +439,7 @@ impl CoreLoop {
                         detail: format!("generated column evaluation failed: {e:?}"),
                     });
                 }
-                serde_json::to_vec(&doc).unwrap_or_else(|_| value.to_vec())
+                sonic_rs::to_vec(&doc).unwrap_or_else(|_| value.to_vec())
             } else {
                 value.to_vec()
             }

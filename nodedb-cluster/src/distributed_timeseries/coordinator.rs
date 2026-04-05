@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use super::merge::{PartialAgg, PartialAggMerger};
 use super::retention::RetentionCommand;
 use crate::wire::{VShardEnvelope, VShardMessageType};
+use sonic_rs;
 
 /// Scatter-gather coordinator for cross-shard timeseries aggregation.
 pub struct TsCoordinator {
@@ -55,7 +56,7 @@ impl TsCoordinator {
             "bucket_interval_ms": bucket_interval_ms,
         });
         let payload_bytes = // Safety: json!() macro output is always serializable.
-            serde_json::to_vec(&payload).expect("json! is always serializable");
+            sonic_rs::to_vec(&payload).expect("json! is always serializable");
 
         self.shard_ids
             .iter()
@@ -135,7 +136,7 @@ impl TsCoordinator {
             "s3_prefix": s3_prefix,
         });
         let payload_bytes = // Safety: json!() macro output is always serializable.
-            serde_json::to_vec(&payload).expect("json! is always serializable");
+            sonic_rs::to_vec(&payload).expect("json! is always serializable");
 
         self.shard_ids
             .iter()

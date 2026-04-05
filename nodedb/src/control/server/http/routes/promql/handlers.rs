@@ -3,6 +3,7 @@
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use sonic_rs;
 
 use crate::control::promql;
 use crate::control::server::http::auth::AppState;
@@ -397,7 +398,7 @@ pub async fn annotations(
     (
         StatusCode::OK,
         [("content-type", "application/json")],
-        serde_json::to_string(&annotations).unwrap_or_else(|_| "[]".into()),
+        sonic_rs::to_string(&annotations).unwrap_or_else(|_| "[]".into()),
     )
 }
 

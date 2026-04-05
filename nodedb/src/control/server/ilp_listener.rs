@@ -10,6 +10,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use sonic_rs;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
@@ -355,7 +356,7 @@ async fn flush_ilp_batch_inner(
         .await?;
 
         if !response.payload.is_empty()
-            && let Ok(v) = serde_json::from_slice::<serde_json::Value>(&response.payload)
+            && let Ok(v) = sonic_rs::from_slice::<serde_json::Value>(&response.payload)
         {
             total_accepted += v.get("accepted").and_then(|a| a.as_u64()).unwrap_or(0);
 

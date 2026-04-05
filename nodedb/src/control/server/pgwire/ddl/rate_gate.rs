@@ -15,6 +15,7 @@
 use futures::stream;
 use pgwire::api::results::{DataRowEncoder, QueryResponse, Response};
 use pgwire::error::PgWireResult;
+use sonic_rs;
 
 use crate::bridge::envelope::{PhysicalPlan, Status};
 use crate::bridge::physical_plan::KvOp;
@@ -103,7 +104,7 @@ pub async fn rate_check(
         Ok(resp) if resp.status == Status::Ok => {
             let payload_text =
                 crate::data::executor::response_codec::decode_payload_to_json(&resp.payload);
-            let current: i64 = serde_json::from_str::<serde_json::Value>(&payload_text)
+            let current: i64 = sonic_rs::from_str::<serde_json::Value>(&payload_text)
                 .ok()
                 .and_then(|v| v.get("value")?.as_i64())
                 .unwrap_or(1);
@@ -259,7 +260,7 @@ async fn read_ttl_ms(
         Ok(resp) if resp.status == Status::Ok => {
             let payload_text =
                 crate::data::executor::response_codec::decode_payload_to_json(&resp.payload);
-            serde_json::from_str::<serde_json::Value>(&payload_text)
+            sonic_rs::from_str::<serde_json::Value>(&payload_text)
                 .ok()
                 .and_then(|v| v.get("ttl_ms")?.as_i64())
                 .map(|ttl| if ttl > 0 { ttl as u64 } else { 0 })
