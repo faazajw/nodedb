@@ -138,12 +138,12 @@ pub(crate) fn search_layer(
             break;
         }
 
-        let node = &index.nodes[current.id as usize];
-        if layer >= node.neighbors.len() {
+        let neighbors = index.neighbors_at(current.id, layer);
+        if neighbors.is_empty() && layer >= index.node_num_layers(current.id) {
             continue;
         }
 
-        for &neighbor_id in &node.neighbors[layer] {
+        for &neighbor_id in neighbors {
             if !visited.insert(neighbor_id) {
                 continue;
             }

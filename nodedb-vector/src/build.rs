@@ -13,6 +13,9 @@ impl HnswIndex {
     ///    neighbors, select via the diversity heuristic, and add bidirectional edges
     /// 4. Prune over-connected nodes to maintain the M/M0 invariant
     pub fn insert(&mut self, vector: Vec<f32>) -> Result<(), VectorError> {
+        // Materialize flat neighbor storage on first mutation.
+        self.ensure_mutable_neighbors();
+
         if vector.len() != self.dim {
             return Err(VectorError::DimensionMismatch {
                 expected: self.dim,

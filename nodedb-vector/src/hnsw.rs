@@ -65,6 +65,47 @@ pub struct HnswIndex {
     pub(crate) entry_point: Option<u32>,
     pub(crate) max_layer: usize,
     pub(crate) rng: Xorshift64,
+    /// Flat neighbor storage for zero-copy access after checkpoint restore.
+    /// When present, `neighbors_at()` reads from here instead of per-node Vecs.
+    /// Cleared on first mutation (insert/delete).
+    pub(crate) flat_neighbors: Option<crate::flat_neighbors::FlatNeighborStore>,
+}
+
+impl HnswIndex {
+    /// Get neighbors of a node at a specific layer.
+    /// Uses flat zero-copy storage if available, otherwise per-node Vec.
+    #[inline]
+    pub(crate) fn neighbors_at(&self, node_id: u32, layer: usize) -> &[u32] {
+        if let Some(ref flat) = self.flat_neighbors {
+            return flat.neighbors_at(node_id, layer);
+        }
+        let node = &self.nodes[node_id as usize];
+        if layer < node.neighbors.len() {
+            &node.neighbors[layer]
+        } else {
+            &[]
+        }
+    }
+
+    /// Number of layers a node participates in.
+    #[inline]
+    pub(crate) fn node_num_layers(&self, node_id: u32) -> usize {
+        if let Some(ref flat) = self.flat_neighbors {
+            return flat.num_layers(node_id);
+        }
+        self.nodes[node_id as usize].neighbors.len()
+    }
+
+    /// Ensure mutable per-node neighbor Vecs are available.
+    /// Materializes flat storage back to per-node Vecs if needed.
+    pub(crate) fn ensure_mutable_neighbors(&mut self) {
+        if let Some(flat) = self.flat_neighbors.take() {
+            let nested = flat.to_nested(self.nodes.len());
+            for (i, layers) in nested.into_iter().enumerate() {
+                self.nodes[i].neighbors = layers;
+            }
+        }
+    }
 }
 
 /// Lightweight xorshift64 PRNG for layer assignment.
@@ -116,6 +157,7 @@ impl HnswIndex {
             entry_point: None,
             max_layer: 0,
             rng: Xorshift64::new(42),
+            flat_neighbors: None,
             params,
         }
     }
@@ -128,6 +170,7 @@ impl HnswIndex {
             entry_point: None,
             max_layer: 0,
             rng: Xorshift64::new(seed),
+            flat_neighbors: None,
             params,
         }
     }
@@ -213,7 +256,11 @@ impl HnswIndex {
             max_layer: self.max_layer,
             rng_state: self.rng.0,
             node_vectors: self.nodes.iter().map(|n| n.vector.clone()).collect(),
-            node_neighbors: self.nodes.iter().map(|n| n.neighbors.clone()).collect(),
+            node_neighbors: if let Some(ref flat) = self.flat_neighbors {
+                flat.to_nested(self.nodes.len())
+            } else {
+                self.nodes.iter().map(|n| n.neighbors.clone()).collect()
+            },
             node_deleted: self.nodes.iter().map(|n| n.deleted).collect(),
         };
         let rkyv_bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&snapshot)
@@ -293,14 +340,18 @@ impl HnswIndex {
             _ => DistanceMetric::Cosine,
         };
 
+        // Build flat neighbor store from SoA data (avoids per-node Vec<Vec<u32>>
+        // allocations — millions of small Vecs on large graphs).
+        let flat = crate::flat_neighbors::FlatNeighborStore::from_nested(&snap.node_neighbors);
+
+        // Nodes only need vector + deleted; neighbors are in flat store.
         let nodes: Vec<Node> = snap
             .node_vectors
             .into_iter()
-            .zip(snap.node_neighbors)
             .zip(snap.node_deleted)
-            .map(|((vector, neighbors), deleted)| Node {
+            .map(|(vector, deleted)| Node {
                 vector,
-                neighbors,
+                neighbors: Vec::new(), // Empty — flat store handles reads.
                 deleted,
             })
             .collect();
@@ -317,6 +368,7 @@ impl HnswIndex {
             entry_point: snap.entry_point,
             max_layer: snap.max_layer,
             rng: Xorshift64::new(snap.rng_state),
+            flat_neighbors: Some(flat),
         })
     }
 
@@ -351,6 +403,7 @@ impl HnswIndex {
         if tombstone_count == 0 {
             return 0;
         }
+        self.ensure_mutable_neighbors();
 
         let mut id_map: Vec<u32> = Vec::with_capacity(self.nodes.len());
         let mut new_id = 0u32;
