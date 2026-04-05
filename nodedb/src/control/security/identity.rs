@@ -198,7 +198,8 @@ pub fn required_permission(plan: &crate::bridge::envelope::PhysicalPlan) -> Perm
             | QueryOp::BroadcastJoin { .. }
             | QueryOp::ShuffleJoin { .. }
             | QueryOp::NestedLoopJoin { .. }
-            | QueryOp::RecursiveScan { .. },
+            | QueryOp::RecursiveScan { .. }
+            | QueryOp::FacetCounts { .. },
         ) => Permission::Read,
 
         PhysicalPlan::Text(TextOp::Search { .. } | TextOp::HybridSearch { .. }) => Permission::Read,

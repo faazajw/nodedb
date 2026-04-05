@@ -62,6 +62,18 @@ pub enum QueryOp {
         limit: usize,
     },
 
+    /// Multi-facet aggregation: compute facet counts for multiple fields
+    /// in a single query, sharing the filter evaluation across all facets.
+    FacetCounts {
+        collection: String,
+        /// Serialized `Vec<ScanFilter>` predicates (MessagePack).
+        filters: Vec<u8>,
+        /// Field names to facet on (each produces a `[{value, count}]` array).
+        fields: Vec<String>,
+        /// Maximum number of values to return per facet field (0 = unlimited).
+        limit_per_facet: usize,
+    },
+
     /// Recursive CTE: iterative fixed-point execution.
     ///
     /// Executes the base query once, then repeatedly executes the recursive

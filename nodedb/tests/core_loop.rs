@@ -8,6 +8,8 @@ mod test_conditional_update;
 mod test_cross_engine_validation;
 #[path = "executor_tests/test_document.rs"]
 mod test_document;
+#[path = "executor_tests/test_facet.rs"]
+mod test_facet;
 #[path = "executor_tests/test_graph.rs"]
 mod test_graph;
 #[path = "executor_tests/test_graph_bounds.rs"]

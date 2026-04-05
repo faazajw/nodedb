@@ -55,6 +55,7 @@ pub(super) fn extract_collection(plan: &PhysicalPlan) -> Option<&str> {
         | PhysicalPlan::Text(TextOp::Search { collection, .. })
         | PhysicalPlan::Text(TextOp::HybridSearch { collection, .. })
         | PhysicalPlan::Query(QueryOp::PartialAggregate { collection, .. })
+        | PhysicalPlan::Query(QueryOp::FacetCounts { collection, .. })
         | PhysicalPlan::Query(QueryOp::BroadcastJoin {
             large_collection: collection,
             ..
@@ -114,6 +115,7 @@ pub(super) fn describe_plan(plan: &PhysicalPlan) -> PlanKind {
         | PhysicalPlan::Graph(GraphOp::RagFusion { .. })
         | PhysicalPlan::Document(DocumentOp::Scan { .. })
         | PhysicalPlan::Query(QueryOp::Aggregate { .. })
+        | PhysicalPlan::Query(QueryOp::FacetCounts { .. })
         | PhysicalPlan::Query(QueryOp::HashJoin { .. })
         | PhysicalPlan::Graph(GraphOp::Algo { .. })
         | PhysicalPlan::Graph(GraphOp::Match { .. }) => PlanKind::MultiRow,

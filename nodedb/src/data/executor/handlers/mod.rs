@@ -8,6 +8,7 @@ pub mod compact;
 pub mod control;
 pub mod convert;
 pub mod document;
+pub mod facet;
 pub mod graph;
 pub mod graph_algo;
 pub mod graph_match;

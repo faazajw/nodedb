@@ -90,6 +90,57 @@ impl SparseEngine {
         Ok(result)
     }
 
+    /// Scan index entries grouped by value, filtered to a set of document IDs.
+    ///
+    /// Like `scan_index_groups`, but only counts entries whose document ID
+    /// is in the provided `doc_ids` set. This enables shared-filter-bitmap
+    /// facet counting: evaluate the WHERE predicate once to get matching doc IDs,
+    /// then count per-facet-field using this method.
+    pub fn scan_index_groups_filtered(
+        &self,
+        tenant_id: u32,
+        collection: &str,
+        field: &str,
+        doc_ids: &std::collections::HashSet<String>,
+    ) -> crate::Result<Vec<(String, usize)>> {
+        let prefix = format!("{tenant_id}:{collection}:{field}:");
+        let end = format!("{tenant_id}:{collection}:{field}:\u{ffff}");
+
+        let read_txn = self.db.begin_read().map_err(|e| redb_err("read txn", e))?;
+        let table = read_txn
+            .open_table(INDEXES)
+            .map_err(|e| redb_err("open table", e))?;
+
+        let range = table
+            .range(prefix.as_str()..end.as_str())
+            .map_err(|e| redb_err("index range", e))?;
+
+        let mut groups: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        for entry in range {
+            let entry = entry.map_err(|e| redb_err("index entry", e))?;
+            let key = entry.0.value().to_string();
+            if let Some(rest) = key.strip_prefix(&prefix)
+                && let Some(colon_pos) = rest.rfind(':')
+            {
+                let value = &rest[..colon_pos];
+                let doc_id = &rest[colon_pos + 1..];
+                if doc_ids.contains(doc_id) {
+                    *groups.entry(value.to_string()).or_default() += 1;
+                }
+            }
+        }
+
+        let mut result: Vec<(String, usize)> = groups.into_iter().collect();
+        result.sort_by(|a, b| b.1.cmp(&a.1)); // Sort by count descending (most popular first).
+        debug!(
+            collection,
+            field,
+            groups = result.len(),
+            "filtered index group scan"
+        );
+        Ok(result)
+    }
+
     /// Scan documents with predicate evaluation at the storage layer.
     ///
     /// Unlike `scan_documents` which returns all documents and filters

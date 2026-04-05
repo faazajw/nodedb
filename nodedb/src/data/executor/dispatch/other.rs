@@ -97,6 +97,15 @@ impl CoreLoop {
                 self.execute_transaction_batch(task, tid, plans)
             }
 
+            PhysicalPlan::Query(QueryOp::FacetCounts {
+                collection,
+                filters,
+                fields,
+                limit_per_facet,
+            }) => {
+                self.execute_facet_counts(task, tid, collection, filters, fields, *limit_per_facet)
+            }
+
             PhysicalPlan::Query(QueryOp::PartialAggregate {
                 collection,
                 group_by,

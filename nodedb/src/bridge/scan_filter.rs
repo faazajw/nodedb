@@ -352,6 +352,9 @@ pub fn compute_aggregate(op: &str, field: &str, docs: &[serde_json::Value]) -> s
     }
 }
 
+// Re-export predicate parsing from the shared `nodedb-query` crate.
+pub use nodedb_query::scan_filter::parse_simple_predicates;
+
 #[cfg(test)]
 mod tests {
     use super::*;
