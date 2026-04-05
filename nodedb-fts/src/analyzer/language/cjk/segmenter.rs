@@ -124,6 +124,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(not(feature = "lang-zh"))]
     fn fallback_to_bigrams_chinese() {
         // Without lang-zh feature, should use CJK bigrams.
         let tokens = segment("全文検索", "zh");
@@ -131,14 +132,37 @@ mod tests {
     }
 
     #[test]
-    fn fallback_to_bigrams_japanese() {
-        let tokens = segment("東京タワー", "ja");
-        // Without lang-ja feature, bigram fallback.
+    #[cfg(feature = "lang-zh")]
+    fn dictionary_segmentation_chinese() {
+        // With lang-zh feature, jieba produces dictionary-based tokens.
+        let tokens = segment("全文検索", "zh");
         assert!(!tokens.is_empty());
     }
 
     #[test]
+    #[cfg(not(feature = "lang-ja"))]
+    fn fallback_to_bigrams_japanese() {
+        let tokens = segment("東京タワー", "ja");
+        assert!(!tokens.is_empty());
+    }
+
+    #[test]
+    #[cfg(feature = "lang-ja")]
+    fn dictionary_segmentation_japanese() {
+        let tokens = segment("東京タワー", "ja");
+        assert!(!tokens.is_empty());
+    }
+
+    #[test]
+    #[cfg(not(feature = "lang-ko"))]
     fn fallback_to_bigrams_korean() {
+        let tokens = segment("한국어", "ko");
+        assert!(!tokens.is_empty());
+    }
+
+    #[test]
+    #[cfg(feature = "lang-ko")]
+    fn dictionary_segmentation_korean() {
         let tokens = segment("한국어", "ko");
         assert!(!tokens.is_empty());
     }
