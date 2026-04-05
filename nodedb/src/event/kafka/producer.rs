@@ -64,7 +64,7 @@ pub fn spawn_kafka_task(
 
         // Initialize transactional producer if configured.
         if config.transactional {
-            if let Err(e) = producer.init_transactions(Duration::from_secs(10)).await {
+            if let Err(e) = producer.init_transactions(Duration::from_secs(10)) {
                 warn!(
                     stream = %stream_name,
                     error = %e,
@@ -136,7 +136,6 @@ pub fn spawn_kafka_task(
                     if config.transactional && published > 0 {
                         if let Err(e) = producer
                             .commit_transaction(Duration::from_secs(10))
-                            .await
                         {
                             warn!(error = %e, "Kafka commit_transaction failed");
                             continue;
