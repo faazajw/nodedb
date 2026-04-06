@@ -8,8 +8,8 @@ use sonic_rs;
 
 use crate::bridge::envelope::PhysicalPlan;
 use crate::bridge::physical_plan::{
-    ColumnarOp, CrdtOp, DocumentOp, GraphOp, MetaOp, QueryOp, SpatialOp, TextOp, TimeseriesOp,
-    VectorOp,
+    ColumnarOp, CrdtOp, DocumentOp, GraphOp, KvOp, MetaOp, QueryOp, SpatialOp, TextOp,
+    TimeseriesOp, VectorOp,
 };
 
 use super::super::types::text_field;
@@ -115,11 +115,20 @@ pub(super) fn describe_plan(plan: &PhysicalPlan) -> PlanKind {
         | PhysicalPlan::Graph(GraphOp::Subgraph { .. })
         | PhysicalPlan::Graph(GraphOp::RagFusion { .. })
         | PhysicalPlan::Document(DocumentOp::Scan { .. })
+        | PhysicalPlan::Columnar(ColumnarOp::Scan { .. })
+        | PhysicalPlan::Timeseries(TimeseriesOp::Scan { .. })
+        | PhysicalPlan::Spatial(SpatialOp::Scan { .. })
+        | PhysicalPlan::Kv(KvOp::Scan { .. })
+        | PhysicalPlan::Kv(KvOp::BatchGet { .. })
         | PhysicalPlan::Query(QueryOp::Aggregate { .. })
         | PhysicalPlan::Query(QueryOp::FacetCounts { .. })
         | PhysicalPlan::Query(QueryOp::HashJoin { .. })
         | PhysicalPlan::Graph(GraphOp::Algo { .. })
         | PhysicalPlan::Graph(GraphOp::Match { .. }) => PlanKind::MultiRow,
+
+        PhysicalPlan::Kv(KvOp::Get { .. }) | PhysicalPlan::Kv(KvOp::FieldGet { .. }) => {
+            PlanKind::SingleDocument
+        }
 
         // DML operations that return affected row count.
         PhysicalPlan::Document(DocumentOp::PointPut { .. })

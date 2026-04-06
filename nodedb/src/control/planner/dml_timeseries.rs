@@ -1,5 +1,7 @@
 //! DML plan conversion for timeseries collections.
 
+use sonic_rs;
+
 use crate::bridge::envelope::PhysicalPlan;
 use crate::bridge::physical_plan::TimeseriesOp;
 use crate::control::planner::physical::PhysicalTask;
@@ -36,12 +38,11 @@ impl PlanConverter {
                 }
 
                 // Convert SQL row values to ILP lines for the timeseries ingest handler.
-                // Each row is a MessagePack map: {"col1": val1, "col2": val2, ...}
-                // Convert to ILP: `collection field1=val1,field2=val2 timestamp_ns`
+                // `value_bytes` from extract_insert_values are JSON bytes.
                 let mut ilp_batch = String::new();
                 for (_doc_id, value_bytes) in &values {
                     let row: serde_json::Value =
-                        nodedb_types::json_from_msgpack(value_bytes).unwrap_or_default();
+                        sonic_rs::from_slice(value_bytes).unwrap_or_default();
                     if let serde_json::Value::Object(map) = row {
                         // Extract timestamp (look for common timestamp field names).
                         let ts_ns = map

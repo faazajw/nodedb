@@ -37,10 +37,11 @@ impl PlanConverter {
                 }
 
                 // Convert SQL row values to JSON array for columnar insert handler.
+                // `value_bytes` from extract_insert_values are JSON bytes.
                 let mut json_rows = Vec::with_capacity(values.len());
                 for (_doc_id, value_bytes) in &values {
                     let row: serde_json::Value =
-                        nodedb_types::json_from_msgpack(value_bytes).unwrap_or_default();
+                        sonic_rs::from_slice(value_bytes).unwrap_or_default();
                     json_rows.push(row);
                 }
                 let payload = sonic_rs::to_vec(&json_rows).unwrap_or_default();
