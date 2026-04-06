@@ -284,10 +284,12 @@ fn apply_predicate(
     distance_meters: f64,
 ) -> bool {
     match predicate {
-        SpatialPredicate::DWithin => nodedb_spatial::st_dwithin(query, doc, distance_meters),
-        SpatialPredicate::Contains => nodedb_spatial::st_contains(query, doc),
-        SpatialPredicate::Intersects => nodedb_spatial::st_intersects(query, doc),
-        SpatialPredicate::Within => nodedb_spatial::st_within(doc, query),
+        SpatialPredicate::DWithin => {
+            crate::engine::spatial::st_dwithin(query, doc, distance_meters)
+        }
+        SpatialPredicate::Contains => crate::engine::spatial::st_contains(query, doc),
+        SpatialPredicate::Intersects => crate::engine::spatial::st_intersects(query, doc),
+        SpatialPredicate::Within => crate::engine::spatial::st_within(doc, query),
     }
 }
 

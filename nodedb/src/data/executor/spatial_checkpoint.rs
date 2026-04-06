@@ -102,7 +102,7 @@ impl CoreLoop {
             let key = unsanitize_key(&sanitized);
 
             if let Ok(bytes) = std::fs::read(&path)
-                && let Ok(rtree) = nodedb_spatial::RTree::from_checkpoint(&bytes)
+                && let Ok(rtree) = crate::engine::spatial::RTree::from_checkpoint(&bytes)
             {
                 tracing::info!(
                     core = self.core_id,

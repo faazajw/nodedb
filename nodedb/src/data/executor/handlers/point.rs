@@ -531,7 +531,7 @@ impl CoreLoop {
                     let index_key = format!("{tid}:{collection}:{field_name}");
                     let entry_id = crate::util::fnv1a_hash(document_id.as_bytes());
                     let rtree = self.spatial_indexes.entry(index_key.clone()).or_default();
-                    rtree.insert(nodedb_spatial::RTreeEntry { id: entry_id, bbox });
+                    rtree.insert(crate::engine::spatial::RTreeEntry { id: entry_id, bbox });
                     // Maintain reverse map: entry_id → document_id.
                     self.spatial_doc_map
                         .insert((index_key, entry_id), document_id.to_string());

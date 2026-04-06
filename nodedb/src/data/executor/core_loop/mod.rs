@@ -82,7 +82,7 @@ pub struct CoreLoop {
     /// Per-collection spatial R-tree indexes, keyed by "{tid}:{collection}:{field}".
     /// Lazily initialized when a spatial query or geometry insert first targets a field.
     pub(in crate::data::executor) spatial_indexes:
-        std::collections::HashMap<String, nodedb_spatial::RTree>,
+        std::collections::HashMap<String, crate::engine::spatial::RTree>,
 
     /// Reverse map from R-tree entry ID → document ID, keyed by (index_key, entry_id).
     /// Needed because RTreeEntry only stores a u64 hash, not the original doc_id.

@@ -342,7 +342,7 @@ mod tests {
         // Test HNSW compaction directly (sealed segment tombstone removal).
         let mut idx = crate::engine::vector::hnsw::graph::HnswIndex::new(4, HnswParams::default());
         for i in 0..20u32 {
-            idx.insert(vec![i as f32; 4]);
+            let _ = idx.insert(vec![i as f32; 4]);
         }
         for i in 0..10u32 {
             idx.delete(i);
