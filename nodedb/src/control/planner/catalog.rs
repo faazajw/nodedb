@@ -9,7 +9,7 @@ use std::any::Any;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use datafusion::catalog::{SchemaProvider, Session, TableProvider};
 use datafusion::error::DataFusionError;
 use datafusion::logical_expr::{Expr, TableType};
@@ -209,60 +209,118 @@ impl TableProvider for NodeDbTableStub {
     }
 }
 
-/// Convert a `StoredCollection` field list to an Arrow schema.
+/// Convert a `ColumnType` to the equivalent Arrow `DataType`.
+fn column_type_to_arrow(ct: &nodedb_types::columnar::ColumnType) -> DataType {
+    use nodedb_types::columnar::ColumnType;
+    match ct {
+        ColumnType::Int64 => DataType::Int64,
+        ColumnType::Float64 => DataType::Float64,
+        ColumnType::String => DataType::Utf8,
+        ColumnType::Bool => DataType::Boolean,
+        ColumnType::Bytes | ColumnType::Geometry => DataType::Binary,
+        ColumnType::Timestamp => DataType::Timestamp(TimeUnit::Microsecond, None),
+        ColumnType::Decimal | ColumnType::Uuid => DataType::Utf8,
+        ColumnType::Vector(_) => DataType::Binary,
+    }
+}
+
+/// Convert a `StoredCollection` to an Arrow schema for DataFusion query planning.
+///
+/// Strict and KV collections carry their full schema in `collection_type`.
+/// Columnar collections (plain / timeseries / spatial) store column info in
+/// the legacy `fields` tuple vec populated at CREATE time.
+/// Schemaless documents expose `(id, document)` — fields are dynamic.
 fn collection_to_arrow_schema(
     coll: &crate::control::security::catalog::StoredCollection,
 ) -> SchemaRef {
-    if coll.fields.is_empty() {
-        return Arc::new(Schema::new(vec![
+    use nodedb_types::CollectionType;
+    use nodedb_types::columnar::DocumentMode;
+
+    match &coll.collection_type {
+        // Strict document: full schema lives in the DocumentMode variant.
+        CollectionType::Document(DocumentMode::Strict(schema)) => {
+            let fields = schema
+                .columns
+                .iter()
+                .map(|c| Field::new(&c.name, column_type_to_arrow(&c.column_type), c.nullable))
+                .collect::<Vec<_>>();
+            Arc::new(Schema::new(fields))
+        }
+
+        // Schemaless document: dynamic fields — expose id + raw document blob.
+        CollectionType::Document(DocumentMode::Schemaless) => Arc::new(Schema::new(vec![
             Field::new("id", DataType::Utf8, false),
             Field::new("document", DataType::Utf8, true),
-        ]));
+        ])),
+
+        // Key-Value: full schema lives in KvConfig.
+        CollectionType::KeyValue(config) => {
+            let fields = config
+                .schema
+                .columns
+                .iter()
+                .map(|c| Field::new(&c.name, column_type_to_arrow(&c.column_type), c.nullable))
+                .collect::<Vec<_>>();
+            Arc::new(Schema::new(fields))
+        }
+
+        // Columnar (plain / timeseries / spatial): schema stored as (name, type_str)
+        // tuples in `coll.fields`, populated at CREATE time.
+        // Fall back to (id, document) for collections created before typed DDL.
+        CollectionType::Columnar(profile) => {
+            if coll.fields.is_empty() {
+                return Arc::new(Schema::new(vec![
+                    Field::new("id", DataType::Utf8, false),
+                    Field::new("document", DataType::Utf8, true),
+                ]));
+            }
+
+            let is_timeseries = profile.is_timeseries();
+            // Don't prepend `id` if the user already declared it as a column.
+            let has_id = coll.fields.iter().any(|(name, _)| name == "id");
+            let mut fields = if is_timeseries || has_id {
+                Vec::new()
+            } else {
+                vec![Field::new("id", DataType::Utf8, false)]
+            };
+
+            for (name, type_str) in &coll.fields {
+                let dt = match type_str.to_uppercase().as_str() {
+                    "INT" | "INTEGER" | "INT4" | "INT8" | "BIGINT" => DataType::Int64,
+                    "FLOAT" | "FLOAT4" | "FLOAT8" | "FLOAT64" | "DOUBLE" | "REAL" => {
+                        DataType::Float64
+                    }
+                    "VARCHAR" | "TEXT" | "STRING" => DataType::Utf8,
+                    "BOOL" | "BOOLEAN" => DataType::Boolean,
+                    "BYTES" | "BYTEA" | "BLOB" => DataType::Binary,
+                    "JSON" | "JSONB" => DataType::Utf8,
+                    "TIMESTAMP" | "TIMESTAMPTZ" => DataType::Timestamp(TimeUnit::Microsecond, None),
+                    t if t.starts_with("VECTOR") => DataType::Binary,
+                    _ => DataType::Utf8,
+                };
+                fields.push(Field::new(name, dt, true));
+            }
+            Arc::new(Schema::new(fields))
+        }
     }
-
-    let is_timeseries = coll.collection_type.is_timeseries();
-
-    let mut fields = if is_timeseries {
-        Vec::new()
-    } else {
-        vec![Field::new("id", DataType::Utf8, false)]
-    };
-
-    for (name, type_str) in &coll.fields {
-        let dt = match type_str.to_uppercase().as_str() {
-            "INT" | "INTEGER" | "INT4" | "INT8" | "BIGINT" => DataType::Int64,
-            "FLOAT" | "FLOAT4" | "FLOAT8" | "DOUBLE" | "REAL" => DataType::Float64,
-            "VARCHAR" | "TEXT" | "STRING" => DataType::Utf8,
-            "BOOL" | "BOOLEAN" => DataType::Boolean,
-            "BYTES" | "BYTEA" | "BLOB" => DataType::Binary,
-            "JSON" | "JSONB" => DataType::Utf8,
-            "TIMESTAMP" | "TIMESTAMPTZ" if is_timeseries => DataType::Int64,
-            "TIMESTAMP" | "TIMESTAMPTZ" => DataType::Utf8,
-            t if t.starts_with("VECTOR") => DataType::Utf8,
-            _ => DataType::Utf8,
-        };
-        fields.push(Field::new(name, dt, true));
-    }
-
-    Arc::new(Schema::new(fields))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::control::security::catalog::StoredCollection;
+    use nodedb_types::columnar::{ColumnDef, ColumnType, StrictSchema};
 
-    #[test]
-    fn schemaless_collection_schema() {
-        let coll = StoredCollection {
+    fn base_coll(name: &str, ct: nodedb_types::CollectionType) -> StoredCollection {
+        StoredCollection {
             tenant_id: 1,
-            name: "test".into(),
+            name: name.into(),
             owner: "admin".into(),
             created_at: 0,
             fields: vec![],
             field_defs: vec![],
             event_defs: vec![],
-            collection_type: nodedb_types::CollectionType::document(),
+            collection_type: ct,
             timeseries_config: None,
             is_active: true,
             append_only: false,
@@ -277,7 +335,12 @@ mod tests {
             materialized_sums: Vec::new(),
             lvc_enabled: false,
             permission_tree_def: None,
-        };
+        }
+    }
+
+    #[test]
+    fn schemaless_collection_schema() {
+        let coll = base_coll("test", nodedb_types::CollectionType::document());
         let schema = collection_to_arrow_schema(&coll);
         assert_eq!(schema.fields().len(), 2);
         assert_eq!(schema.field(0).name(), "id");
@@ -285,42 +348,109 @@ mod tests {
     }
 
     #[test]
-    fn typed_collection_schema() {
-        let coll = StoredCollection {
-            tenant_id: 1,
-            name: "users".into(),
-            owner: "admin".into(),
-            created_at: 0,
-            field_defs: vec![],
-            event_defs: vec![],
-            collection_type: nodedb_types::CollectionType::document(),
-            timeseries_config: None,
-            fields: vec![
-                ("name".into(), "VARCHAR".into()),
-                ("age".into(), "INT".into()),
-                ("score".into(), "FLOAT".into()),
-                ("active".into(), "BOOL".into()),
-            ],
-            is_active: true,
-            append_only: false,
-            hash_chain: false,
-            balanced: None,
-            last_chain_hash: None,
-            period_lock: None,
-            retention_period: None,
-            legal_holds: Vec::new(),
-            state_constraints: Vec::new(),
-            transition_checks: Vec::new(),
-            materialized_sums: Vec::new(),
-            lvc_enabled: false,
-            permission_tree_def: None,
-        };
+    fn strict_collection_schema() {
+        let strict_schema = StrictSchema::new(vec![
+            ColumnDef::required("id", ColumnType::Uuid).with_primary_key(),
+            ColumnDef::required("name", ColumnType::String),
+            ColumnDef::required("amount", ColumnType::Decimal),
+            ColumnDef::required("created_at", ColumnType::Timestamp),
+            ColumnDef::nullable("score", ColumnType::Float64),
+        ])
+        .unwrap();
+        let coll = base_coll(
+            "orders",
+            nodedb_types::CollectionType::strict(strict_schema),
+        );
         let schema = collection_to_arrow_schema(&coll);
+
         assert_eq!(schema.fields().len(), 5);
         assert_eq!(schema.field(0).name(), "id");
+        assert_eq!(*schema.field(0).data_type(), DataType::Utf8); // UUID → Utf8
         assert_eq!(schema.field(1).name(), "name");
-        assert_eq!(*schema.field(2).data_type(), DataType::Int64);
-        assert_eq!(*schema.field(3).data_type(), DataType::Float64);
-        assert_eq!(*schema.field(4).data_type(), DataType::Boolean);
+        assert_eq!(*schema.field(1).data_type(), DataType::Utf8);
+        assert_eq!(schema.field(2).name(), "amount");
+        assert_eq!(*schema.field(2).data_type(), DataType::Utf8); // Decimal → Utf8
+        assert_eq!(schema.field(3).name(), "created_at");
+        assert_eq!(
+            *schema.field(3).data_type(),
+            DataType::Timestamp(TimeUnit::Microsecond, None)
+        );
+        assert_eq!(schema.field(4).name(), "score");
+        assert_eq!(*schema.field(4).data_type(), DataType::Float64);
+        assert!(schema.field(4).is_nullable());
+    }
+
+    #[test]
+    fn kv_collection_schema() {
+        let kv_schema = StrictSchema::new(vec![
+            ColumnDef::required("key", ColumnType::String).with_primary_key(),
+            ColumnDef::required("user_id", ColumnType::Uuid),
+            ColumnDef::nullable("expires_at", ColumnType::Timestamp),
+        ])
+        .unwrap();
+        let coll = base_coll("sessions", nodedb_types::CollectionType::kv(kv_schema));
+        let schema = collection_to_arrow_schema(&coll);
+
+        assert_eq!(schema.fields().len(), 3);
+        assert_eq!(schema.field(0).name(), "key");
+        assert!(!schema.field(0).is_nullable()); // primary key → NOT NULL
+        assert_eq!(schema.field(1).name(), "user_id");
+        assert_eq!(schema.field(2).name(), "expires_at");
+        assert!(schema.field(2).is_nullable());
+    }
+
+    #[test]
+    fn columnar_collection_schema() {
+        let mut coll = base_coll("web_events", nodedb_types::CollectionType::columnar());
+        coll.fields = vec![
+            ("ts".into(), "TIMESTAMP".into()),
+            ("user_id".into(), "UUID".into()),
+            ("page".into(), "VARCHAR".into()),
+            ("duration_ms".into(), "INT".into()),
+        ];
+        let schema = collection_to_arrow_schema(&coll);
+
+        // Plain columnar gets an implicit id column prepended.
+        assert_eq!(schema.fields().len(), 5);
+        assert_eq!(schema.field(0).name(), "id");
+        assert_eq!(schema.field(1).name(), "ts");
+        assert_eq!(
+            *schema.field(1).data_type(),
+            DataType::Timestamp(TimeUnit::Microsecond, None)
+        );
+        assert_eq!(*schema.field(4).data_type(), DataType::Int64);
+    }
+
+    #[test]
+    fn timeseries_collection_schema() {
+        let mut coll = base_coll(
+            "cpu_metrics",
+            nodedb_types::CollectionType::timeseries("ts", "1h"),
+        );
+        coll.fields = vec![
+            ("ts".into(), "TIMESTAMP".into()),
+            ("host".into(), "VARCHAR".into()),
+            ("cpu".into(), "FLOAT64".into()),
+        ];
+        let schema = collection_to_arrow_schema(&coll);
+
+        // Timeseries does NOT prepend an id column.
+        assert_eq!(schema.fields().len(), 3);
+        assert_eq!(schema.field(0).name(), "ts");
+        assert_eq!(
+            *schema.field(0).data_type(),
+            DataType::Timestamp(TimeUnit::Microsecond, None)
+        );
+        assert_eq!(*schema.field(2).data_type(), DataType::Float64);
+    }
+
+    #[test]
+    fn columnar_empty_fields_falls_back_to_schemaless() {
+        // Collections created before typed DDL may have empty fields.
+        let coll = base_coll("legacy", nodedb_types::CollectionType::columnar());
+        let schema = collection_to_arrow_schema(&coll);
+        assert_eq!(schema.fields().len(), 2);
+        assert_eq!(schema.field(0).name(), "id");
+        assert_eq!(schema.field(1).name(), "document");
     }
 }
