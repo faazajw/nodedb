@@ -9,7 +9,7 @@ NodeDB-Lite uses the same HNSW implementation as the server. Queries run in-proc
 ```sql
 -- Same API as the server
 CREATE COLLECTION notes TYPE document;
-CREATE VECTOR INDEX ON notes FIELDS embedding DIMENSION 384 METRIC cosine;
+CREATE VECTOR INDEX idx_notes_embedding ON notes METRIC cosine DIM 384;
 
 INSERT INTO notes {
     id: 'note-001',
@@ -18,10 +18,7 @@ INSERT INTO notes {
 };
 
 -- Search locally — sub-ms latency on modern phones
-SELECT id, content, vector_distance() AS score
-FROM notes
-WHERE embedding <-> $query_embedding
-LIMIT 5;
+SEARCH notes USING VECTOR(embedding, $query_embedding, 5);
 ```
 
 **Performance characteristics:**
@@ -116,7 +113,7 @@ const db = await NodeDB.open("my-search-app");
 // Create collection and index
 await db.exec(`CREATE COLLECTION docs TYPE document`);
 await db.exec(
-  `CREATE VECTOR INDEX ON docs FIELDS embedding DIMENSION 384 METRIC cosine`,
+  `CREATE VECTOR INDEX idx_docs_embedding ON docs METRIC cosine DIM 384`,
 );
 
 // Load a static snapshot (pre-built dataset)
@@ -124,10 +121,7 @@ await db.loadSnapshot("/data/docs-snapshot.ndb");
 
 // Search in the browser — no backend needed
 const results = await db.query(
-  `SELECT title, content, vector_distance() AS score
-     FROM docs
-     WHERE embedding <-> [${queryVector.join(",")}]
-     LIMIT 10`,
+  `SEARCH docs USING VECTOR(embedding, ARRAY[${queryVector.join(",")}], 10)`,
 );
 ```
 

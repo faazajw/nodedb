@@ -230,16 +230,13 @@ SELECT * FROM orders WHERE status = 'pending' ORDER BY created_at DESC;
 ```sql
 -- Create a collection with a vector index
 CREATE COLLECTION articles TYPE document;
-CREATE VECTOR INDEX ON articles FIELDS embedding DIMENSION 384 METRIC cosine;
+CREATE VECTOR INDEX idx_articles_embedding ON articles METRIC cosine DIM 384;
 
 -- Insert documents with embeddings
 INSERT INTO articles { title: 'Intro to AI', embedding: [0.1, 0.2, ...] };
 
 -- Search by similarity
-SELECT title, vector_distance() AS score
-FROM articles
-WHERE embedding <-> [0.1, 0.3, ...]
-LIMIT 10;
+SEARCH articles USING VECTOR(embedding, ARRAY[0.1, 0.3, ...], 10);
 ```
 
 ### Graph

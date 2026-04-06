@@ -482,8 +482,8 @@ DROP INDEX idx_email;
 SHOW INDEXES;
 
 -- Vector index
-CREATE VECTOR INDEX ON articles FIELDS embedding DIMENSION 384 METRIC cosine;
-CREATE VECTOR INDEX ON articles FIELDS embedding DIMENSION 384 METRIC cosine M 32 EF_CONSTRUCTION 400;
+CREATE VECTOR INDEX idx_articles_embedding ON articles METRIC cosine DIM 384;
+CREATE VECTOR INDEX idx_articles_embedding ON articles METRIC cosine DIM 384 M 32 EF_CONSTRUCTION 400;
 DROP VECTOR INDEX idx_name;
 
 -- Full-text index
@@ -540,17 +540,15 @@ DROP CONTINUOUS AGGREGATE cpu_hourly;
 
 ```sql
 -- Nearest neighbor search
-SELECT title, vector_distance() AS score
-FROM articles
-WHERE embedding <-> [0.1, 0.3, -0.2, ...]
-LIMIT 10;
+SEARCH articles USING VECTOR(embedding, ARRAY[0.1, 0.3, -0.2, ...], 10);
 
 -- Filtered vector search (adaptive pre-filtering)
 SELECT title, vector_distance() AS score
 FROM articles
 WHERE category = 'machine-learning'
-  AND embedding <-> [0.1, 0.3, -0.2, ...]
-LIMIT 10;
+  AND id IN (
+    SEARCH articles USING VECTOR(embedding, ARRAY[0.1, 0.3, -0.2, ...], 10)
+  );
 ```
 
 ### Full-Text Search

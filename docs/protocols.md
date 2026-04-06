@@ -46,7 +46,7 @@ SELECT * FROM users WHERE age > 30;
 client.vector_search("articles", &query_vector, 10, None).await?;
 
 // Equivalent SQL (goes through DataFusion):
-// SELECT * FROM articles WHERE embedding <-> [0.1, ...] LIMIT 10;
+// SEARCH articles USING VECTOR(embedding, ARRAY[0.1, ...], 10);
 ```
 
 Both paths produce the same `PhysicalPlan` and execute on the same Data Plane. SDKs support **both modes** on the same connection:

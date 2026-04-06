@@ -20,9 +20,9 @@ CREATE COLLECTION media TYPE strict (
 );
 
 -- Each vector column gets its own index
-CREATE VECTOR INDEX idx_text ON media FIELDS text_embedding DIMENSION 1536 METRIC cosine;
-CREATE VECTOR INDEX idx_clip ON media FIELDS clip_embedding DIMENSION 512 METRIC cosine;
-CREATE VECTOR INDEX idx_audio ON media FIELDS audio_embedding DIMENSION 256 METRIC cosine;
+CREATE VECTOR INDEX idx_text ON media METRIC cosine DIM 1536;
+CREATE VECTOR INDEX idx_clip ON media METRIC cosine DIM 512;
+CREATE VECTOR INDEX idx_audio ON media METRIC cosine DIM 256;
 
 -- Track which models produced which embeddings
 ALTER COLLECTION media SET VECTOR METADATA ON text_embedding (

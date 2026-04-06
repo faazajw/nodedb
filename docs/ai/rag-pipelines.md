@@ -9,7 +9,7 @@ Store pre-chunked documents with embeddings. Search by vector similarity, return
 ```sql
 -- 1. Create a collection for document chunks
 CREATE COLLECTION chunks TYPE document;
-CREATE VECTOR INDEX ON chunks FIELDS embedding DIMENSION 1536 METRIC cosine;
+CREATE VECTOR INDEX idx_chunks_embedding ON chunks METRIC cosine DIM 1536;
 
 -- 2. Insert chunks (your app chunks and embeds externally)
 INSERT INTO chunks {

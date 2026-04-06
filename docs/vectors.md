@@ -25,7 +25,7 @@ NodeDB's vector engine is built for production semantic search — not vectors s
 ```sql
 -- Create a collection with a vector index
 CREATE COLLECTION articles TYPE document;
-CREATE VECTOR INDEX ON articles FIELDS embedding DIMENSION 384 METRIC cosine;
+CREATE VECTOR INDEX idx_articles_embedding ON articles METRIC cosine DIM 384;
 
 -- Insert documents with embeddings
 INSERT INTO articles {
@@ -34,22 +34,22 @@ INSERT INTO articles {
 };
 
 -- Nearest neighbor search
-SELECT title, vector_distance() AS score
-FROM articles
-WHERE embedding <-> [0.1, 0.3, -0.2, ...]
-LIMIT 10;
+SEARCH articles USING VECTOR(embedding, ARRAY[0.1, 0.3, -0.2, ...], 10);
 
 -- Filtered vector search (adaptive pre-filtering kicks in)
 SELECT title, vector_distance() AS score
 FROM articles
 WHERE category = 'machine-learning'
-  AND embedding <-> [0.1, 0.3, -0.2, ...]
-LIMIT 10;
+  AND id IN (
+    SEARCH articles USING VECTOR(embedding, ARRAY[0.1, 0.3, -0.2, ...], 10)
+  );
 
 -- Hybrid vector + full-text search (RRF fusion)
 SELECT title, rrf_score() AS score
 FROM articles
-WHERE embedding <-> [0.1, 0.3, ...]
+WHERE id IN (
+    SEARCH articles USING VECTOR(embedding, ARRAY[0.1, 0.3, ...], 10)
+  )
   AND MATCH(body, 'transformer attention mechanism')
 LIMIT 10;
 ```

@@ -19,7 +19,7 @@ CREATE COLLECTION episodic_memory TYPE strict (
     created_at DATETIME DEFAULT NOW()
 );
 
-CREATE VECTOR INDEX ON episodic_memory FIELDS embedding DIMENSION 1536 METRIC cosine;
+CREATE VECTOR INDEX idx_episodic_memory_embedding ON episodic_memory METRIC cosine DIM 1536;
 
 -- Insert a conversation turn
 INSERT INTO episodic_memory VALUES (
@@ -39,8 +39,9 @@ LIMIT 10;
 SELECT session_id, role, content, vector_distance() AS relevance
 FROM episodic_memory
 WHERE agent_id = $agent
-  AND embedding <-> $query_embedding
-LIMIT 5;
+  AND id IN (
+    SEARCH episodic_memory USING VECTOR(embedding, $query_embedding, 5)
+  );
 ```
 
 ## Semantic Memory (Long-Term)
@@ -59,7 +60,7 @@ CREATE COLLECTION semantic_memory TYPE strict (
     updated_at DATETIME DEFAULT NOW()
 );
 
-CREATE VECTOR INDEX ON semantic_memory FIELDS embedding DIMENSION 1536 METRIC cosine;
+CREATE VECTOR INDEX idx_semantic_memory_embedding ON semantic_memory METRIC cosine DIM 1536;
 
 -- Insert a learned fact
 INSERT INTO semantic_memory VALUES (
@@ -73,8 +74,9 @@ SELECT fact, confidence, vector_distance() AS relevance
 FROM semantic_memory
 WHERE agent_id = $agent
   AND confidence > 0.5
-  AND embedding <-> $query_embedding
-LIMIT 5;
+  AND id IN (
+    SEARCH semantic_memory USING VECTOR(embedding, $query_embedding, 5)
+  );
 
 -- Update confidence when a fact is reconfirmed
 UPDATE semantic_memory
