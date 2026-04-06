@@ -364,7 +364,6 @@ jobs:
           fail_on_unmatched_files: true
 
   # ── Build and push Docker image (full releases only) ──────────────────────────
-  # Requires secrets: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN
   # Uses native runners per arch (no QEMU), then merges into a multi-arch manifest.
   docker-build:
     name: Docker build (${{ matrix.label }})
