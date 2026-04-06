@@ -21,6 +21,7 @@ use nodedb_types::geometry::Geometry;
 use nodedb_types::value::Value;
 use nodedb_vector::HnswIndex;
 
+use crate::engine::fts::FtsCollectionManager;
 use crate::engine::spatial::SpatialIndexManager;
 use crate::nodedb::lock_ext::LockExt;
 
@@ -40,7 +41,7 @@ pub fn index_row(
     values: &[Value],
     hnsw_indices: &Mutex<HashMap<String, HnswIndex>>,
     spatial: &Mutex<SpatialIndexManager>,
-    text_indices: &Mutex<HashMap<String, nodedb_query::text_search::InvertedIndex>>,
+    fts: &Mutex<FtsCollectionManager>,
 ) {
     for (i, col) in columns.iter().enumerate() {
         if i >= values.len() {
@@ -56,7 +57,7 @@ pub fn index_row(
                 index_vector(collection, &col.name, row_id, val, *dim, hnsw_indices);
             }
             ColumnType::String => {
-                index_text(collection, &col.name, row_id, val, text_indices);
+                index_text(collection, &col.name, row_id, val, fts);
             }
             _ => {} // No secondary index for other types.
         }
@@ -73,11 +74,11 @@ pub fn deindex_row_text(
     collection: &str,
     row_id: &str,
     columns: &[nodedb_types::columnar::ColumnDef],
-    text_indices: &Mutex<HashMap<String, nodedb_query::text_search::InvertedIndex>>,
+    fts: &Mutex<FtsCollectionManager>,
 ) {
     for col in columns {
         if matches!(col.column_type, ColumnType::String) {
-            remove_text(collection, &col.name, row_id, text_indices);
+            remove_text(collection, &col.name, row_id, fts);
         }
     }
 }
@@ -154,37 +155,20 @@ fn index_text(
     field: &str,
     doc_id: &str,
     value: &Value,
-    text_indices: &Mutex<HashMap<String, nodedb_query::text_search::InvertedIndex>>,
+    fts: &Mutex<FtsCollectionManager>,
 ) {
     let text = match value {
         Value::String(s) => s.as_str(),
         _ => return,
     };
-
-    if text.is_empty() {
-        return;
-    }
-
-    let index_key = format!("{collection}:{field}");
-    let mut indices = text_indices.lock_or_recover();
-    let index = indices
-        .entry(index_key)
-        .or_insert_with(nodedb_query::text_search::InvertedIndex::new);
-    index.index_document(doc_id, text);
+    fts.lock_or_recover()
+        .index_field(collection, field, doc_id, text);
 }
 
 /// Remove a document from the text index.
-fn remove_text(
-    collection: &str,
-    field: &str,
-    doc_id: &str,
-    text_indices: &Mutex<HashMap<String, nodedb_query::text_search::InvertedIndex>>,
-) {
-    let index_key = format!("{collection}:{field}");
-    let mut indices = text_indices.lock_or_recover();
-    if let Some(index) = indices.get_mut(&index_key) {
-        index.remove_document(doc_id);
-    }
+fn remove_text(collection: &str, field: &str, doc_id: &str, fts: &Mutex<FtsCollectionManager>) {
+    fts.lock_or_recover()
+        .remove_field(collection, field, doc_id);
 }
 
 #[cfg(test)]
@@ -192,6 +176,7 @@ mod tests {
     use nodedb_types::columnar::ColumnDef;
 
     use super::*;
+    use crate::engine::fts::FtsCollectionManager;
 
     #[test]
     fn index_row_routes_geometry() {
@@ -208,7 +193,7 @@ mod tests {
 
         let hnsw = Mutex::new(HashMap::new());
         let spatial = Mutex::new(SpatialIndexManager::new());
-        let text = Mutex::new(HashMap::new());
+        let text = Mutex::new(FtsCollectionManager::new());
 
         index_row("test", "1", &columns, &values, &hnsw, &spatial, &text);
 
@@ -233,7 +218,7 @@ mod tests {
 
         let hnsw = Mutex::new(HashMap::new());
         let spatial = Mutex::new(SpatialIndexManager::new());
-        let text = Mutex::new(HashMap::new());
+        let text = Mutex::new(FtsCollectionManager::new());
 
         index_row("test", "1", &columns, &values, &hnsw, &spatial, &text);
 
@@ -255,12 +240,15 @@ mod tests {
 
         let hnsw = Mutex::new(HashMap::new());
         let spatial = Mutex::new(SpatialIndexManager::new());
-        let text = Mutex::new(HashMap::new());
+        let text = Mutex::new(FtsCollectionManager::new());
 
         index_row("test", "1", &columns, &values, &hnsw, &spatial, &text);
 
         let text = text.lock().expect("lock");
-        assert!(text.contains_key("test:body"));
+        assert!(
+            !text.is_empty(),
+            "text FTS index should have entries after indexing a String column"
+        );
     }
 
     #[test]
@@ -273,13 +261,16 @@ mod tests {
 
         let hnsw = Mutex::new(HashMap::new());
         let spatial = Mutex::new(SpatialIndexManager::new());
-        let text = Mutex::new(HashMap::new());
+        let text = Mutex::new(FtsCollectionManager::new());
 
         index_row("test", "1", &columns, &values, &hnsw, &spatial, &text);
 
         // No indexes should be populated for Int64 columns.
         assert!(hnsw.lock().expect("lock").is_empty());
         assert!(spatial.lock().expect("lock").is_empty());
-        assert!(text.lock().expect("lock").is_empty());
+        assert!(
+            text.lock().expect("lock").is_empty(),
+            "no text index for Int64 columns"
+        );
     }
 }

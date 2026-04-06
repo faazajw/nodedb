@@ -90,8 +90,8 @@ impl<S: StorageEngine> NodeDbLite<S> {
 
         // Remove text index for this collection.
         {
-            let mut indices = self.text_indices.lock().unwrap_or_else(|p| p.into_inner());
-            indices.remove(name);
+            let mut fts = self.fts.lock_or_recover();
+            fts.drop_collection(name);
         }
 
         // Delete collection metadata from redb.

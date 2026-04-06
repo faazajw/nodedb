@@ -362,7 +362,12 @@ impl NodeDbLiteWasm {
     ) -> Result<JsValue, JsError> {
         let results = self
             .db
-            .text_search(collection, query, top_k)
+            .text_search(
+                collection,
+                query,
+                top_k,
+                nodedb_types::TextSearchParams::default(),
+            )
             .await
             .map_err(|e| JsError::new(&e.to_string()))?;
 

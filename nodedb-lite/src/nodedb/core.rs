@@ -48,9 +48,9 @@ pub struct NodeDbLite<S: StorageEngine> {
     pub(crate) vector_id_map: Mutex<HashMap<String, (String, u32)>>,
     /// SQL query engine (DataFusion over Loro documents and strict collections).
     pub(crate) query_engine: crate::query::LiteQueryEngine<S>,
-    /// Per-collection in-memory inverted index for full-text search.
+    /// Per-collection in-memory full-text search engine.
     /// Updated incrementally on `document_put` and `document_delete`.
-    pub(crate) text_indices: Mutex<HashMap<String, nodedb_query::text_search::InvertedIndex>>,
+    pub(crate) fts: Mutex<crate::engine::fts::FtsCollectionManager>,
     /// Spatial R-tree indexes for geometry fields.
     pub(crate) spatial: Mutex<crate::engine::spatial::SpatialIndexManager>,
     /// Per-column secondary B-tree indexes for strict collections.
@@ -264,7 +264,7 @@ impl<S: StorageEngine> NodeDbLite<S> {
             search_ef: 128,
             vector_id_map: Mutex::new(HashMap::new()),
             query_engine,
-            text_indices: Mutex::new(HashMap::new()),
+            fts: Mutex::new(crate::engine::fts::FtsCollectionManager::new()),
             spatial: Mutex::new(spatial),
             secondary_indices: Mutex::new(HashMap::new()),
             strict,
@@ -496,8 +496,7 @@ impl<S: StorageEngine> NodeDbLite<S> {
     fn rebuild_text_indices(&self) {
         let crdt = self.crdt.lock_or_recover();
         let collections = crdt.collection_names();
-
-        let mut indices = self.text_indices.lock_or_recover();
+        let mut fts = self.fts.lock_or_recover();
 
         for collection in &collections {
             if collection.starts_with("__") {
@@ -507,8 +506,6 @@ impl<S: StorageEngine> NodeDbLite<S> {
             if ids.is_empty() {
                 continue;
             }
-
-            let idx = indices.entry(collection.clone()).or_default();
 
             for id in &ids {
                 if let Some(loro_val) = crdt.read(collection, id) {
@@ -522,9 +519,7 @@ impl<S: StorageEngine> NodeDbLite<S> {
                         })
                         .collect::<Vec<_>>()
                         .join(" ");
-                    if !text.is_empty() {
-                        idx.index_document(id, &text);
-                    }
+                    fts.index_document(collection, id, &text);
                 }
             }
         }
@@ -580,21 +575,16 @@ impl<S: StorageEngine> NodeDbLite<S> {
             .collect::<Vec<_>>()
             .join(" ");
 
-        if text.is_empty() {
-            return;
-        }
-
-        let mut indices = self.text_indices.lock_or_recover();
-        let idx = indices.entry(collection.to_string()).or_default();
-        idx.index_document(doc_id, &text);
+        self.fts
+            .lock_or_recover()
+            .index_document(collection, doc_id, &text);
     }
 
     /// Remove a document from the text index.
     pub(crate) fn remove_document_text(&self, collection: &str, doc_id: &str) {
-        let mut indices = self.text_indices.lock_or_recover();
-        if let Some(idx) = indices.get_mut(collection) {
-            idx.remove_document(doc_id);
-        }
+        self.fts
+            .lock_or_recover()
+            .remove_document(collection, doc_id);
     }
 
     pub(crate) fn ensure_hnsw<'a>(
@@ -698,7 +688,7 @@ impl<S: StorageEngine> NodeDbLite<S> {
             values,
             &self.hnsw_indices,
             &self.spatial,
-            &self.text_indices,
+            &self.fts,
         );
 
         // Update secondary B-tree indexes on non-PK columns.
@@ -754,7 +744,7 @@ impl<S: StorageEngine> NodeDbLite<S> {
             collection,
             &row_id,
             &schema.columns,
-            &self.text_indices,
+            &self.fts,
         );
 
         // Replicate delete to materialized columnar views (HTAP CDC).
@@ -803,7 +793,7 @@ impl<S: StorageEngine> NodeDbLite<S> {
             values,
             &self.hnsw_indices,
             &self.spatial,
-            &self.text_indices,
+            &self.fts,
         );
 
         // Spatial profile: compute geohash for Point geometries and store
@@ -815,11 +805,9 @@ impl<S: StorageEngine> NodeDbLite<S> {
             && let Some(hash) = crate::engine::columnar::spatial_profile::compute_geohash(&geom)
         {
             drop(columnar);
-            let mut text = self.text_indices.lock_or_recover();
-            let key = format!("{collection}:_geohash");
-            text.entry(key)
-                .or_insert_with(nodedb_query::text_search::InvertedIndex::new)
-                .index_document(&row_id, &hash);
+            self.fts
+                .lock_or_recover()
+                .index_field(collection, "_geohash", &row_id, &hash);
         }
 
         Ok(())

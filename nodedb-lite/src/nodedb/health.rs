@@ -157,8 +157,8 @@ impl<S: StorageEngine> NodeDbLite<S> {
         };
 
         let text_count = {
-            let text = self.text_indices.lock_or_recover();
-            text.len()
+            let fts = self.fts.lock_or_recover();
+            fts.collection_count()
         };
 
         let engines = EnginesHealth {

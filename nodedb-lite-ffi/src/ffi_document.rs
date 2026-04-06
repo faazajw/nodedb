@@ -145,10 +145,12 @@ pub unsafe extern "C" fn nodedb_text_search(
         return NODEDB_ERR_NULL;
     }
 
-    match h
-        .rt
-        .block_on(h.db.text_search(collection, query_str, top_k))
-    {
+    match h.rt.block_on(h.db.text_search(
+        collection,
+        query_str,
+        top_k,
+        nodedb_types::TextSearchParams::default(),
+    )) {
         Ok(results) => {
             let json_items: Vec<serde_json::Value> = results
                 .iter()

@@ -212,7 +212,12 @@ impl<S: StorageEngine> NodeDbLite<S> {
             .await?;
 
         let text_results = self
-            .text_search(params.collection, params.query_text, params.text_k)
+            .text_search(
+                params.collection,
+                params.query_text,
+                params.text_k,
+                nodedb_types::TextSearchParams::default(),
+            )
             .await?;
 
         // RRF fusion via shared module.

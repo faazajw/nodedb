@@ -14,6 +14,7 @@ use nodedb_types::error::NodeDbResult;
 use nodedb_types::filter::{EdgeFilter, MetadataFilter};
 use nodedb_types::id::{EdgeId, NodeId};
 use nodedb_types::result::{QueryResult, SearchResult, SubGraph};
+use nodedb_types::text_search::TextSearchParams;
 use nodedb_types::value::Value;
 
 /// Unified database interface for NodeDB.
@@ -180,13 +181,15 @@ pub trait NodeDb: Send + Sync {
     /// Full-text search with BM25 scoring.
     ///
     /// Returns document IDs with relevance scores, ordered by descending score.
+    /// Pass [`TextSearchParams::default()`] for standard OR-mode non-fuzzy search.
     async fn text_search(
         &self,
         collection: &str,
         query: &str,
         top_k: usize,
+        params: TextSearchParams,
     ) -> NodeDbResult<Vec<SearchResult>> {
-        let _ = (collection, query, top_k);
+        let _ = (collection, query, top_k, params);
         Ok(Vec::new())
     }
 

@@ -532,19 +532,12 @@ impl<S: StorageEngine> NodeDb for NodeDbLite<S> {
         collection: &str,
         query: &str,
         top_k: usize,
+        params: nodedb_types::TextSearchParams,
     ) -> NodeDbResult<Vec<SearchResult>> {
-        use nodedb_query::text_search::{Bm25Params, QueryMode};
-
-        // Use the persistent in-memory inverted index (updated on every document_put/delete).
-        let indices = self.text_indices.lock_or_recover();
-
-        let results = if let Some(idx) = indices.get(collection) {
-            idx.search(query, top_k, QueryMode::Or, Bm25Params::default())
-        } else {
-            // No documents indexed yet for this collection.
-            Vec::new()
-        };
-        drop(indices);
+        let results = self
+            .fts
+            .lock_or_recover()
+            .search(collection, query, top_k, &params);
 
         // Populate metadata from CRDT for each result.
         let crdt = self.crdt.lock_or_recover();
@@ -560,7 +553,7 @@ impl<S: StorageEngine> NodeDb for NodeDbLite<S> {
                 SearchResult {
                     id: r.doc_id,
                     node_id: None,
-                    distance: 1.0 - (r.score as f32 / 20.0).min(1.0),
+                    distance: 1.0 - (r.score / 20.0).min(1.0),
                     metadata,
                 }
             })
