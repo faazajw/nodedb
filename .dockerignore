@@ -1,0 +1,24 @@
+# Build artifacts — largest exclusion, must come first
+target/
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Docs and resources (not needed to compile)
+docs/
+resource/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Local dev overrides
+# Docker must use published crate versions from crates.io
+.cargo/
+
+# Temp / logs
+*.tmp
+*.log
