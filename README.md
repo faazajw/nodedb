@@ -6,15 +6,15 @@ NodeDB provides Vector, Graph, Document (schemaless + strict), Columnar (with Ti
 
 ## Engines
 
-| Engine                                       | What it does                                                                       |
-| -------------------------------------------- | ---------------------------------------------------------------------------------- |
-| [Vector](docs/vectors.md)                    | HNSW index with SQ8/PQ/IVF-PQ quantization and adaptive bitmap filtering           |
-| [Graph](docs/graph.md)                       | CSR adjacency index, 13 algorithms, Cypher-subset MATCH, GraphRAG fusion           |
-| [Document](docs/documents.md)                | Schemaless (MessagePack + CRDT sync) or Strict (Binary Tuples, O(1) field access)  |
-| [Columnar](docs/columnar.md)                 | Per-column compression (ALP, FastLanes, FSST), predicate pushdown, HTAP bridge     |
-| [Timeseries](docs/timeseries.md)             | Columnar profile with ILP ingest, continuous aggregation, PromQL, 12 SQL functions |
-| [Spatial](docs/spatial.md)                   | R\*-tree, geohash, H3, OGC predicates, hybrid spatial-vector search                |
-| [Key-Value](docs/kv.md)                      | Hash-indexed O(1) lookups, TTL, secondary indexes, SQL-queryable                   |
+| Engine                                       | What it does                                                                                      |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| [Vector](docs/vectors.md)                    | HNSW index with SQ8/PQ/IVF-PQ quantization and adaptive bitmap filtering                          |
+| [Graph](docs/graph.md)                       | CSR adjacency index, 13 algorithms, Cypher-subset MATCH, GraphRAG fusion                          |
+| [Document](docs/documents.md)                | Schemaless (MessagePack + CRDT sync) or Strict (Binary Tuples, O(1) field access)                 |
+| [Columnar](docs/columnar.md)                 | Per-column compression (ALP, FastLanes, FSST), predicate pushdown, HTAP bridge                    |
+| [Timeseries](docs/timeseries.md)             | Columnar profile with ILP ingest, continuous aggregation, PromQL, 12 SQL functions                |
+| [Spatial](docs/spatial.md)                   | R\*-tree, geohash, H3, OGC predicates, hybrid spatial-vector search                               |
+| [Key-Value](docs/kv.md)                      | Hash-indexed O(1) lookups, TTL, secondary indexes, SQL-queryable                                  |
 | [Full-Text Search](docs/full-text-search.md) | BMW-optimized BM25, 16 stemmers, 27-language stop words, CJK bigrams, fuzzy, hybrid vector fusion |
 
 ## Architecture
@@ -38,32 +38,36 @@ Application code is the same across all three modes — the `NodeDb` trait expos
 ## Quick Start
 
 ```bash
-# Build
-cargo build --release
+docker compose up -d
+```
 
-# Run single-node server
-./target/release/nodedb
+Requires Linux kernel ≥ 5.1. NodeDB starts on the default ports with data persisted to a named volume.
 
-# Connect with the CLI
-./target/release/ndb
+Connect with psql:
 
-# Or connect with psql
+```bash
 psql -h localhost -p 6432
+```
+
+Or verify via HTTP:
+
+```bash
+curl http://localhost:6480/health
 ```
 
 ```sql
 -- Create a document collection and insert data
 CREATE COLLECTION users TYPE document;
-INSERT INTO users { name: 'Alice', email: 'alice@example.com' };
-SELECT * FROM users WHERE name = 'Alice';
+INSERT INTO users (name, email) VALUES ('Alice', 'alice@example.com');
+SELECT * FROM users;
 
 -- Create a vector index and search
 CREATE COLLECTION articles TYPE document;
-CREATE VECTOR INDEX ON articles FIELDS embedding DIMENSION 384;
-SELECT * FROM articles WHERE embedding <-> $query_vec LIMIT 10;
+CREATE VECTOR INDEX articles_vec ON articles METRIC cosine DIM 384;
+SEARCH articles USING VECTOR(embedding, ARRAY[...], 10);
 ```
 
-See [Getting Started](docs/getting-started.md) for a fuller walkthrough.
+See [Getting Started](docs/getting-started.md) for a fuller walkthrough including build-from-source and configuration.
 
 ## Capabilities
 

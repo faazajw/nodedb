@@ -1,12 +1,65 @@
 # Getting Started
 
-This guide walks you through building NodeDB, starting a server, and running your first queries.
+This guide walks you through starting a NodeDB server and running your first queries.
 
-## Prerequisites
+## Run with Docker (recommended)
 
-- **Rust 1.89+** (edition 2024)
-- **Linux** recommended — the data plane uses io_uring for storage I/O
-- macOS and Windows work for development (without io_uring acceleration)
+The fastest way to get started. Requires Linux kernel ≥ 5.1 (for io_uring).
+
+```bash
+docker compose up -d
+```
+
+That's it. NodeDB starts on the default ports with data persisted to a named volume.
+
+To stop:
+
+```bash
+docker compose down
+```
+
+To stop and wipe all data:
+
+```bash
+docker compose down -v
+```
+
+### Default ports
+
+- **6432** — PostgreSQL wire protocol (pgwire)
+- **6433** — Native MessagePack protocol
+- **6480** — HTTP API (REST, SSE, WebSocket)
+- **9090** — WebSocket sync (NodeDB-Lite clients)
+
+### Verify it's running
+
+```bash
+curl http://localhost:6480/health
+# {"status":"ok", ...}
+```
+
+### Custom port mapping
+
+Edit `docker-compose.yml` to remap any port. The container always listens internally on the same ports — only the host-side mapping changes:
+
+```yaml
+ports:
+  - "5432:6432" # expose pgwire on host port 5432 instead
+  - "6433:6433"
+  - "6480:6480"
+```
+
+### Common env vars
+
+| Variable                  | Default    | Description                  |
+| ------------------------- | ---------- | ---------------------------- |
+| `NODEDB_MEMORY_LIMIT`     | 75% of RAM | e.g. `4GiB`                  |
+| `NODEDB_DATA_PLANE_CORES` | CPUs - 1   | number of Data Plane threads |
+| `NODEDB_LOG_FORMAT`       | `text`     | `text` or `json`             |
+
+Set them under `environment:` in `docker-compose.yml` or pass with `-e` to `docker run`.
+
+---
 
 ## Build from Source
 
@@ -21,12 +74,12 @@ cargo build --release
 cargo test --all-features
 ```
 
-The build produces two binaries:
+Requires Rust 1.94+ and Linux (the Data Plane uses io_uring). The build produces two binaries:
 
 - `target/release/nodedb` — the database server
 - `target/release/ndb` — the terminal client
 
-## Start the Server
+## Start the Server (from source)
 
 ```bash
 # Single-node, default ports
