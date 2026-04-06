@@ -17,7 +17,36 @@ use super::core::NodeDbPgHandler;
 
 impl NodeDbPgHandler {
     /// Execute a SQL query: session state → identity → DDL check → quota → plan → perms → dispatch.
+    ///
+    /// Handles multi-statement queries (e.g. psql heredoc sends all statements in one message).
+    /// Splits at top-level semicolons before dispatching so that `parts[2]` is never polluted
+    /// with trailing `;` characters.
     pub(super) async fn execute_sql(
+        &self,
+        identity: &AuthenticatedIdentity,
+        addr: &std::net::SocketAddr,
+        sql: &str,
+    ) -> PgWireResult<Vec<Response>> {
+        let statements = split_sql_statements(sql);
+        match statements.len() {
+            0 => Ok(vec![Response::EmptyQuery]),
+            1 => {
+                self.execute_single_sql(identity, addr, &statements[0])
+                    .await
+            }
+            _ => {
+                let mut all = Vec::new();
+                for stmt in statements {
+                    let mut resp = self.execute_single_sql(identity, addr, &stmt).await?;
+                    all.append(&mut resp);
+                }
+                Ok(all)
+            }
+        }
+    }
+
+    /// Execute a single (already-split) SQL statement.
+    async fn execute_single_sql(
         &self,
         identity: &AuthenticatedIdentity,
         addr: &std::net::SocketAddr,
@@ -399,5 +428,127 @@ impl NodeDbPgHandler {
             }
         }
         Ok(rows)
+    }
+}
+
+/// Split a SQL string at top-level semicolons into individual statements.
+///
+/// Respects single-quoted strings, double-quoted identifiers, and
+/// dollar-quoted blocks. Does NOT split at semicolons inside string literals.
+/// Empty statements (whitespace only) are discarded.
+///
+/// This handles the case where psql sends multiple statements in one simple
+/// query message (e.g. heredoc input), ensuring `parts[2]` in DDL handlers
+/// never contains a trailing semicolon.
+pub(super) fn split_sql_statements(sql: &str) -> Vec<String> {
+    let mut stmts = Vec::new();
+    let mut current = String::new();
+    let mut chars = sql.chars().peekable();
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    // Simple line-comment skip flag.
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+    let mut prev = '\0';
+
+    while let Some(ch) = chars.next() {
+        // Track line comments (--).
+        if !in_single_quote && !in_double_quote && !in_block_comment {
+            if ch == '-' && chars.peek() == Some(&'-') {
+                in_line_comment = true;
+            }
+            if ch == '/' && chars.peek() == Some(&'*') {
+                in_block_comment = true;
+                current.push(ch);
+                current.push(chars.next().unwrap());
+                prev = '*';
+                continue;
+            }
+        }
+        if in_line_comment {
+            if ch == '\n' {
+                in_line_comment = false;
+            }
+            current.push(ch);
+            prev = ch;
+            continue;
+        }
+        if in_block_comment {
+            current.push(ch);
+            if prev == '*' && ch == '/' {
+                in_block_comment = false;
+            }
+            prev = ch;
+            continue;
+        }
+
+        match ch {
+            '\'' if !in_double_quote => {
+                in_single_quote = !in_single_quote;
+                current.push(ch);
+            }
+            '"' if !in_single_quote => {
+                in_double_quote = !in_double_quote;
+                current.push(ch);
+            }
+            ';' if !in_single_quote && !in_double_quote => {
+                let trimmed = current.trim().to_string();
+                if !trimmed.is_empty() {
+                    stmts.push(trimmed);
+                }
+                current.clear();
+            }
+            _ => {
+                current.push(ch);
+            }
+        }
+        prev = ch;
+    }
+    // Trailing statement without a semicolon.
+    let trimmed = current.trim().to_string();
+    if !trimmed.is_empty() {
+        stmts.push(trimmed);
+    }
+    stmts
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_sql_statements;
+
+    #[test]
+    fn single_statement_no_semicolon() {
+        let stmts = split_sql_statements("SELECT 1");
+        assert_eq!(stmts, vec!["SELECT 1"]);
+    }
+
+    #[test]
+    fn single_statement_with_semicolon() {
+        let stmts = split_sql_statements("CREATE COLLECTION docs;");
+        assert_eq!(stmts, vec!["CREATE COLLECTION docs"]);
+    }
+
+    #[test]
+    fn multi_statement_heredoc() {
+        let sql = "CREATE COLLECTION docs;\nINSERT INTO docs (x) VALUES (1);\nSELECT * FROM docs;";
+        let stmts = split_sql_statements(sql);
+        assert_eq!(stmts.len(), 3);
+        assert_eq!(stmts[0], "CREATE COLLECTION docs");
+        assert_eq!(stmts[1], "INSERT INTO docs (x) VALUES (1)");
+        assert_eq!(stmts[2], "SELECT * FROM docs");
+    }
+
+    #[test]
+    fn semicolon_inside_string_not_split() {
+        let sql = "INSERT INTO t (v) VALUES ('a;b');";
+        let stmts = split_sql_statements(sql);
+        assert_eq!(stmts.len(), 1);
+        assert_eq!(stmts[0], "INSERT INTO t (v) VALUES ('a;b')");
+    }
+
+    #[test]
+    fn empty_statements_discarded() {
+        let stmts = split_sql_statements(";;  ;SELECT 1;;");
+        assert_eq!(stmts, vec!["SELECT 1"]);
     }
 }
