@@ -16,6 +16,14 @@ pub struct WasmRuntime {
     module_cache: Mutex<HashMap<[u8; 32], Arc<Module>>>,
 }
 
+impl std::fmt::Debug for WasmRuntime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WasmRuntime")
+            .field("cached_modules", &self.cached_module_count())
+            .finish()
+    }
+}
+
 impl WasmRuntime {
     /// Create a new WASM runtime with fuel metering and memory limits enabled.
     pub fn new() -> crate::Result<Self> {
