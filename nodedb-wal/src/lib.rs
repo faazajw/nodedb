@@ -26,6 +26,7 @@ pub mod crypto;
 pub mod double_write;
 pub mod error;
 pub mod group_commit;
+pub mod lazy_reader;
 pub mod mmap_reader;
 pub mod reader;
 pub mod record;
@@ -38,6 +39,7 @@ pub mod writer;
 
 pub use error::{Result, WalError};
 pub use group_commit::GroupCommitter;
+pub use lazy_reader::LazyWalReader;
 pub use record::{RecordHeader, RecordType, WalRecord};
 pub use recovery::{RecoveryInfo, recover};
 pub use segmented::{SegmentedWal, SegmentedWalConfig};

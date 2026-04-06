@@ -91,6 +91,11 @@ impl RecordHeader {
         digest
     }
 
+    /// Get the logical record type (with encryption flag stripped).
+    pub fn logical_record_type(&self) -> u16 {
+        self.record_type & !ENCRYPTED_FLAG
+    }
+
     /// Validate this header's magic and version.
     pub fn validate(&self, offset: u64) -> Result<()> {
         if self.magic != WAL_MAGIC {
@@ -334,7 +339,7 @@ impl WalRecord {
 
 /// Bit 14 in record_type signals that the payload is AES-256-GCM encrypted.
 /// This is separate from bit 15 (required flag).
-const ENCRYPTED_FLAG: u16 = 0x4000;
+pub const ENCRYPTED_FLAG: u16 = 0x4000;
 
 #[cfg(test)]
 mod tests {

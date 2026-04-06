@@ -223,6 +223,7 @@ pub fn spawn_core(
             if !wal_records.is_empty() {
                 core.replay_vector_wal(&wal_records, num_cores);
                 core.replay_kv_wal(&wal_records, num_cores);
+                core.replay_timeseries_wal(&wal_records, num_cores);
             }
 
             info!(core_id, "data plane core started (eventfd-driven)");
