@@ -367,7 +367,15 @@ pub fn decode_payload_to_json(payload: &[u8]) -> String {
         return String::from_utf8_lossy(payload).into_owned();
     }
 
-    // Try MessagePack → JSON.
+    // Try zerompk Value format first (canonical internal format, used by
+    // FieldGet, row_to_msgpack, and other direct-encode paths).
+    if let Ok(value) = nodedb_types::value_from_msgpack(payload) {
+        let json: serde_json::Value = value.into();
+        return sonic_rs::to_string(&json)
+            .unwrap_or_else(|_| String::from_utf8_lossy(payload).into_owned());
+    }
+
+    // Fall back to JsonValue msgpack format (used by json_to_msgpack / encode_json).
     match nodedb_types::json_from_msgpack(payload) {
         Ok(value) => sonic_rs::to_string(&value)
             .unwrap_or_else(|_| String::from_utf8_lossy(payload).into_owned()),
