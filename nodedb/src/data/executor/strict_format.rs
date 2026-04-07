@@ -54,6 +54,18 @@ pub(super) fn value_to_binary_tuple(
         .map_err(|e| format!("Binary Tuple encode: {e}"))
 }
 
+/// Decode a Binary Tuple to `nodedb_types::Value::Object` using the schema.
+pub(super) fn binary_tuple_to_value(tuple_bytes: &[u8], schema: &StrictSchema) -> Option<Value> {
+    let decoder = nodedb_strict::TupleDecoder::new(schema);
+    let values = decoder.extract_all(tuple_bytes).ok()?;
+
+    let mut map = std::collections::HashMap::with_capacity(schema.columns.len());
+    for (i, col) in schema.columns.iter().enumerate() {
+        map.insert(col.name.clone(), values[i].clone());
+    }
+    Some(Value::Object(map))
+}
+
 /// Decode a Binary Tuple to a JSON object using the schema (for pgwire output).
 pub(super) fn binary_tuple_to_json(
     tuple_bytes: &[u8],

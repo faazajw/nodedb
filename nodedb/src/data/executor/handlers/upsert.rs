@@ -1,6 +1,8 @@
 //! Upsert handler: insert if absent, merge fields if present.
+//!
+//! Works for schemaless and strict collections. All internal transport
+//! uses nodedb_types::Value + zerompk (msgpack). No JSON roundtrips.
 
-use sonic_rs;
 use tracing::debug;
 
 use crate::bridge::envelope::{ErrorCode, Response};
@@ -13,6 +15,9 @@ impl CoreLoop {
     /// If a document with `document_id` exists, merges `value` fields into the
     /// existing document (preserving fields not in `value`). If it doesn't exist,
     /// inserts as a new document (identical to PointPut).
+    ///
+    /// `value` is msgpack-encoded (zerompk). Strict collections decode binary
+    /// tuples for existing docs, merge, and re-encode via `apply_point_put`.
     pub(in crate::data::executor) fn execute_upsert(
         &mut self,
         task: &ExecutionTask,
@@ -23,51 +28,109 @@ impl CoreLoop {
     ) -> Response {
         debug!(core = self.core_id, %collection, %document_id, "upsert");
 
+        // Detect strict storage mode for this collection.
+        let config_key = format!("{tid}:{collection}");
+        let strict_schema = self.doc_configs.get(&config_key).and_then(|config| {
+            if let crate::bridge::physical_plan::StorageMode::Strict { ref schema } =
+                config.storage_mode
+            {
+                Some(schema.clone())
+            } else {
+                None
+            }
+        });
+
         // Check if document already exists.
         let existing = self.sparse.get(tid, collection, document_id);
 
         match existing {
             Ok(Some(current_bytes)) => {
-                // Merge: read existing doc, overlay new fields.
-                let mut doc = match super::super::doc_format::decode_document(&current_bytes) {
-                    Some(v) => v,
-                    None => {
-                        return self.response_error(
-                            task,
-                            ErrorCode::Internal {
-                                detail: "failed to parse existing document for upsert".into(),
-                            },
-                        );
+                // Decode existing document to nodedb_types::Value.
+                let existing_val = if let Some(ref schema) = strict_schema {
+                    // Strict: binary tuple → Value via schema.
+                    match super::super::strict_format::binary_tuple_to_value(&current_bytes, schema)
+                    {
+                        Some(v) => v,
+                        None => {
+                            // Fallback: try msgpack (migration case).
+                            match nodedb_types::value_from_msgpack(&current_bytes) {
+                                Ok(v) => v,
+                                Err(_) => {
+                                    return self.response_error(
+                                        task,
+                                        ErrorCode::Internal {
+                                            detail: "failed to decode document for upsert".into(),
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // Schemaless: stored as msgpack.
+                    match nodedb_types::value_from_msgpack(&current_bytes) {
+                        Ok(v) => v,
+                        Err(_) => {
+                            return self.response_error(
+                                task,
+                                ErrorCode::Internal {
+                                    detail: "failed to decode document for upsert".into(),
+                                },
+                            );
+                        }
                     }
                 };
 
-                // Parse incoming value as JSON.
-                let new_fields: serde_json::Value = match sonic_rs::from_slice(value) {
+                // Decode incoming value (msgpack → Value).
+                let new_val = match nodedb_types::value_from_msgpack(value) {
                     Ok(v) => v,
                     Err(_) => {
                         return self.response_error(
                             task,
                             ErrorCode::Internal {
-                                detail: "failed to parse upsert value as JSON".into(),
+                                detail: "failed to decode upsert value from msgpack".into(),
                             },
                         );
                     }
                 };
 
-                // Merge new fields into existing document.
-                if let (Some(existing_obj), Some(new_obj)) =
-                    (doc.as_object_mut(), new_fields.as_object())
-                {
-                    for (k, v) in new_obj {
-                        existing_obj.insert(k.clone(), v.clone());
-                    }
-                }
+                // Merge: overlay new fields onto existing.
+                let merged = merge_values(existing_val, new_val);
 
-                let merged_bytes = super::super::doc_format::encode_to_msgpack(&doc);
-                match self.sparse.put(tid, collection, document_id, &merged_bytes) {
+                // Encode merged value for storage.
+                let stored_bytes = if let Some(ref schema) = strict_schema {
+                    // Strict: encode directly to binary tuple.
+                    match super::super::strict_format::value_to_binary_tuple(&merged, schema) {
+                        Ok(bt) => bt,
+                        Err(e) => {
+                            return self.response_error(
+                                task,
+                                ErrorCode::Internal {
+                                    detail: format!("binary tuple encode: {e}"),
+                                },
+                            );
+                        }
+                    }
+                } else {
+                    // Schemaless: encode to msgpack.
+                    match nodedb_types::value_to_msgpack(&merged) {
+                        Ok(b) => b,
+                        Err(_) => {
+                            return self.response_error(
+                                task,
+                                ErrorCode::Internal {
+                                    detail: "failed to encode merged upsert value".into(),
+                                },
+                            );
+                        }
+                    }
+                };
+
+                // Write directly to storage.
+                match self.sparse.put(tid, collection, document_id, &stored_bytes) {
                     Ok(()) => {
                         self.doc_cache
-                            .put(tid, collection, document_id, &merged_bytes);
+                            .put(tid, collection, document_id, &stored_bytes);
                         self.response_ok(task)
                     }
                     Err(e) => self.response_error(
@@ -80,7 +143,6 @@ impl CoreLoop {
             }
             Ok(None) => {
                 // Insert: document doesn't exist, create new (same as PointPut).
-                // Use unified transaction for document + inverted index + stats.
                 let txn = match self.sparse.begin_write() {
                     Ok(t) => t,
                     Err(e) => {
@@ -120,5 +182,19 @@ impl CoreLoop {
                 },
             ),
         }
+    }
+}
+
+/// Merge two `nodedb_types::Value` objects: overlay `new` fields onto `existing`.
+fn merge_values(existing: nodedb_types::Value, new: nodedb_types::Value) -> nodedb_types::Value {
+    match (existing, new) {
+        (nodedb_types::Value::Object(mut existing_map), nodedb_types::Value::Object(new_map)) => {
+            for (k, v) in new_map {
+                existing_map.insert(k, v);
+            }
+            nodedb_types::Value::Object(existing_map)
+        }
+        // If shapes don't match, new value wins entirely.
+        (_, new) => new,
     }
 }
