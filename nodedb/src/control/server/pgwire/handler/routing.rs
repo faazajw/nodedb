@@ -50,16 +50,10 @@ impl NodeDbPgHandler {
         // planning call chain — no shared mutable state.
         let (clean_sql, has_returning) = super::returning::strip_returning(&clean_sql);
 
-        // Register session temp tables in the DataFusion context (name shadowing).
-        // These are registered before planning and deregistered after to prevent
-        // cross-session contamination (DataFusion's SessionContext is shared).
+        // Temp tables: planning now goes through nodedb-sql which resolves
+        // tables via SqlCatalog. Temp table support will be added to SqlCatalog.
         let temp_tables = self.sessions.temp_mem_tables(addr);
-        for (name, mem_table) in &temp_tables {
-            let _ = self
-                .query_ctx
-                .session()
-                .register_table(name, Arc::clone(mem_table) as _);
-        }
+        let _ = &temp_tables; // suppress unused warning
 
         // Check plan cache before full planning. Cache key includes schema_version
         // for automatic invalidation on DDL. RLS policies and permissions are still
@@ -99,11 +93,7 @@ impl NodeDbPgHandler {
             planned
         };
 
-        // Deregister temp tables from the shared DataFusion context to prevent
-        // cross-session visibility. The tables were only needed during planning.
-        for (name, _) in &temp_tables {
-            let _ = self.query_ctx.session().deregister_table(name);
-        }
+        // Temp tables deregistration no longer needed — planning uses nodedb-sql.
 
         if tasks.is_empty() {
             return Ok(vec![Response::Execution(Tag::new("OK"))]);

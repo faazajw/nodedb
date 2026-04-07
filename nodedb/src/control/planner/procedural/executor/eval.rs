@@ -128,16 +128,16 @@ pub async fn evaluate_to_value(
 /// Execute a SQL expression via DataFusion and return the result batches.
 ///
 /// Wraps the expression in `SELECT (<expr>) as __result` and collects.
+/// Uses a standalone DataFusion session (not QueryContext) for scalar evaluation.
 pub async fn eval_sql_expr(
-    state: &SharedState,
-    tenant_id: TenantId,
+    _state: &SharedState,
+    _tenant_id: TenantId,
     expr: &str,
     context: &str,
 ) -> crate::Result<Vec<datafusion::arrow::record_batch::RecordBatch>> {
-    let ctx = crate::control::planner::context::QueryContext::for_state(state, tenant_id.as_u32());
+    let session = datafusion::execution::context::SessionContext::new();
     let select_sql = format!("SELECT ({expr}) as __result");
-    let df = ctx
-        .session()
+    let df = session
         .sql(&select_sql)
         .await
         .map_err(|e| crate::Error::PlanError {
