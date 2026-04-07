@@ -335,7 +335,7 @@ fn plan_spatial_from_where(
         field: "query geometry".into(),
         context: name.into(),
     })?;
-    let geom_str = extract_string_literal(geom_arg).unwrap_or_default();
+    let geom_str = extract_geometry_arg(geom_arg)?;
     let distance = if args.len() >= 3 {
         extract_float(&args[2]).unwrap_or(0.0)
     } else {
@@ -710,6 +710,38 @@ fn eval_constant_expr(expr: &SqlExpr) -> SqlValue {
     }
 }
 
+/// Extract a geometry argument: handles ST_Point(lon, lat), ST_GeomFromGeoJSON('...'),
+/// or a raw string literal containing GeoJSON.
+fn extract_geometry_arg(expr: &ast::Expr) -> Result<String> {
+    match expr {
+        // ST_Point(lon, lat) → GeoJSON Point
+        ast::Expr::Function(func) => {
+            let name = func
+                .name
+                .0
+                .iter()
+                .map(|p| match p {
+                    ast::ObjectNamePart::Identifier(ident) => normalize_ident(ident),
+                    _ => String::new(),
+                })
+                .collect::<Vec<_>>()
+                .join(".");
+            let args = extract_func_args(func)?;
+            match name.as_str() {
+                "st_point" if args.len() >= 2 => {
+                    let lon = extract_float(&args[0])?;
+                    let lat = extract_float(&args[1])?;
+                    Ok(format!(r#"{{"type":"Point","coordinates":[{lon},{lat}]}}"#))
+                }
+                "st_geomfromgeojson" if !args.is_empty() => extract_string_literal(&args[0]),
+                _ => Ok(format!("{expr}")),
+            }
+        }
+        // Raw string literal: assumed to be GeoJSON.
+        _ => extract_string_literal(expr).or_else(|_| Ok(format!("{expr}"))),
+    }
+}
+
 fn extract_column_name(expr: &ast::Expr) -> Result<String> {
     match expr {
         ast::Expr::Identifier(ident) => Ok(normalize_ident(ident)),
@@ -748,6 +780,11 @@ fn extract_float(expr: &ast::Expr) -> Result<f64> {
                 detail: format!("expected number, got: {expr}"),
             }),
         },
+        // Handle negative numbers: -73.9855 is parsed as UnaryOp { Minus, 73.9855 }
+        ast::Expr::UnaryOp {
+            op: ast::UnaryOperator::Minus,
+            expr: inner,
+        } => extract_float(inner).map(|f| -f),
         _ => Err(SqlError::TypeMismatch {
             detail: format!("expected number, got: {expr}"),
         }),
