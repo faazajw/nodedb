@@ -29,6 +29,14 @@ pub(super) fn value_to_binary_tuple(
         _ => return Err("strict value must be an Object".to_string()),
     };
 
+    let schema_columns: std::collections::HashSet<&str> =
+        schema.columns.iter().map(|c| c.name.as_str()).collect();
+    if let Some(unknown) = map.keys().find(|k| !schema_columns.contains(k.as_str())) {
+        return Err(format!(
+            "unknown field '{unknown}' not present in strict schema"
+        ));
+    }
+
     let encoder = nodedb_strict::TupleEncoder::new(schema);
     let mut values = Vec::with_capacity(schema.columns.len());
 
@@ -346,5 +354,18 @@ mod tests {
         let result = value_to_binary_tuple(&Value::Object(map), &schema);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("NOT NULL"));
+    }
+
+    #[test]
+    fn unknown_field_errors() {
+        let schema = test_schema();
+        let mut map = std::collections::HashMap::new();
+        map.insert("id".into(), Value::String("u4".into()));
+        map.insert("name".into(), Value::String("Eve".into()));
+        map.insert("extra".into(), Value::String("boom".into()));
+
+        let result = value_to_binary_tuple(&Value::Object(map), &schema);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("unknown field 'extra'"));
     }
 }

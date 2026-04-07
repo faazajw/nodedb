@@ -118,6 +118,18 @@ impl CoreLoop {
         };
 
         // RLS post-candidate filtering: look up each candidate's document.
+        // For strict collections, decode binary tuples via schema before filter eval.
+        let config_key = format!("{tid}:{collection}");
+        let strict_schema = self.doc_configs.get(&config_key).and_then(|config| {
+            if let crate::bridge::physical_plan::StorageMode::Strict { ref schema } =
+                config.storage_mode
+            {
+                Some(schema.clone())
+            } else {
+                None
+            }
+        });
+
         let hits: Vec<_> = if rls_filters.is_empty() {
             results
                 .iter()
@@ -133,7 +145,24 @@ impl CoreLoop {
                     };
                     match self.sparse.get(tid, collection, doc_id_str) {
                         Ok(Some(bytes)) => {
-                            super::rls_eval::rls_check_msgpack_bytes(rls_filters, &bytes)
+                            // For strict collections, decode binary tuple → JSON for filter eval.
+                            if let Some(ref schema) = strict_schema {
+                                if let Some(json) =
+                                    super::super::strict_format::binary_tuple_to_json(
+                                        &bytes, schema,
+                                    )
+                                {
+                                    let json_bytes = sonic_rs::to_vec(&json).unwrap_or_default();
+                                    super::rls_eval::rls_check_msgpack_bytes(
+                                        rls_filters,
+                                        &json_bytes,
+                                    )
+                                } else {
+                                    false
+                                }
+                            } else {
+                                super::rls_eval::rls_check_msgpack_bytes(rls_filters, &bytes)
+                            }
                         }
                         _ => false,
                     }
