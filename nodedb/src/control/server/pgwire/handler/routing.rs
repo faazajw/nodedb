@@ -96,8 +96,11 @@ impl NodeDbPgHandler {
             return self.forward_sql(sql, tenant_id, leader).await;
         }
 
+        let needs_dedup = tasks.iter().any(|t| t.post_dedup);
+        let mut dedup_payloads: Vec<Vec<u8>> = Vec::new();
+        let mut dedup_plan_kind = None;
         let mut responses = Vec::with_capacity(tasks.len());
-        for task in tasks {
+        for mut task in tasks {
             if task.tenant_id != tenant_id {
                 tracing::error!(
                     expected = %tenant_id,
@@ -131,6 +134,7 @@ impl NodeDbPgHandler {
 
             let plan_kind = describe_plan(&task.plan);
             let collection_for_si = extract_collection(&task.plan).map(String::from);
+            let resp_post_dedup = task.post_dedup;
 
             // --- Trigger interception for DML writes ---
             let dml_info = crate::control::trigger::dml_hook::classify_dml_write(&task.plan);
@@ -157,7 +161,8 @@ impl NodeDbPgHandler {
             };
 
             if let Some(ref info) = dml_info {
-                let proceed = crate::control::trigger::dml_hook::fire_pre_dispatch_triggers(
+                use crate::control::trigger::dml_hook::PreDispatchResult;
+                let result = crate::control::trigger::dml_hook::fire_pre_dispatch_triggers(
                     &self.state,
                     identity,
                     tenant_id,
@@ -175,10 +180,23 @@ impl NodeDbPgHandler {
                     )))
                 })?;
 
-                if !proceed {
-                    // INSTEAD OF trigger handled the write — skip dispatch.
-                    responses.push(Response::Execution(Tag::new("OK")));
-                    continue;
+                match result {
+                    PreDispatchResult::Handled => {
+                        // INSTEAD OF trigger handled the write — skip dispatch.
+                        responses.push(Response::Execution(Tag::new("OK")));
+                        continue;
+                    }
+                    PreDispatchResult::Proceed {
+                        mutated_fields: Some(ref fields),
+                    } => {
+                        // BEFORE trigger mutated the row — patch the task.
+                        crate::control::trigger::dml_hook::patch_task_with_mutated_fields(
+                            &mut task, fields,
+                        );
+                    }
+                    PreDispatchResult::Proceed {
+                        mutated_fields: None,
+                    } => {}
                 }
             }
 
@@ -237,7 +255,19 @@ impl NodeDbPgHandler {
                     .record_read(addr, collection, String::new(), resp.watermark_lsn);
             }
 
-            responses.push(payload_to_response(&resp.payload, plan_kind));
+            if needs_dedup && resp_post_dedup {
+                dedup_payloads.push(resp.payload.to_vec());
+                dedup_plan_kind = Some(plan_kind);
+            } else {
+                responses.push(payload_to_response(&resp.payload, plan_kind));
+            }
+        }
+
+        // UNION DISTINCT: merge all sub-query payloads and deduplicate rows.
+        if needs_dedup && !dedup_payloads.is_empty() {
+            let kind = dedup_plan_kind.unwrap_or(PlanKind::MultiRow);
+            let merged = dedup_union_payloads(&dedup_payloads);
+            responses.push(payload_to_response(&merged, kind));
         }
 
         Ok(responses)
@@ -369,4 +399,98 @@ impl NodeDbPgHandler {
             )))),
         }
     }
+}
+
+/// Merge multiple Data Plane response payloads and deduplicate rows (UNION DISTINCT).
+///
+/// Each payload is a msgpack-encoded array of rows. Deduplication is performed
+/// at the binary level: each row's raw msgpack bytes serve as the canonical key,
+/// eliminating the decode → JSON string → re-encode round-trip.
+///
+/// Output: a single msgpack array containing all unique rows in encounter order.
+fn dedup_union_payloads(payloads: &[Vec<u8>]) -> Vec<u8> {
+    use nodedb_query::msgpack_scan;
+
+    let mut seen: std::collections::HashSet<Vec<u8>> = std::collections::HashSet::new();
+    // Collect raw byte slices of unique rows before writing output.
+    let mut unique_row_bytes: Vec<Vec<u8>> = Vec::new();
+
+    for payload in payloads {
+        if payload.is_empty() {
+            continue;
+        }
+
+        let bytes = payload.as_slice();
+        let first = bytes[0];
+
+        // Decode msgpack array header to get element count and header length.
+        let (count, hdr_len) = if (0x90..=0x9f).contains(&first) {
+            ((first & 0x0f) as usize, 1)
+        } else if first == 0xdc && bytes.len() >= 3 {
+            (u16::from_be_bytes([bytes[1], bytes[2]]) as usize, 3)
+        } else if first == 0xdd && bytes.len() >= 5 {
+            (
+                u32::from_be_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]) as usize,
+                5,
+            )
+        } else {
+            // Not a msgpack array — treat the whole payload as one row.
+            tracing::warn!(
+                payload_len = bytes.len(),
+                "dedup_union_payloads: payload is not a msgpack array; treating as single row"
+            );
+            let key = bytes.to_vec();
+            if seen.insert(key.clone()) {
+                unique_row_bytes.push(key);
+            }
+            continue;
+        };
+
+        let mut pos = hdr_len;
+        for _ in 0..count {
+            if pos >= bytes.len() {
+                break;
+            }
+            let elem_start = pos;
+            match msgpack_scan::skip_value(bytes, pos) {
+                Some(next_pos) => {
+                    let row_bytes = bytes[elem_start..next_pos].to_vec();
+                    if seen.insert(row_bytes.clone()) {
+                        unique_row_bytes.push(row_bytes);
+                    }
+                    pos = next_pos;
+                }
+                None => {
+                    tracing::warn!(
+                        pos,
+                        payload_len = bytes.len(),
+                        "dedup_union_payloads: could not skip msgpack element; stopping early"
+                    );
+                    break;
+                }
+            }
+        }
+    }
+
+    // Write output: msgpack array header + concatenated unique row bytes.
+    let row_count = unique_row_bytes.len();
+    let total_data: usize = unique_row_bytes.iter().map(|r| r.len()).sum();
+    let mut out = Vec::with_capacity(total_data + 5);
+
+    // Write array header.
+    if row_count < 16 {
+        out.push(0x90 | row_count as u8);
+    } else if row_count <= u16::MAX as usize {
+        out.push(0xdc);
+        out.extend_from_slice(&(row_count as u16).to_be_bytes());
+    } else {
+        out.push(0xdd);
+        out.extend_from_slice(&(row_count as u32).to_be_bytes());
+    }
+
+    for row in unique_row_bytes {
+        out.extend_from_slice(&row);
+    }
+
+    out
 }
