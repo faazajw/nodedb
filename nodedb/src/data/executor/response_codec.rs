@@ -19,6 +19,8 @@
 use sonic_rs;
 use std::sync::Arc;
 
+use super::msgpack_utils::write_str;
+
 use arrow::array::{ArrayRef, Float64Array, Int64Array, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::ipc::writer::StreamWriter;
@@ -217,11 +219,11 @@ pub(super) fn encode_raw_document_rows(rows: &[(String, Vec<u8>)]) -> crate::Res
         buf.push(0x82); // fixmap with 2 entries
 
         // Write "id" key + value.
-        msgpack_write_str(&mut buf, "id");
-        msgpack_write_str(&mut buf, id);
+        write_str(&mut buf, "id");
+        write_str(&mut buf, id);
 
         // Write "data" key.
-        msgpack_write_str(&mut buf, "data");
+        write_str(&mut buf, "data");
 
         // Raw passthrough: write the msgpack bytes directly as the value.
         // These bytes are already a valid msgpack map from storage.
@@ -300,6 +302,20 @@ pub(super) fn decode_raw_scan_to_docs(bytes: &[u8]) -> Vec<(String, Vec<u8>)> {
     results
 }
 
+/// Encode a list of pre-built binary msgpack rows into a single msgpack array.
+///
+/// Each row is already a valid msgpack value (typically a map). This just
+/// wraps them in an array header and concatenates — zero decode.
+pub(super) fn encode_binary_rows(rows: &[Vec<u8>]) -> Vec<u8> {
+    let data_size: usize = rows.iter().map(|r| r.len()).sum();
+    let mut buf = Vec::with_capacity(data_size + 8);
+    msgpack_write_array_header(&mut buf, rows.len());
+    for row in rows {
+        buf.extend_from_slice(row);
+    }
+    buf
+}
+
 /// Write a msgpack array header.
 fn msgpack_write_array_header(buf: &mut Vec<u8>, len: usize) {
     if len < 16 {
@@ -311,24 +327,6 @@ fn msgpack_write_array_header(buf: &mut Vec<u8>, len: usize) {
         buf.push(0xDD);
         buf.extend_from_slice(&(len as u32).to_be_bytes());
     }
-}
-
-/// Write a msgpack string (key or value).
-fn msgpack_write_str(buf: &mut Vec<u8>, s: &str) {
-    let len = s.len();
-    if len < 32 {
-        buf.push(0xA0 | len as u8);
-    } else if len <= u8::MAX as usize {
-        buf.push(0xD9);
-        buf.push(len as u8);
-    } else if len <= u16::MAX as usize {
-        buf.push(0xDA);
-        buf.extend_from_slice(&(len as u16).to_be_bytes());
-    } else {
-        buf.push(0xDB);
-        buf.extend_from_slice(&(len as u32).to_be_bytes());
-    }
-    buf.extend_from_slice(s.as_bytes());
 }
 
 /// Encode a simple `{"key": count}` response (for insert confirmations).

@@ -53,6 +53,10 @@ pub enum QueryOp {
         post_group_by: Vec<String>,
         /// Post-join aggregates: (op, field) pairs (empty = no aggregation).
         post_aggregates: Vec<(String, String)>,
+        /// Post-join projection: column names to keep (empty = all).
+        projection: Vec<String>,
+        /// Post-join WHERE filter predicates (MessagePack).
+        post_filters: Vec<u8>,
     },
 
     /// Shuffle join: repartition by join key via SPSC.

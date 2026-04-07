@@ -104,8 +104,9 @@ pub(super) struct ProbeParams<'a> {
 
 /// Probe a hash index with probe-side documents and produce join results.
 ///
+/// Returns binary msgpack rows — no JSON decode.
 /// Uses u64 hash keys — zero String allocation for key matching.
-pub(super) fn probe_hash_index(p: &ProbeParams<'_>) -> Vec<serde_json::Value> {
+pub(super) fn probe_hash_index(p: &ProbeParams<'_>) -> Vec<Vec<u8>> {
     let is_left = p.join_type == "left" || p.join_type == "full";
     let is_right = p.join_type == "right" || p.join_type == "full";
     let is_semi = p.join_type == "semi";
@@ -259,56 +260,24 @@ impl CoreLoop {
             index_collection: right_collection,
         });
 
-        // Apply post-join WHERE filters.
+        // Apply post-join WHERE filters (binary — no JSON roundtrip).
         if !post_filter_bytes.is_empty() {
             let filters: Vec<crate::bridge::scan_filter::ScanFilter> =
-                match zerompk::from_msgpack(post_filter_bytes) {
-                    Ok(f) => f,
-                    Err(e) => {
-                        return self.response_error(
-                            task,
-                            ErrorCode::Internal {
-                                detail: format!("post-join filter deserialization failed: {e}"),
-                            },
-                        );
-                    }
-                };
+                zerompk::from_msgpack(post_filter_bytes).unwrap_or_default();
             if !filters.is_empty() {
-                results.retain(|row| {
-                    // Convert JSON row to msgpack for ScanFilter::matches_binary.
-                    let ndb_val = nodedb_types::Value::from(row.clone());
-                    match nodedb_types::value_to_msgpack(&ndb_val) {
-                        Ok(bytes) => filters.iter().all(|f| f.matches_binary(&bytes)),
-                        Err(_) => true, // pass through on serialization failure
-                    }
-                });
+                results.retain(|row| super::binary_row_matches_filters(row, &filters));
             }
         }
 
-        // Apply post-join projection: keep only requested columns, preserving SELECT order.
-        if !projection.is_empty() {
+        // Apply post-join projection (binary — no JSON roundtrip).
+        if !projection.is_empty() && !projection.iter().any(|p| p == "*") {
             for row in &mut results {
-                if let serde_json::Value::Object(map) = row {
-                    let mut reordered = serde_json::Map::with_capacity(projection.len());
-                    for col in projection {
-                        if let Some(val) = map.remove(col.as_str()) {
-                            reordered.insert(col.clone(), val);
-                        }
-                    }
-                    *row = serde_json::Value::Object(reordered);
-                }
+                *row = super::binary_row_project(row, projection);
             }
         }
 
-        match super::super::super::response_codec::encode_json_vec(&results) {
-            Ok(payload) => self.response_with_payload(task, payload),
-            Err(e) => self.response_error(
-                task,
-                ErrorCode::Internal {
-                    detail: e.to_string(),
-                },
-            ),
-        }
+        let payload = super::super::super::response_codec::encode_binary_rows(&results);
+        self.response_with_payload(task, payload)
     }
 
     /// Broadcast join: the small side is pre-serialized by the Control Plane
@@ -326,6 +295,8 @@ impl CoreLoop {
         on: &[(String, String)],
         join_type: &str,
         limit: usize,
+        projection: &[String],
+        post_filter_bytes: &[u8],
     ) -> Response {
         debug!(
             core = self.core_id,
@@ -372,7 +343,7 @@ impl CoreLoop {
         let small_index = HashIndex::build(&small_docs_raw, &small_keys);
 
         // Probe the hash index with large (scanned) side.
-        let results = probe_hash_index(&ProbeParams {
+        let mut results = probe_hash_index(&ProbeParams {
             probe_docs: &large_docs,
             index: &small_index,
             index_docs: &small_docs_raw,
@@ -383,14 +354,23 @@ impl CoreLoop {
             index_collection: small_collection,
         });
 
-        match super::super::super::response_codec::encode_json_vec(&results) {
-            Ok(payload) => self.response_with_payload(task, payload),
-            Err(e) => self.response_error(
-                task,
-                ErrorCode::Internal {
-                    detail: e.to_string(),
-                },
-            ),
+        // Apply post-join WHERE filters (binary).
+        if !post_filter_bytes.is_empty() {
+            let filters: Vec<crate::bridge::scan_filter::ScanFilter> =
+                zerompk::from_msgpack(post_filter_bytes).unwrap_or_default();
+            if !filters.is_empty() {
+                results.retain(|row| super::binary_row_matches_filters(row, &filters));
+            }
         }
+
+        // Apply post-join projection (binary).
+        if !projection.is_empty() && !projection.iter().any(|p| p == "*") {
+            for row in &mut results {
+                *row = super::binary_row_project(row, projection);
+            }
+        }
+
+        let payload = super::super::super::response_codec::encode_binary_rows(&results);
+        self.response_with_payload(task, payload)
     }
 }

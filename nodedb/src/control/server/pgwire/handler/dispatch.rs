@@ -67,7 +67,8 @@ impl NodeDbPgHandler {
                 limit,
                 ref post_group_by,
                 ref post_aggregates,
-                ..
+                ref projection,
+                ref post_filters,
             },
         ) = task.plan
         {
@@ -120,6 +121,8 @@ impl NodeDbPgHandler {
                     limit,
                     post_group_by: Vec::new(),
                     post_aggregates: Vec::new(),
+                    projection: projection.clone(),
+                    post_filters: post_filters.clone(),
                 },
             );
             let mut resp = crate::control::server::dispatch_utils::broadcast_to_all_cores(

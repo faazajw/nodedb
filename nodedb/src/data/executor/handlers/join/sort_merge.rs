@@ -129,7 +129,7 @@ impl CoreLoop {
         let is_left = join_type == "left" || join_type == "full";
         let is_right = join_type == "right" || join_type == "full";
 
-        let mut results: Vec<serde_json::Value> = Vec::new();
+        let mut results: Vec<Vec<u8>> = Vec::new();
         let mut li = 0usize;
         let mut ri = 0usize;
         let mut right_matched: Vec<bool> = vec![false; right_docs.len()];
@@ -232,14 +232,7 @@ impl CoreLoop {
             }
         }
 
-        match super::super::super::response_codec::encode_json_vec(&results) {
-            Ok(payload) => self.response_with_payload(task, payload),
-            Err(e) => self.response_error(
-                task,
-                ErrorCode::Internal {
-                    detail: e.to_string(),
-                },
-            ),
-        }
+        let payload = super::super::super::response_codec::encode_binary_rows(&results);
+        self.response_with_payload(task, payload)
     }
 }

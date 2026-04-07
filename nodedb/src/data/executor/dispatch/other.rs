@@ -155,6 +155,8 @@ impl CoreLoop {
                 on,
                 join_type,
                 limit,
+                projection,
+                post_filters,
                 ..
             }) => self.execute_broadcast_join(
                 task,
@@ -165,6 +167,8 @@ impl CoreLoop {
                 on,
                 join_type,
                 *limit,
+                projection,
+                post_filters,
             ),
 
             PhysicalPlan::Query(QueryOp::ShuffleJoin {

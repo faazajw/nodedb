@@ -93,9 +93,9 @@ impl CoreLoop {
                     break;
                 }
 
-                // Evaluate condition against merged row.
+                // Evaluate condition against merged row (binary).
                 // Nested loop conditions reference prefixed fields (e.g., "left.id"),
-                // so we must decode+merge before evaluating. This is inherent to NLJ.
+                // so we must merge before evaluating.
                 let passes = if predicates.is_empty() {
                     true // Cross join.
                 } else {
@@ -105,7 +105,7 @@ impl CoreLoop {
                         left_collection,
                         right_collection,
                     );
-                    predicates.iter().all(|p| p.matches(&merged))
+                    predicates.iter().all(|p| p.matches_binary(&merged))
                 };
 
                 if passes {
@@ -148,14 +148,7 @@ impl CoreLoop {
             }
         }
 
-        match super::super::super::response_codec::encode_json_vec(&results) {
-            Ok(payload) => self.response_with_payload(task, payload),
-            Err(e) => self.response_error(
-                task,
-                ErrorCode::Internal {
-                    detail: e.to_string(),
-                },
-            ),
-        }
+        let payload = super::super::super::response_codec::encode_binary_rows(&results);
+        self.response_with_payload(task, payload)
     }
 }

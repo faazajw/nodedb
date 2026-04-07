@@ -3,6 +3,7 @@ mod dispatch;
 pub(crate) mod doc_format;
 pub mod enforcement;
 mod handlers;
+pub(super) mod msgpack_utils;
 pub mod response_codec;
 mod scan_normalize;
 pub(crate) mod scoping;
