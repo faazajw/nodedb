@@ -79,18 +79,21 @@ fn convert_one(
             let window_bytes = serialize_window_functions(window_functions)?;
 
             let physical = match engine {
-                EngineType::Timeseries => PhysicalPlan::Timeseries(TimeseriesOp::Scan {
-                    collection: collection.clone(),
-                    time_range: (i64::MIN, i64::MAX),
-                    projection: proj_names,
-                    limit: limit.unwrap_or(10000),
-                    filters: filter_bytes,
-                    bucket_interval_ms: 0,
-                    group_by: Vec::new(),
-                    aggregates: Vec::new(),
-                    gap_fill: String::new(),
-                    rls_filters: Vec::new(),
-                }),
+                EngineType::Timeseries => {
+                    let time_range = extract_time_range(filters);
+                    PhysicalPlan::Timeseries(TimeseriesOp::Scan {
+                        collection: collection.clone(),
+                        time_range,
+                        projection: proj_names,
+                        limit: limit.unwrap_or(10000),
+                        filters: filter_bytes,
+                        bucket_interval_ms: 0,
+                        group_by: Vec::new(),
+                        aggregates: Vec::new(),
+                        gap_fill: String::new(),
+                        rls_filters: Vec::new(),
+                    })
+                }
                 EngineType::Columnar => PhysicalPlan::Columnar(ColumnarOp::Scan {
                     collection: collection.clone(),
                     projection: proj_names,
@@ -734,14 +737,39 @@ fn convert_aggregate(
     // Standard aggregate on a single collection.
     let collection = extract_collection_name(input);
     let vshard = VShardId::from_collection(&collection);
-    let filter_bytes = match input {
-        SqlPlan::Scan { filters, .. } => serialize_filters(filters)?,
-        _ => Vec::new(),
+    let (filters_ref, engine) = match input {
+        SqlPlan::Scan {
+            filters, engine, ..
+        } => (filters.as_slice(), Some(*engine)),
+        _ => (&[][..], None),
     };
+    let filter_bytes = serialize_filters(filters_ref)?;
     let having_bytes = serialize_filters(having)?;
 
     let group_strs = group_by_to_strings(group_by);
-    let agg_pairs = aggregates.iter().map(agg_expr_to_pair).collect();
+    let agg_pairs: Vec<(String, String)> = aggregates.iter().map(agg_expr_to_pair).collect();
+
+    // Timeseries aggregates: route through TimeseriesOp::Scan with time_range + aggregates.
+    if engine == Some(EngineType::Timeseries) {
+        let time_range = extract_time_range(filters_ref);
+        return Ok(vec![PhysicalTask {
+            tenant_id,
+            vshard_id: vshard,
+            plan: PhysicalPlan::Timeseries(TimeseriesOp::Scan {
+                collection,
+                time_range,
+                projection: Vec::new(),
+                limit,
+                filters: filter_bytes,
+                bucket_interval_ms: 0,
+                group_by: group_strs,
+                aggregates: agg_pairs,
+                gap_fill: String::new(),
+                rls_filters: Vec::new(),
+            }),
+            post_set_op: PostSetOp::None,
+        }]);
+    }
 
     Ok(vec![PhysicalTask {
         tenant_id,
@@ -1269,4 +1297,145 @@ fn sql_value_to_json(v: &SqlValue) -> serde_json::Value {
             b,
         )),
     }
+}
+
+/// Extract (min_ts_ms, max_ts_ms) time bounds from WHERE filters on timestamp columns.
+///
+/// Recognizes patterns like `ts >= '2024-01-01' AND ts <= '2024-01-02'` and converts
+/// timestamp strings to epoch milliseconds.
+fn extract_time_range(filters: &[Filter]) -> (i64, i64) {
+    let mut min_ts = i64::MIN;
+    let mut max_ts = i64::MAX;
+
+    for filter in filters {
+        extract_time_bounds_from_filter(&filter.expr, &mut min_ts, &mut max_ts);
+    }
+
+    (min_ts, max_ts)
+}
+
+fn extract_time_bounds_from_filter(expr: &FilterExpr, min_ts: &mut i64, max_ts: &mut i64) {
+    match expr {
+        FilterExpr::Comparison { field, op, value } if is_time_field(field) => {
+            if let Some(ms) = sql_value_to_timestamp_ms(value) {
+                match op {
+                    nodedb_sql::types::CompareOp::Ge | nodedb_sql::types::CompareOp::Gt => {
+                        if ms > *min_ts {
+                            *min_ts = ms;
+                        }
+                    }
+                    nodedb_sql::types::CompareOp::Le | nodedb_sql::types::CompareOp::Lt => {
+                        if ms < *max_ts {
+                            *max_ts = ms;
+                        }
+                    }
+                    nodedb_sql::types::CompareOp::Eq => {
+                        *min_ts = ms;
+                        *max_ts = ms;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        FilterExpr::Between { field, low, high } if is_time_field(field) => {
+            if let Some(lo) = sql_value_to_timestamp_ms(low) {
+                *min_ts = lo;
+            }
+            if let Some(hi) = sql_value_to_timestamp_ms(high) {
+                *max_ts = hi;
+            }
+        }
+        FilterExpr::And(children) => {
+            for child in children {
+                extract_time_bounds_from_filter(&child.expr, min_ts, max_ts);
+            }
+        }
+        // Expr-based filters: walk the SqlExpr tree for timestamp comparisons.
+        FilterExpr::Expr(sql_expr) => {
+            extract_time_bounds_from_expr(sql_expr, min_ts, max_ts);
+        }
+        _ => {}
+    }
+}
+
+fn extract_time_bounds_from_expr(expr: &SqlExpr, min_ts: &mut i64, max_ts: &mut i64) {
+    let SqlExpr::BinaryOp { left, op, right } = expr else {
+        return;
+    };
+    match op {
+        nodedb_sql::types::BinaryOp::And => {
+            extract_time_bounds_from_expr(left, min_ts, max_ts);
+            extract_time_bounds_from_expr(right, min_ts, max_ts);
+        }
+        nodedb_sql::types::BinaryOp::Ge | nodedb_sql::types::BinaryOp::Gt => {
+            if let Some(field) = expr_column_name(left)
+                && is_time_field(&field)
+                && let Some(ms) = expr_to_timestamp_ms(right)
+                && ms > *min_ts
+            {
+                *min_ts = ms;
+            }
+        }
+        nodedb_sql::types::BinaryOp::Le | nodedb_sql::types::BinaryOp::Lt => {
+            if let Some(field) = expr_column_name(left)
+                && is_time_field(&field)
+                && let Some(ms) = expr_to_timestamp_ms(right)
+                && ms < *max_ts
+            {
+                *max_ts = ms;
+            }
+        }
+        _ => {}
+    }
+}
+
+fn is_time_field(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    lower == "ts"
+        || lower == "timestamp"
+        || lower == "time"
+        || lower == "created_at"
+        || lower.ends_with("_at")
+        || lower.ends_with("_time")
+        || lower.ends_with("_ts")
+}
+
+fn expr_column_name(expr: &SqlExpr) -> Option<String> {
+    match expr {
+        SqlExpr::Column { name, .. } => Some(name.clone()),
+        _ => None,
+    }
+}
+
+fn expr_to_timestamp_ms(expr: &SqlExpr) -> Option<i64> {
+    match expr {
+        SqlExpr::Literal(val) => sql_value_to_timestamp_ms(val),
+        _ => None,
+    }
+}
+
+fn sql_value_to_timestamp_ms(val: &SqlValue) -> Option<i64> {
+    match val {
+        SqlValue::Int(ms) => Some(*ms),
+        SqlValue::String(s) => parse_timestamp_to_ms(s),
+        _ => None,
+    }
+}
+
+fn parse_timestamp_to_ms(s: &str) -> Option<i64> {
+    // Try common timestamp formats.
+    // "2024-01-01 00:00:00" → epoch ms
+    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
+        return Some(dt.and_utc().timestamp_millis());
+    }
+    // "2024-01-01T00:00:00" (ISO 8601)
+    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S") {
+        return Some(dt.and_utc().timestamp_millis());
+    }
+    // "2024-01-01" (date only)
+    if let Ok(d) = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+        return Some(d.and_hms_opt(0, 0, 0)?.and_utc().timestamp_millis());
+    }
+    // Raw milliseconds as string
+    s.parse::<i64>().ok()
 }
