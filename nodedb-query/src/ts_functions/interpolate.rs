@@ -110,19 +110,19 @@ fn fill_linear(values: &[Option<f64>], timestamps_ns: &[i64]) -> Vec<f64> {
     }
 
     // Edge: fill leading NULLs with first known value.
-    if let Some(first) = values.iter().position(|v| v.is_some()) {
-        if let Some(fv) = values[first] {
-            for r in result.iter_mut().take(first) {
-                *r = fv;
-            }
+    if let Some(first) = values.iter().position(|v| v.is_some())
+        && let Some(fv) = values[first]
+    {
+        for r in result.iter_mut().take(first) {
+            *r = fv;
         }
     }
     // Edge: fill trailing NULLs with last known value.
-    if let Some(last) = values.iter().rposition(|v| v.is_some()) {
-        if let Some(lv) = values[last] {
-            for r in result.iter_mut().skip(last + 1) {
-                *r = lv;
-            }
+    if let Some(last) = values.iter().rposition(|v| v.is_some())
+        && let Some(lv) = values[last]
+    {
+        for r in result.iter_mut().skip(last + 1) {
+            *r = lv;
         }
     }
 

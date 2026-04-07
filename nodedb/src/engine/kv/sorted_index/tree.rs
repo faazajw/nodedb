@@ -433,16 +433,16 @@ impl OrderStatTree {
 
         // Pruning: left subtree is all < current node.
         // Visit left if current > min (left might contain values in [min, current)).
-        let go_left = min.map_or(true, |m| key > m);
+        let go_left = min.is_none_or(|m| key > m);
         // Pruning: right subtree is all > current node.
         // Visit right if current < max (right might contain values in (current, max]).
-        let go_right = max.map_or(true, |m| key < m);
+        let go_right = max.is_none_or(|m| key < m);
 
         if go_left {
             self.range_collect(n.left, min, max, result);
         }
 
-        let in_range = min.map_or(true, |m| key >= m) && max.map_or(true, |m| key <= m);
+        let in_range = min.is_none_or(|m| key >= m) && max.is_none_or(|m| key <= m);
         if in_range {
             result.push((&n.sort_key, &n.primary_key));
         }

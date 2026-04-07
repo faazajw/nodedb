@@ -227,22 +227,20 @@ fn convert_one(
                 .collect();
 
             // AUTO_TIER: split query across retention tiers if enabled.
-            if *tiered {
-                if let Some(registry) = &ctx.retention_registry {
-                    if let Some(policy) = registry.get(tenant_id.as_u32(), collection) {
-                        if policy.auto_tier {
-                            return Ok(super::auto_tier::plan_tiered_scan(
-                                &policy,
-                                tenant_id,
-                                *time_range,
-                                filter_bytes,
-                                group_by.clone(),
-                                agg_pairs,
-                                gap_fill.clone(),
-                            ));
-                        }
-                    }
-                }
+            if *tiered
+                && let Some(registry) = &ctx.retention_registry
+                && let Some(policy) = registry.get(tenant_id.as_u32(), collection)
+                && policy.auto_tier
+            {
+                return Ok(super::auto_tier::plan_tiered_scan(
+                    &policy,
+                    tenant_id,
+                    *time_range,
+                    filter_bytes,
+                    group_by.clone(),
+                    agg_pairs,
+                    gap_fill.clone(),
+                ));
             }
 
             let proj_names = extract_projection_names(projection);

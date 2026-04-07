@@ -20,10 +20,10 @@ pub fn extract_window_functions(
             ast::SelectItem::ExprWithAlias { expr, alias } => (expr, normalize_ident(alias)),
             _ => continue,
         };
-        if let ast::Expr::Function(func) = expr {
-            if func.over.is_some() {
-                specs.push(convert_window_spec(func, &alias)?);
-            }
+        if let ast::Expr::Function(func) = expr
+            && func.over.is_some()
+        {
+            specs.push(convert_window_spec(func, &alias)?);
         }
     }
     Ok(specs)

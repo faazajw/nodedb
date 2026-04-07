@@ -31,19 +31,17 @@ pub(super) fn dispatch_grouping<'a>(
 ) -> GroupedAggResult {
     let has_bucket = bucket_interval_ms > 0 && timestamps.is_some();
 
-    if has_bucket {
-        if let Some(ts) = timestamps {
-            return aggregate_with_bucket(
-                resolved,
-                columns,
-                mask,
-                row_count,
-                num_aggs,
-                ts,
-                bucket_interval_ms,
-                sym_lookup,
-            );
-        }
+    if has_bucket && let Some(ts) = timestamps {
+        return aggregate_with_bucket(
+            resolved,
+            columns,
+            mask,
+            row_count,
+            num_aggs,
+            ts,
+            bucket_interval_ms,
+            sym_lookup,
+        );
     }
 
     let local_groups = if group_by.is_empty() {

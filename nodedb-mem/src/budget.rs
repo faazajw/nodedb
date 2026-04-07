@@ -76,12 +76,32 @@ impl Budget {
     }
 
     /// Release `size` bytes back to the budget.
+    ///
+    /// Saturates to zero if `size` exceeds the current allocation (which can
+    /// happen when data is replayed from WAL without a matching reservation).
     pub fn release(&self, size: usize) {
-        let prev = self.allocated.fetch_sub(size, Ordering::Release);
-        debug_assert!(
-            prev >= size,
-            "BUG: released more memory than allocated ({size} > {prev})"
-        );
+        loop {
+            let current = self.allocated.load(Ordering::Acquire);
+            let new_val = current.saturating_sub(size);
+            match self.allocated.compare_exchange_weak(
+                current,
+                new_val,
+                Ordering::Release,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => {
+                    if size > current {
+                        tracing::warn!(
+                            released = size,
+                            allocated = current,
+                            "memory release exceeds allocation (WAL replay or accounting drift)"
+                        );
+                    }
+                    return;
+                }
+                Err(_) => continue,
+            }
+        }
     }
 
     /// Current allocated bytes.

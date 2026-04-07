@@ -110,10 +110,10 @@ impl QueryParser for NodeDbQueryParser {
 fn count_placeholders(sql: &str) -> usize {
     let mut max_idx = 0usize;
     for part in sql.split('$') {
-        if let Some(num_str) = part.split(|c: char| !c.is_ascii_digit()).next() {
-            if let Ok(idx) = num_str.parse::<usize>() {
-                max_idx = max_idx.max(idx);
-            }
+        if let Some(num_str) = part.split(|c: char| !c.is_ascii_digit()).next()
+            && let Ok(idx) = num_str.parse::<usize>()
+        {
+            max_idx = max_idx.max(idx);
         }
     }
     max_idx

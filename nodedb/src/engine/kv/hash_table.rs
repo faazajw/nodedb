@@ -209,9 +209,7 @@ impl KvHashTable {
         if let Some(idx) = Self::probe_find_index_static(&self.slots, h, key) {
             // probe_find_index_static guarantees slots[idx] is Some.
             let old_value = {
-                let Some(slot) = self.slots[idx].as_ref() else {
-                    return None;
-                };
+                let slot = self.slots[idx].as_ref()?;
                 let v = extract_value_from(&slot.value, &self.overflow);
                 free_value_from(&slot.value, &mut self.overflow);
                 v
@@ -228,9 +226,7 @@ impl KvHashTable {
         if let Some(old_slots) = self.rehash_source.as_mut()
             && let Some(idx) = Self::probe_find_index_static(old_slots, h, key)
         {
-            let Some(old_entry) = old_slots[idx].take() else {
-                return None;
-            };
+            let old_entry = old_slots[idx].take()?;
             let old_value = extract_value_from(&old_entry.value, &self.overflow);
             free_value_from(&old_entry.value, &mut self.overflow);
             let new_kv_value = store_value_in(&mut self.overflow, value, self.inline_threshold);

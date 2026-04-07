@@ -91,7 +91,7 @@ impl TriggerRetryQueue {
         let mut exhausted = Vec::new();
 
         // Drain from front (oldest first).
-        while self.queue.front().map_or(false, |e| e.next_retry_at <= now) {
+        while self.queue.front().is_some_and(|e| e.next_retry_at <= now) {
             let Some(entry) = self.queue.pop_front() else {
                 break;
             };

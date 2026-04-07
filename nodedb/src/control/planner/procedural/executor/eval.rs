@@ -108,12 +108,11 @@ fn try_eval_constant(sql: &str) -> Option<nodedb_types::Value> {
     let stmts = sqlparser::parser::Parser::parse_sql(&dialect, &select_sql).ok()?;
     let stmt = stmts.first()?;
 
-    if let sqlparser::ast::Statement::Query(query) = stmt {
-        if let sqlparser::ast::SetExpr::Select(select) = &*query.body {
-            if let Some(sqlparser::ast::SelectItem::UnnamedExpr(expr)) = select.projection.first() {
-                return eval_expr(expr);
-            }
-        }
+    if let sqlparser::ast::Statement::Query(query) = stmt
+        && let sqlparser::ast::SetExpr::Select(select) = &*query.body
+        && let Some(sqlparser::ast::SelectItem::UnnamedExpr(expr)) = select.projection.first()
+    {
+        return eval_expr(expr);
     }
     None
 }

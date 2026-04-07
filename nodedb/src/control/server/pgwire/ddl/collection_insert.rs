@@ -306,27 +306,27 @@ pub async fn insert_document(
 
     // Track field names in catalog so DataFusion can resolve them in queries.
     // This makes schemaless fields visible for WHERE, GROUP BY, ORDER BY, etc.
-    if let Some(catalog) = state.credentials.catalog() {
-        if let Ok(Some(mut coll)) = catalog.get_collection(tenant_id.as_u32(), &parsed.coll_name) {
-            let mut changed = false;
-            for (name, val) in &fields {
-                if name == "id" {
-                    continue;
-                }
-                if !coll.fields.iter().any(|(n, _)| n == name) {
-                    let type_str = match val {
-                        serde_json::Value::Number(n) if n.is_f64() => "FLOAT",
-                        serde_json::Value::Number(_) => "INT",
-                        serde_json::Value::Bool(_) => "BOOL",
-                        _ => "TEXT",
-                    };
-                    coll.fields.push((name.clone(), type_str.to_string()));
-                    changed = true;
-                }
+    if let Some(catalog) = state.credentials.catalog()
+        && let Ok(Some(mut coll)) = catalog.get_collection(tenant_id.as_u32(), &parsed.coll_name)
+    {
+        let mut changed = false;
+        for (name, val) in &fields {
+            if name == "id" {
+                continue;
             }
-            if changed {
-                let _ = catalog.put_collection(&coll);
+            if !coll.fields.iter().any(|(n, _)| n == name) {
+                let type_str = match val {
+                    serde_json::Value::Number(n) if n.is_f64() => "FLOAT",
+                    serde_json::Value::Number(_) => "INT",
+                    serde_json::Value::Bool(_) => "BOOL",
+                    _ => "TEXT",
+                };
+                coll.fields.push((name.clone(), type_str.to_string()));
+                changed = true;
             }
+        }
+        if changed {
+            let _ = catalog.put_collection(&coll);
         }
     }
 
