@@ -154,7 +154,7 @@ fn dummy_task(id: &str) -> nodedb::control::planner::physical::PhysicalTask {
             document_id: id.into(),
             value: vec![],
         }),
-        post_dedup: false,
+        post_set_op: nodedb::control::planner::physical::PostSetOp::None,
     }
 }
 

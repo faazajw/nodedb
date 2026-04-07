@@ -95,6 +95,7 @@ mod tests {
     use super::*;
     use crate::bridge::envelope::PhysicalPlan;
     use crate::bridge::physical_plan::DocumentOp;
+    use crate::control::planner::physical::PostSetOp;
     use crate::types::{TenantId, VShardId};
 
     fn dummy_task(id: &str) -> PhysicalTask {

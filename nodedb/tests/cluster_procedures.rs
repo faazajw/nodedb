@@ -75,7 +75,7 @@ fn tx_ctx_commit_yields_independent_tasks() {
             document_id: "o-1".into(),
             value: b"{}".to_vec(),
         }),
-        post_dedup: false,
+        post_set_op: nodedb::control::planner::physical::PostSetOp::None,
     });
     ctx.buffer_task(nodedb::control::planner::physical::PhysicalTask {
         tenant_id: TenantId::new(1),
@@ -84,7 +84,7 @@ fn tx_ctx_commit_yields_independent_tasks() {
             collection: "temp".into(),
             document_id: "t-1".into(),
         }),
-        post_dedup: false,
+        post_set_op: nodedb::control::planner::physical::PostSetOp::None,
     });
 
     // COMMIT flushes both tasks.
@@ -121,7 +121,7 @@ fn procedure_can_target_multiple_vshards() {
             document_id: "d1".into(),
             value: vec![],
         }),
-        post_dedup: false,
+        post_set_op: nodedb::control::planner::physical::PostSetOp::None,
     });
     // Task on vshard 1 (different shard)
     ctx.buffer_task(nodedb::control::planner::physical::PhysicalTask {
@@ -132,7 +132,7 @@ fn procedure_can_target_multiple_vshards() {
             document_id: "d2".into(),
             value: vec![],
         }),
-        post_dedup: false,
+        post_set_op: nodedb::control::planner::physical::PostSetOp::None,
     });
 
     let tasks = ctx.take_buffered_tasks();
