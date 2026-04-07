@@ -41,7 +41,19 @@ pub async fn search_vector(
     let collection = parts[1];
     let tenant_id = identity.tenant_id;
 
-    // Parse ARRAY[...] from the SQL.
+    // Parse field name and ARRAY[...] from VECTOR(field, ARRAY[...], k) or VECTOR(ARRAY[...], k).
+    let vector_paren = sql.find("VECTOR(").or_else(|| sql.find("vector("));
+    let vector_paren = match vector_paren {
+        Some(i) => i + 7,
+        None => {
+            return Err(sqlstate_error(
+                "42601",
+                "expected VECTOR(...) in SEARCH USING VECTOR",
+            ));
+        }
+    };
+
+    // Extract field name if present before ARRAY[.
     let array_start = sql.find("ARRAY[").or_else(|| sql.find("array["));
     let array_start = match array_start {
         Some(i) => i + 6,
@@ -52,6 +64,14 @@ pub async fn search_vector(
             ));
         }
     };
+
+    // Field name is between VECTOR( and ARRAY[ (trimmed, comma-stripped).
+    let field_name = sql[vector_paren..array_start - 6]
+        .trim()
+        .trim_end_matches(',')
+        .trim()
+        .to_string();
+
     let array_end = sql[array_start..].find(']').map(|i| i + array_start);
     let array_end = match array_end {
         Some(i) => i,
@@ -87,7 +107,7 @@ pub async fn search_vector(
         top_k,
         ef_search: 0,
         filter_bitmap,
-        field_name: String::new(),
+        field_name,
         rls_filters: Vec::new(),
     });
 
@@ -303,6 +323,81 @@ pub fn create_fulltext_index(
     );
 
     Ok(vec![Response::Execution(Tag::new("CREATE FULLTEXT INDEX"))])
+}
+
+// ── CREATE SEARCH INDEX ────────────────────────────────────────────
+
+/// CREATE SEARCH INDEX ON <collection> FIELDS <field1>[, <field2>...] [ANALYZER '<name>'] [FUZZY true|false]
+///
+/// Higher-level alias for CREATE FULLTEXT INDEX. Auto-generates an index name,
+/// accepts multiple fields and optional analyzer/fuzzy configuration.
+pub fn create_search_index(
+    state: &SharedState,
+    identity: &AuthenticatedIdentity,
+    sql: &str,
+) -> PgWireResult<Vec<Response>> {
+    let upper = sql.to_uppercase();
+
+    // Extract collection name: ON <collection> FIELDS ...
+    let on_pos = upper.find(" ON ").ok_or_else(|| {
+        sqlstate_error(
+            "42601",
+            "syntax: CREATE SEARCH INDEX ON <collection> FIELDS <field> [ANALYZER 'name'] [FUZZY true]",
+        )
+    })?;
+    let after_on = sql[on_pos + 4..].trim_start();
+    let fields_pos = upper.find(" FIELDS ").ok_or_else(|| {
+        sqlstate_error(
+            "42601",
+            "syntax: CREATE SEARCH INDEX ON <collection> FIELDS <field> [ANALYZER 'name'] [FUZZY true]",
+        )
+    })?;
+
+    let collection = after_on[..fields_pos - on_pos - 4].trim().to_lowercase();
+    if collection.is_empty() {
+        return Err(sqlstate_error("42601", "missing collection name"));
+    }
+
+    // Extract fields: comma-separated until ANALYZER or FUZZY or end.
+    let after_fields = &sql[fields_pos + 8..];
+    let fields_end = upper[fields_pos + 8..]
+        .find(" ANALYZER ")
+        .or_else(|| upper[fields_pos + 8..].find(" FUZZY "))
+        .unwrap_or(after_fields.len());
+    let fields_str = after_fields[..fields_end].trim();
+    let fields: Vec<&str> = fields_str.split(',').map(|s| s.trim()).collect();
+
+    if fields.is_empty() || fields[0].is_empty() {
+        return Err(sqlstate_error("42601", "missing field list"));
+    }
+
+    let tenant_id = identity.tenant_id;
+
+    // Register fulltext index for each field.
+    for field in &fields {
+        let index_name = format!("fts_{}_{}", collection, field);
+
+        let catalog = state.credentials.catalog();
+        state
+            .permissions
+            .set_owner(
+                "fulltext_index",
+                tenant_id,
+                &index_name,
+                &identity.username,
+                catalog.as_ref(),
+            )
+            .map_err(|e| sqlstate_error("XX000", &e.to_string()))?;
+
+        state.audit_record(
+            crate::control::security::audit::AuditEvent::AdminAction,
+            Some(tenant_id),
+            &identity.username,
+            &format!("created search index '{index_name}' on '{collection}' ({field})"),
+        );
+    }
+
+    Ok(vec![Response::Execution(Tag::new("CREATE SEARCH INDEX"))])
 }
 
 // ── CREATE SPARSE INDEX ─────────────────────────────────────────────

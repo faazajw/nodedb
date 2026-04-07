@@ -19,7 +19,7 @@ use super::sql_parse::{parse_array_literal, parse_sql_value, split_values};
 struct ParsedInsert {
     coll_name: String,
     doc_id: String,
-    fields: serde_json::Map<String, serde_json::Value>,
+    fields: std::collections::HashMap<String, nodedb_types::Value>,
     vector_fields: Vec<(String, Vec<f32>)>,
     value_bytes: Vec<u8>,
     has_returning: bool,
@@ -41,15 +41,16 @@ fn parse_write_statement(
     let coll_name_str = after_into.split_whitespace().next()?;
     let coll_name = coll_name_str.to_lowercase();
 
-    // Check if collection is schemaless. Let DataFusion handle typed collections.
+    // Check if collection is schemaless. Let DataFusion handle typed INSERT,
+    // but UPSERT must always be handled here (DataFusion doesn't understand UPSERT).
     let tenant_id = identity.tenant_id;
+    let is_upsert = keyword.starts_with("UPSERT");
     if let Some(catalog) = state.credentials.catalog()
         && let Ok(Some(coll)) = catalog.get_collection(tenant_id.as_u32(), &coll_name)
     {
-        // Skip non-schemaless collections — they need schema-aware insert
-        // (strict, columnar, timeseries, spatial) or engine-specific insert
-        // (KV). Dispatch these to DataFusion / Data Plane instead.
-        if !coll.collection_type.is_schemaless() {
+        // Skip non-schemaless collections for INSERT (let DataFusion handle).
+        // But always handle UPSERT here since sqlparser doesn't parse it.
+        if !is_upsert && !coll.collection_type.is_schemaless() {
             return None;
         }
     }
@@ -106,16 +107,19 @@ fn parse_write_statement(
 
     // Build document fields and extract doc_id.
     let mut doc_id = String::new();
-    let mut fields = serde_json::Map::new();
+    let mut fields = std::collections::HashMap::new();
 
     for (col, val) in columns.iter().zip(values.iter()) {
         let col = col.trim().trim_matches('"');
         let val = val.trim();
-        if col.eq_ignore_ascii_case("id") {
+        if col.eq_ignore_ascii_case("id")
+            || col.eq_ignore_ascii_case("document_id")
+            || col.eq_ignore_ascii_case("key")
+        {
             doc_id = val.trim_matches('\'').to_string();
-        } else {
-            fields.insert(col.to_string(), parse_sql_value(val));
         }
+        // Always include in fields — strict collections need all columns in the value.
+        fields.insert(col.to_string(), parse_sql_value(val));
     }
 
     if doc_id.is_empty() {
@@ -132,7 +136,8 @@ fn parse_write_statement(
         }
     }
 
-    let value_bytes = sonic_rs::to_vec(&fields).unwrap_or_default();
+    let value_bytes = nodedb_types::value_to_msgpack(&nodedb_types::Value::Object(fields.clone()))
+        .unwrap_or_default();
     let has_returning = upper.contains("RETURNING");
 
     Some(Ok(ParsedInsert {
@@ -148,7 +153,7 @@ fn parse_write_statement(
 /// Format a RETURNING response from parsed fields.
 fn returning_response(
     doc_id: &str,
-    fields: &serde_json::Map<String, serde_json::Value>,
+    fields: &std::collections::HashMap<String, nodedb_types::Value>,
 ) -> PgWireResult<Vec<Response>> {
     use futures::stream;
     use pgwire::api::results::{DataRowEncoder, QueryResponse};
@@ -156,9 +161,10 @@ fn returning_response(
     let mut result_doc = fields.clone();
     result_doc.insert(
         "id".to_string(),
-        serde_json::Value::String(doc_id.to_string()),
+        nodedb_types::Value::String(doc_id.to_string()),
     );
-    let json_str = sonic_rs::to_string(&serde_json::Value::Object(result_doc)).unwrap_or_default();
+    let json_str =
+        sonic_rs::to_string(&nodedb_types::Value::Object(result_doc)).unwrap_or_default();
     let schema = std::sync::Arc::new(vec![super::super::types::text_field("result")]);
     let mut encoder = DataRowEncoder::new(schema.clone());
     let _ = encoder.encode_field(&json_str);
@@ -186,20 +192,13 @@ pub async fn insert_document(
     // across cores while reads always route by collection (from_collection).
     let vshard_id = crate::types::VShardId::from_collection(&parsed.coll_name);
 
-    // Convert fields to HashMap<String, nodedb_types::Value> for trigger fire functions.
-    let fields_as_hm: std::collections::HashMap<String, nodedb_types::Value> = parsed
-        .fields
-        .iter()
-        .map(|(k, v)| (k.clone(), nodedb_types::Value::from(v.clone())))
-        .collect();
-
     // Fire INSTEAD OF INSERT triggers — if handled, skip normal dispatch.
     match crate::control::trigger::fire_instead::fire_instead_of_insert(
         state,
         identity,
         tenant_id,
         &parsed.coll_name,
-        &fields_as_hm,
+        &parsed.fields,
         0,
     )
     .await
@@ -212,12 +211,12 @@ pub async fn insert_document(
     }
 
     // Fire BEFORE INSERT triggers — may reject via RAISE EXCEPTION, may mutate NEW fields.
-    let fields_after_before_hm = match crate::control::trigger::fire_before::fire_before_insert(
+    let fields_after_before = match crate::control::trigger::fire_before::fire_before_insert(
         state,
         identity,
         tenant_id,
         &parsed.coll_name,
-        &fields_as_hm,
+        &parsed.fields,
         0,
     )
     .await
@@ -230,11 +229,6 @@ pub async fn insert_document(
             )));
         }
     };
-    // Convert back to serde_json::Map for serialization and comparison.
-    let fields_after_before: serde_json::Map<String, serde_json::Value> = fields_after_before_hm
-        .into_iter()
-        .map(|(k, v)| (k, serde_json::Value::from(v)))
-        .collect();
 
     // Auto-generate sequence values for fields with sequence_name where the
     // INSERT didn't provide an explicit value. This implements column-level
@@ -255,15 +249,15 @@ pub async fn insert_document(
                     &std::collections::HashMap::new(),
                 ) {
                     Ok(val) => {
-                        let json_val = match val {
+                        let typed_val = match val {
                             crate::control::sequence::registry::SequenceValue::Int(i) => {
-                                serde_json::Value::Number(serde_json::Number::from(i))
+                                nodedb_types::Value::Integer(i)
                             }
                             crate::control::sequence::registry::SequenceValue::Formatted(s) => {
-                                serde_json::Value::String(s)
+                                nodedb_types::Value::String(s)
                             }
                         };
-                        fields.insert(field_def.name.clone(), json_val);
+                        fields.insert(field_def.name.clone(), typed_val);
                     }
                     Err(e) => {
                         return Some(Err(sqlstate_error(
@@ -278,8 +272,8 @@ pub async fn insert_document(
 
     // Rebuild value bytes (sequence injection or BEFORE trigger may have mutated fields).
     let value_bytes = if fields != parsed.fields {
-        let doc = serde_json::Value::Object(fields.clone());
-        nodedb_types::json_to_msgpack(&doc).unwrap_or(parsed.value_bytes)
+        nodedb_types::value_to_msgpack(&nodedb_types::Value::Object(fields.clone()))
+            .unwrap_or(parsed.value_bytes)
     } else {
         parsed.value_bytes
     };
@@ -316,9 +310,9 @@ pub async fn insert_document(
             }
             if !coll.fields.iter().any(|(n, _)| n == name) {
                 let type_str = match val {
-                    serde_json::Value::Number(n) if n.is_f64() => "FLOAT",
-                    serde_json::Value::Number(_) => "INT",
-                    serde_json::Value::Bool(_) => "BOOL",
+                    nodedb_types::Value::Float(_) => "FLOAT",
+                    nodedb_types::Value::Integer(_) => "INT",
+                    nodedb_types::Value::Bool(_) => "BOOL",
                     _ => "TEXT",
                 };
                 coll.fields.push((name.clone(), type_str.to_string()));
@@ -333,16 +327,12 @@ pub async fn insert_document(
     // Fire SYNC AFTER INSERT triggers (execute in write path, same transaction).
     // ASYNC triggers are handled by the Event Plane via WriteEvent dispatch.
     use crate::control::security::catalog::trigger_types::TriggerExecutionMode;
-    let fields_hm_after: std::collections::HashMap<String, nodedb_types::Value> = fields
-        .iter()
-        .map(|(k, v)| (k.clone(), nodedb_types::Value::from(v.clone())))
-        .collect();
     if let Err(e) = crate::control::trigger::fire::fire_after_insert(
         state,
         identity,
         tenant_id,
         &parsed.coll_name,
-        &fields_hm_after,
+        &fields,
         0,
         Some(TriggerExecutionMode::Sync),
     )
@@ -423,20 +413,13 @@ pub async fn upsert_document(
     let tenant_id = identity.tenant_id;
     let vshard_id = crate::types::VShardId::from_collection(&parsed.coll_name);
 
-    // Convert fields to HashMap<String, nodedb_types::Value> for trigger fire functions.
-    let upsert_fields_as_hm: std::collections::HashMap<String, nodedb_types::Value> = parsed
-        .fields
-        .iter()
-        .map(|(k, v)| (k.clone(), nodedb_types::Value::from(v.clone())))
-        .collect();
-
     // Fire INSTEAD OF INSERT triggers (upsert treated as INSERT for triggers).
     match crate::control::trigger::fire_instead::fire_instead_of_insert(
         state,
         identity,
         tenant_id,
         &parsed.coll_name,
-        &upsert_fields_as_hm,
+        &parsed.fields,
         0,
     )
     .await
@@ -449,12 +432,12 @@ pub async fn upsert_document(
     }
 
     // Fire BEFORE INSERT triggers — may mutate NEW fields.
-    let fields_after_before_hm = match crate::control::trigger::fire_before::fire_before_insert(
+    let fields = match crate::control::trigger::fire_before::fire_before_insert(
         state,
         identity,
         tenant_id,
         &parsed.coll_name,
-        &upsert_fields_as_hm,
+        &parsed.fields,
         0,
     )
     .await
@@ -467,20 +450,14 @@ pub async fn upsert_document(
             )));
         }
     };
-    // Convert back to serde_json::Map for serialization and comparison.
-    let fields_after_before: serde_json::Map<String, serde_json::Value> = fields_after_before_hm
-        .iter()
-        .map(|(k, v)| (k.clone(), serde_json::Value::from(v.clone())))
-        .collect();
 
     // Rebuild value bytes if BEFORE trigger mutated NEW fields.
-    let value_bytes = if fields_after_before != parsed.fields {
-        let doc = serde_json::Value::Object(fields_after_before.clone());
-        nodedb_types::json_to_msgpack(&doc).unwrap_or(parsed.value_bytes)
+    let value_bytes = if fields != parsed.fields {
+        nodedb_types::value_to_msgpack(&nodedb_types::Value::Object(fields.clone()))
+            .unwrap_or(parsed.value_bytes)
     } else {
         parsed.value_bytes
     };
-    let fields = fields_after_before;
 
     let plan = crate::bridge::envelope::PhysicalPlan::Document(DocumentOp::Upsert {
         collection: parsed.coll_name.clone(),
@@ -503,16 +480,12 @@ pub async fn upsert_document(
 
     // Fire SYNC AFTER INSERT triggers.
     use crate::control::security::catalog::trigger_types::TriggerExecutionMode;
-    let upsert_fields_hm_after: std::collections::HashMap<String, nodedb_types::Value> = fields
-        .iter()
-        .map(|(k, v)| (k.clone(), nodedb_types::Value::from(v.clone())))
-        .collect();
     if let Err(e) = crate::control::trigger::fire::fire_after_insert(
         state,
         identity,
         tenant_id,
         &parsed.coll_name,
-        &upsert_fields_hm_after,
+        &fields,
         0,
         Some(TriggerExecutionMode::Sync),
     )

@@ -38,6 +38,10 @@ pub(super) async fn dispatch(
             state, identity, parts,
         ));
     }
+    // CREATE SEARCH INDEX ON <collection> FIELDS <field> [ANALYZER 'name'] [FUZZY true]
+    if upper.starts_with("CREATE SEARCH INDEX ") {
+        return Some(super::super::dsl::create_search_index(state, identity, sql));
+    }
     if upper.starts_with("CREATE SPARSE INDEX ") {
         return Some(super::super::dsl::create_sparse_index(
             state, identity, parts,

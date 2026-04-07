@@ -53,29 +53,29 @@ pub(super) fn split_values(s: &str) -> Vec<&str> {
 }
 
 /// Parse a SQL literal value to a `serde_json::Value`.
-pub(super) fn parse_sql_value(val: &str) -> serde_json::Value {
+pub(super) fn parse_sql_value(val: &str) -> nodedb_types::Value {
     let trimmed = val.trim();
     if trimmed.eq_ignore_ascii_case("NULL") {
-        return serde_json::Value::Null;
+        return nodedb_types::Value::Null;
     }
     if trimmed.eq_ignore_ascii_case("TRUE") {
-        return serde_json::Value::Bool(true);
+        return nodedb_types::Value::Bool(true);
     }
     if trimmed.eq_ignore_ascii_case("FALSE") {
-        return serde_json::Value::Bool(false);
+        return nodedb_types::Value::Bool(false);
     }
     if trimmed.starts_with('\'') && trimmed.ends_with('\'') {
         let inner = &trimmed[1..trimmed.len() - 1];
         let unescaped = inner.replace("''", "'");
-        return serde_json::Value::String(unescaped);
+        return nodedb_types::Value::String(unescaped);
     }
     if let Ok(i) = trimmed.parse::<i64>() {
-        return serde_json::json!(i);
+        return nodedb_types::Value::Integer(i);
     }
     if let Ok(f) = trimmed.parse::<f64>() {
-        return serde_json::json!(f);
+        return nodedb_types::Value::Float(f);
     }
-    serde_json::Value::String(trimmed.to_string())
+    nodedb_types::Value::String(trimmed.to_string())
 }
 
 /// Extract a clause value delimited by known keywords.
