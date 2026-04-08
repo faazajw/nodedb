@@ -6,6 +6,7 @@ use std::time::Instant;
 use crate::bridge::envelope::{Payload, Priority, Request, Response};
 use crate::control::planner::physical::PhysicalTask;
 use crate::types::{Lsn, ReadConsistency};
+use sonic_rs;
 
 use super::core::NodeDbPgHandler;
 
@@ -39,6 +40,7 @@ impl NodeDbPgHandler {
                 ref projection,
                 ref post_filters,
                 ref inline_left,
+                ref inline_right,
             },
         ) = task.plan
         {
@@ -112,26 +114,31 @@ impl NodeDbPgHandler {
             }
             // Phase 1: broadcast scan the right collection across all cores.
             // Uses broadcast_raw to get raw binary payloads (no JSON wrapping).
-            let right_scan = crate::bridge::envelope::PhysicalPlan::Document(
-                crate::bridge::physical_plan::DocumentOp::Scan {
-                    collection: right_collection.clone(),
-                    filters: Vec::new(),
-                    limit: (limit * 10).min(50000),
-                    offset: 0,
-                    sort_keys: Vec::new(),
-                    distinct: false,
-                    projection: Vec::new(),
-                    computed_columns: Vec::new(),
-                    window_functions: Vec::new(),
-                },
-            );
-            let broadcast_data = crate::control::server::dispatch_utils::broadcast_raw(
-                &self.state,
-                task.tenant_id,
-                right_scan,
-                0,
-            )
-            .await?;
+            let broadcast_data = if let Some(right_plan) = inline_right {
+                self.materialize_inline_join_side(task.tenant_id, task.vshard_id, right_plan)
+                    .await?
+            } else {
+                let right_scan = crate::bridge::envelope::PhysicalPlan::Document(
+                    crate::bridge::physical_plan::DocumentOp::Scan {
+                        collection: right_collection.clone(),
+                        filters: Vec::new(),
+                        limit: (limit * 10).min(50000),
+                        offset: 0,
+                        sort_keys: Vec::new(),
+                        distinct: false,
+                        projection: Vec::new(),
+                        computed_columns: Vec::new(),
+                        window_functions: Vec::new(),
+                    },
+                );
+                crate::control::server::dispatch_utils::broadcast_raw(
+                    &self.state,
+                    task.tenant_id,
+                    right_scan,
+                    0,
+                )
+                .await?
+            };
 
             tracing::warn!(
                 broadcast_bytes = broadcast_data.len(),
@@ -320,5 +327,68 @@ impl NodeDbPgHandler {
         .map_err(|_| crate::Error::Dispatch {
             detail: "response channel closed".into(),
         })
+    }
+
+    async fn materialize_inline_join_side(
+        &self,
+        tenant_id: crate::types::TenantId,
+        fallback_vshard_id: crate::types::VShardId,
+        plan: &crate::bridge::envelope::PhysicalPlan,
+    ) -> crate::Result<Vec<u8>> {
+        let vshard_id = super::plan::extract_collection(plan)
+            .map(crate::types::VShardId::from_collection)
+            .unwrap_or(fallback_vshard_id);
+        let task = crate::control::planner::physical::PhysicalTask {
+            tenant_id,
+            vshard_id,
+            plan: plan.clone(),
+            post_set_op: crate::control::planner::physical::PostSetOp::None,
+        };
+        let resp = Box::pin(self.dispatch_task(task)).await?;
+        normalize_join_broadcast_payload(resp.payload.as_ref())
+    }
+}
+
+fn normalize_join_broadcast_payload(payload: &[u8]) -> crate::Result<Vec<u8>> {
+    if payload.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    match payload[0] {
+        b'[' | b'{' => {
+            let json: serde_json::Value =
+                sonic_rs::from_slice(payload).map_err(|e| crate::Error::Codec {
+                    detail: format!("join broadcast JSON decode: {e}"),
+                })?;
+            nodedb_types::json_to_msgpack(&json).map_err(|e| crate::Error::Codec {
+                detail: format!("join broadcast msgpack encode: {e}"),
+            })
+        }
+        _ => Ok(payload.to_vec()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_join_broadcast_payload;
+
+    #[test]
+    fn normalize_join_broadcast_payload_converts_json_arrays_to_msgpack() {
+        let payload = br#"[{"avg_amount":43.598}]"#;
+
+        let normalized = normalize_join_broadcast_payload(payload).unwrap();
+        let decoded = nodedb_types::json_from_msgpack(&normalized).unwrap();
+
+        assert_eq!(decoded, serde_json::json!([{ "avg_amount": 43.598 }]));
+    }
+
+    #[test]
+    fn normalize_join_broadcast_payload_keeps_msgpack_payloads() {
+        let payload =
+            nodedb_types::json_to_msgpack(&serde_json::json!([{ "avg_amount": 43.598 }])).unwrap();
+
+        let normalized = normalize_join_broadcast_payload(&payload).unwrap();
+
+        assert_eq!(normalized, payload);
     }
 }

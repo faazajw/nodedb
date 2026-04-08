@@ -133,21 +133,43 @@ pub(super) fn binary_row_matches_filters(
     row: &[u8],
     filters: &[crate::bridge::scan_filter::ScanFilter],
 ) -> bool {
+    use crate::bridge::scan_filter::FilterOp;
+
     filters.iter().all(|f| {
-        if f.op == crate::bridge::scan_filter::FilterOp::MatchAll {
+        if f.op == FilterOp::MatchAll {
             return true;
         }
-        // Try exact field name, then "collection.field" pattern.
+        // Try exact field name first.
         if f.matches_binary(row) {
             return true;
         }
-        // ScanFilter looked for "amount" but the key is "orders.amount".
-        // Extract all keys, find one ending with ".{field}", extract its value,
-        // and compare manually.
-        let Some((count, mut pos)) = msgpack_scan::map_header(row, 0) else {
+        // Qualified-name fallback: field "amount" may be stored as "orders.amount".
+        // Build a mini map with unqualified names for the fields this filter needs,
+        // so matches_binary can find them.
+        let Some((count, _)) = msgpack_scan::map_header(row, 0) else {
             return false;
         };
-        let suffix = format!(".{}", f.field);
+
+        // Collect all fields the filter needs (left field + right column for ColumnCompare).
+        let mut needed: Vec<&str> = vec![&f.field];
+        let is_col_compare = matches!(
+            f.op,
+            FilterOp::GtColumn
+                | FilterOp::GteColumn
+                | FilterOp::LtColumn
+                | FilterOp::LteColumn
+                | FilterOp::EqColumn
+                | FilterOp::NeColumn
+        );
+        let right_col_name;
+        if is_col_compare && let nodedb_types::Value::String(s) = &f.value {
+            right_col_name = s.clone();
+            needed.push(&right_col_name);
+        }
+
+        // Scan map entries and collect value bytes for needed fields.
+        let mut found: Vec<(&str, usize, usize)> = Vec::new();
+        let mut pos = msgpack_scan::map_header(row, 0).unwrap().1;
         for _ in 0..count {
             let key = msgpack_scan::read_str(row, pos);
             let key_end = match msgpack_scan::skip_value(row, pos) {
@@ -159,19 +181,29 @@ pub(super) fn binary_row_matches_filters(
                 Some(p) => p,
                 None => return false,
             };
-            if let Some(k) = key
-                && (k.ends_with(&suffix) || k == f.field)
-            {
-                // Build a single-field map for the filter to match against.
-                let mut mini = Vec::with_capacity(f.field.len() + (val_end - val_start) + 8);
-                mini.push(0x81); // fixmap with 1 entry
-                write_str(&mut mini, &f.field);
-                mini.extend_from_slice(&row[val_start..val_end]);
-                return f.matches_binary(&mini);
+            if let Some(k) = key {
+                for &need in &needed {
+                    let suffix = format!(".{need}");
+                    if k == need || k.ends_with(&suffix) {
+                        found.push((need, val_start, val_end));
+                    }
+                }
             }
             pos = val_end;
         }
-        false
+
+        if found.is_empty() {
+            return false;
+        }
+
+        // Build a mini map with unqualified names.
+        let mut mini = Vec::with_capacity(128);
+        write_map_header(&mut mini, found.len());
+        for (name, vs, ve) in &found {
+            write_str(&mut mini, name);
+            mini.extend_from_slice(&row[*vs..*ve]);
+        }
+        f.matches_binary(&mini)
     })
 }
 

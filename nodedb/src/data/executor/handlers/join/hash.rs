@@ -352,13 +352,6 @@ impl CoreLoop {
         // Decode right side: broadcast_raw format ({id, data} wrapper maps).
         let right_docs = super::super::super::response_codec::decode_raw_scan_to_docs(right_data);
 
-        tracing::warn!(
-            core = self.core_id,
-            left_count = left_docs.len(),
-            right_count = right_docs.len(),
-            "inline hash join: decoded both sides"
-        );
-
         // Left docs come from a merged join result where field names are
         // prefixed as "collection.field". The join keys from the planner are
         // unqualified (e.g. "id"). Resolve qualified names by scanning the
