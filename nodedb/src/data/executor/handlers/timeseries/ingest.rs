@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use sonic_rs::{JsonContainerTrait, JsonValueTrait};
 
+use super::msgpack_decode::{self, MsgpackValue};
 use crate::bridge::envelope::{ErrorCode, Payload, Response, Status};
 use crate::data::executor::core_loop::CoreLoop;
 use crate::data::executor::response_codec;
@@ -76,6 +77,7 @@ impl CoreLoop {
         match format {
             "ilp" => self.execute_ilp_ingest(task, collection, payload, wal_lsn, now_ms),
             "json" => self.execute_json_ingest(task, collection, payload, wal_lsn, now_ms),
+            "msgpack" => self.execute_msgpack_ingest(task, collection, payload, wal_lsn, now_ms),
             _ => self.response_error(
                 task,
                 ErrorCode::Internal {
@@ -287,6 +289,116 @@ impl CoreLoop {
 
     /// Ingest JSON row objects from SQL INSERT path.
     ///
+    /// Payload is a msgpack array of maps (same schema as JSON ingest but in msgpack).
+    /// Converts each row to an ILP line and delegates to the ILP ingest path.
+    fn execute_msgpack_ingest(
+        &mut self,
+        task: &ExecutionTask,
+        collection: &str,
+        payload: &[u8],
+        wal_lsn: Option<u64>,
+        now_ms: i64,
+    ) -> Response {
+        let measurement = collection
+            .split_once(':')
+            .map(|(_, name)| name)
+            .unwrap_or(collection);
+
+        if !measurement
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            return self.response_error(
+                task,
+                ErrorCode::Internal {
+                    detail: format!(
+                        "invalid measurement name '{measurement}': only [a-zA-Z0-9_-] allowed"
+                    ),
+                },
+            );
+        }
+
+        let rows = match msgpack_decode::decode_msgpack_rows(payload) {
+            Ok(r) => r,
+            Err(e) => {
+                return self.response_error(
+                    task,
+                    ErrorCode::Internal {
+                        detail: format!("msgpack decode error: {e}"),
+                    },
+                );
+            }
+        };
+
+        if rows.is_empty() {
+            return self.response_error(
+                task,
+                ErrorCode::Internal {
+                    detail: "empty msgpack rows array".into(),
+                },
+            );
+        }
+
+        let mut ilp_buf = String::new();
+        for row in &rows {
+            let mut fields = Vec::new();
+            let mut timestamp_ns: Option<i64> = None;
+
+            for (key, val) in row {
+                let lower = key.to_lowercase();
+                if lower == "ts" || lower == "timestamp" || lower == "time" {
+                    match val {
+                        MsgpackValue::Str(s) => {
+                            timestamp_ns = parse_ts_string_to_nanos(s);
+                        }
+                        MsgpackValue::Int(n) => {
+                            timestamp_ns = Some(*n * 1_000_000);
+                        }
+                        MsgpackValue::Float(f) => {
+                            timestamp_ns = Some(*f as i64 * 1_000_000);
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+
+                match val {
+                    MsgpackValue::Float(f) => fields.push(format!("{key}={f}")),
+                    MsgpackValue::Int(n) => fields.push(format!("{key}={n}i")),
+                    MsgpackValue::Str(s) => {
+                        fields.push(format!("{key}=\"{}\"", s.replace('\"', "\\\"")));
+                    }
+                    MsgpackValue::Bool(b) => fields.push(format!("{key}={b}")),
+                    _ => {}
+                }
+            }
+
+            if fields.is_empty() {
+                continue;
+            }
+
+            ilp_buf.push_str(measurement);
+            ilp_buf.push(' ');
+            ilp_buf.push_str(&fields.join(","));
+            if let Some(ts) = timestamp_ns {
+                ilp_buf.push(' ');
+                ilp_buf.push_str(&ts.to_string());
+            }
+            ilp_buf.push('\n');
+        }
+
+        if ilp_buf.is_empty() {
+            return self.response_error(
+                task,
+                ErrorCode::Internal {
+                    detail: "no valid rows in msgpack payload".into(),
+                },
+            );
+        }
+
+        self.execute_ilp_ingest(task, collection, ilp_buf.as_bytes(), wal_lsn, now_ms)
+    }
+
     /// Payload is a JSON array like: `[{"id":"e1","ts":"2024-01-01T00:00:00Z","value":42.0}]`.
     /// Converts each row to an ILP line and delegates to the ILP ingest path.
     fn execute_json_ingest(

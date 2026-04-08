@@ -43,25 +43,6 @@ pub(super) fn sql_value_to_msgpack(v: &SqlValue) -> Vec<u8> {
     buf
 }
 
-/// Convert SqlValue to JSON — used only at wire boundaries (e.g. timeseries ingest).
-/// For internal expression evaluation, use `sql_value_to_nodedb_value` instead.
-fn sql_value_to_json(v: &SqlValue) -> serde_json::Value {
-    match v {
-        SqlValue::Int(i) => serde_json::Value::Number((*i).into()),
-        SqlValue::Float(f) => serde_json::json!(*f),
-        SqlValue::String(s) => serde_json::Value::String(s.clone()),
-        SqlValue::Bool(b) => serde_json::Value::Bool(*b),
-        SqlValue::Null => serde_json::Value::Null,
-        SqlValue::Array(arr) => {
-            serde_json::Value::Array(arr.iter().map(sql_value_to_json).collect())
-        }
-        SqlValue::Bytes(b) => serde_json::Value::String(base64::Engine::encode(
-            &base64::engine::general_purpose::STANDARD,
-            b,
-        )),
-    }
-}
-
 // ── Msgpack encoding ──
 
 pub(super) fn row_to_msgpack(row: &[(String, SqlValue)]) -> crate::Result<Vec<u8>> {
@@ -83,6 +64,18 @@ pub(super) fn write_msgpack_map_header(buf: &mut Vec<u8>, len: usize) {
         buf.extend_from_slice(&(len as u16).to_be_bytes());
     } else {
         buf.push(0xDF);
+        buf.extend_from_slice(&(len as u32).to_be_bytes());
+    }
+}
+
+pub(super) fn write_msgpack_array_header(buf: &mut Vec<u8>, len: usize) {
+    if len < 16 {
+        buf.push(0x90 | len as u8);
+    } else if len <= u16::MAX as usize {
+        buf.push(0xDC);
+        buf.extend_from_slice(&(len as u16).to_be_bytes());
+    } else {
+        buf.push(0xDD);
         buf.extend_from_slice(&(len as u32).to_be_bytes());
     }
 }
@@ -212,23 +205,6 @@ pub(super) fn rows_to_msgpack_array(
     nodedb_types::value_to_msgpack(&val).map_err(|e| crate::Error::Serialization {
         format: "msgpack".into(),
         detail: format!("columnar row batch: {e}"),
-    })
-}
-
-pub(super) fn serialize_ingest_rows(rows: &[Vec<(String, SqlValue)>]) -> crate::Result<Vec<u8>> {
-    let json_rows: Vec<serde_json::Value> = rows
-        .iter()
-        .map(|row| {
-            let mut map = serde_json::Map::new();
-            for (key, val) in row {
-                map.insert(key.clone(), sql_value_to_json(val));
-            }
-            serde_json::Value::Object(map)
-        })
-        .collect();
-    sonic_rs::to_vec(&json_rows).map_err(|e| crate::Error::Serialization {
-        format: "json".into(),
-        detail: format!("timeseries ingest rows: {e}"),
     })
 }
 

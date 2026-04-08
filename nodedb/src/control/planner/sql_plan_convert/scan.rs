@@ -14,7 +14,8 @@ use super::convert::{ConvertContext, convert_one};
 use super::expr::convert_sort_keys;
 use super::filter::serialize_filters;
 use super::value::{
-    extract_time_range, serialize_ingest_rows, sql_value_to_bytes, sql_value_to_string,
+    extract_time_range, row_to_msgpack, sql_value_to_bytes, sql_value_to_string,
+    write_msgpack_array_header,
 };
 
 pub(super) fn convert_scan(
@@ -233,14 +234,19 @@ pub(super) fn convert_timeseries_ingest(
     tenant_id: TenantId,
 ) -> crate::Result<Vec<PhysicalTask>> {
     let vshard = VShardId::from_collection(collection);
-    let payload = serialize_ingest_rows(rows)?;
+    let mut payload = Vec::with_capacity(rows.len() * 128);
+    write_msgpack_array_header(&mut payload, rows.len());
+    for row in rows {
+        let row_bytes = row_to_msgpack(row)?;
+        payload.extend_from_slice(&row_bytes);
+    }
     Ok(vec![PhysicalTask {
         tenant_id,
         vshard_id: vshard,
         plan: PhysicalPlan::Timeseries(TimeseriesOp::Ingest {
             collection: collection.into(),
             payload,
-            format: "json".into(),
+            format: "msgpack".into(),
             wal_lsn: None,
         }),
         post_set_op: PostSetOp::None,

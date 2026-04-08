@@ -4,6 +4,7 @@ pub mod aggregate;
 pub mod encode;
 pub mod flush;
 pub mod ingest;
+mod msgpack_decode;
 pub mod raw_scan;
 
 use crate::bridge::envelope::{Payload, Response, Status};
