@@ -780,9 +780,9 @@ fn write_native_value(buf: &mut Vec<u8>, value: &crate::Value) {
 }
 
 fn write_native_int(buf: &mut Vec<u8>, i: i64) {
-    if i >= 0 && i <= 0x7F {
+    if (0..=0x7F).contains(&i) {
         buf.push(i as u8);
-    } else if i >= -32 && i < 0 {
+    } else if (-32..0).contains(&i) {
         buf.push(i as u8); // negative fixint
     } else if i >= i8::MIN as i64 && i <= i8::MAX as i64 {
         buf.push(0xD0);
@@ -960,5 +960,35 @@ mod tests {
         let bytes = json_to_msgpack(&val).unwrap();
         let restored = json_from_msgpack(&bytes).unwrap();
         assert_eq!(val, restored);
+    }
+
+    #[test]
+    fn native_value_roundtrip() {
+        let mut map = std::collections::HashMap::new();
+        map.insert("id".to_string(), crate::Value::String("host1".into()));
+        map.insert("cpu".to_string(), crate::Value::Float(0.75));
+        map.insert("mem".to_string(), crate::Value::Float(0.5));
+
+        let row = crate::Value::Object(map);
+        let arr = crate::Value::Array(vec![row]);
+
+        let bytes = value_to_msgpack(&arr).unwrap();
+        let decoded = value_from_msgpack(&bytes).unwrap();
+
+        match &decoded {
+            crate::Value::Array(items) => {
+                assert_eq!(items.len(), 1);
+                match &items[0] {
+                    crate::Value::Object(m) => {
+                        assert_eq!(m.len(), 3);
+                        assert_eq!(m.get("id"), Some(&crate::Value::String("host1".into())));
+                        assert_eq!(m.get("cpu"), Some(&crate::Value::Float(0.75)));
+                        assert_eq!(m.get("mem"), Some(&crate::Value::Float(0.5)));
+                    }
+                    other => panic!("expected Object, got {other:?}"),
+                }
+            }
+            other => panic!("expected Array, got {other:?}"),
+        }
     }
 }
