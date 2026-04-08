@@ -1,5 +1,16 @@
 //! Query operations (joins, aggregates) dispatched to the Data Plane.
 
+/// Aggregate specification for Data Plane aggregate execution.
+#[derive(Debug, Clone)]
+pub struct AggregateSpec {
+    pub function: String,
+    pub alias: String,
+    /// Field name for simple field-based aggregates. `"*"` is used for COUNT(*).
+    pub field: String,
+    /// Optional expression to evaluate per-document before aggregating.
+    pub expr: Option<crate::bridge::expr_eval::SqlExpr>,
+}
+
 /// Query-level physical operations (joins, aggregates).
 #[derive(Debug, Clone)]
 pub enum QueryOp {
@@ -7,20 +18,20 @@ pub enum QueryOp {
     Aggregate {
         collection: String,
         group_by: Vec<String>,
-        aggregates: Vec<(String, String)>,
+        aggregates: Vec<AggregateSpec>,
         filters: Vec<u8>,
         /// HAVING predicates applied post-aggregation.
         having: Vec<u8>,
         limit: usize,
         sub_group_by: Vec<String>,
-        sub_aggregates: Vec<(String, String)>,
+        sub_aggregates: Vec<AggregateSpec>,
     },
 
     /// Partial aggregate: each core computes locally, Control Plane merges.
     PartialAggregate {
         collection: String,
         group_by: Vec<String>,
-        aggregates: Vec<(String, String)>,
+        aggregates: Vec<AggregateSpec>,
         filters: Vec<u8>,
     },
 

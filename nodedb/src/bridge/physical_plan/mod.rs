@@ -25,7 +25,7 @@ pub use document::{
 pub use graph::GraphOp;
 pub use kv::KvOp;
 pub use meta::MetaOp;
-pub use query::QueryOp;
+pub use query::{AggregateSpec, QueryOp};
 pub use spatial::{SpatialOp, SpatialPredicate};
 pub use text::TextOp;
 pub use timeseries::TimeseriesOp;

@@ -4,6 +4,7 @@ use sonic_rs;
 use tracing::debug;
 
 use crate::bridge::envelope::{ErrorCode, Response};
+use crate::bridge::physical_plan::AggregateSpec;
 use crate::bridge::scan_filter::ScanFilter;
 use crate::data::executor::core_loop::CoreLoop;
 use crate::data::executor::task::ExecutionTask;
@@ -17,9 +18,9 @@ fn aggregate_cache_key(
     tid: u32,
     collection: &str,
     group_by: &[String],
-    aggregates: &[(String, String)],
+    aggregates: &[AggregateSpec],
     sub_group_by: &[String],
-    sub_aggregates: &[(String, String)],
+    sub_aggregates: &[AggregateSpec],
 ) -> String {
     use std::fmt::Write;
     let mut key = format!(
@@ -27,7 +28,13 @@ fn aggregate_cache_key(
         group_by.join(","),
         aggregates
             .iter()
-            .map(|(op, f)| format!("{op}({f})"))
+            .map(|agg| {
+                if agg.expr.is_some() {
+                    format!("{}(expr)->{}", agg.function, agg.alias)
+                } else {
+                    format!("{}({})->{}", agg.function, agg.field, agg.alias)
+                }
+            })
             .collect::<Vec<_>>()
             .join(",")
     );
@@ -38,7 +45,13 @@ fn aggregate_cache_key(
             sub_group_by.join(","),
             sub_aggregates
                 .iter()
-                .map(|(op, f)| format!("{op}({f})"))
+                .map(|agg| {
+                    if agg.expr.is_some() {
+                        format!("{}(expr)->{}", agg.function, agg.alias)
+                    } else {
+                        format!("{}({})->{}", agg.function, agg.field, agg.alias)
+                    }
+                })
                 .collect::<Vec<_>>()
                 .join(",")
         );
@@ -77,6 +90,19 @@ fn group_doc(
     }
 }
 
+fn legacy_aggregate_pairs(aggregates: &[AggregateSpec]) -> Option<Vec<(String, String)>> {
+    aggregates
+        .iter()
+        .map(|agg| {
+            if agg.expr.is_some() {
+                None
+            } else {
+                Some((agg.function.clone(), agg.field.clone()))
+            }
+        })
+        .collect()
+}
+
 impl CoreLoop {
     #[allow(clippy::too_many_arguments)]
     pub(in crate::data::executor) fn execute_aggregate(
@@ -85,12 +111,12 @@ impl CoreLoop {
         tid: u32,
         collection: &str,
         group_by: &[String],
-        aggregates: &[(String, String)],
+        aggregates: &[AggregateSpec],
         filters: &[u8],
         having: &[u8],
         limit: usize,
         sub_group_by: &[String],
-        sub_aggregates: &[(String, String)],
+        sub_aggregates: &[AggregateSpec],
     ) -> Response {
         debug!(core = self.core_id, %collection, group_fields = group_by.len(), aggs = aggregates.len(), "aggregate");
 
@@ -120,7 +146,8 @@ impl CoreLoop {
             && filters.is_empty()
             && having.is_empty()
             && aggregates.len() == 1
-            && aggregates[0].0 == "count"
+            && aggregates[0].expr.is_none()
+            && aggregates[0].function == "count"
         {
             let field = &group_by[0];
             // Empty index — fall through to full scan (documents may exist
@@ -182,14 +209,17 @@ impl CoreLoop {
                 }
             };
 
-            if let Some(mut agg_result) = super::columnar_agg::try_columnar_aggregate(
-                mt,
-                group_by,
-                aggregates,
-                &filter_predicates,
-                limit,
-                scan_limit,
-            ) {
+            let legacy_aggs = legacy_aggregate_pairs(aggregates);
+            if let Some(mut agg_result) = legacy_aggs.and_then(|pairs| {
+                super::columnar_agg::try_columnar_aggregate(
+                    mt,
+                    group_by,
+                    &pairs,
+                    &filter_predicates,
+                    limit,
+                    scan_limit,
+                )
+            }) {
                 // Apply HAVING filters.
                 if !having.is_empty() {
                     let having_predicates: Vec<ScanFilter> = match zerompk::from_msgpack(having) {
@@ -298,11 +328,15 @@ impl CoreLoop {
 
                     let doc_slices: Vec<&[u8]> = group_docs.iter().map(|d| d.as_slice()).collect();
 
-                    for (op, field) in aggregates {
-                        let agg_key = format!("{op}_{field}").replace('*', "all");
-                        let val = msgpack_scan::compute_aggregate_binary(op, field, &doc_slices);
+                    for agg in aggregates {
+                        let val = msgpack_scan::compute_aggregate_binary(
+                            &agg.function,
+                            &agg.field,
+                            agg.expr.as_ref(),
+                            &doc_slices,
+                        );
                         let json_val: serde_json::Value = val.into();
-                        row.insert(agg_key, json_val);
+                        row.insert(agg.alias.clone(), json_val);
                     }
 
                     // Nested sub-aggregation on raw bytes.
@@ -325,12 +359,15 @@ impl CoreLoop {
                                     sub_row.insert(field.clone(), val);
                                 }
                             }
-                            for (op, field) in sub_aggregates {
-                                let agg_key = format!("{op}_{field}").replace('*', "all");
-                                let val =
-                                    msgpack_scan::compute_aggregate_binary(op, field, sub_docs);
+                            for agg in sub_aggregates {
+                                let val = msgpack_scan::compute_aggregate_binary(
+                                    &agg.function,
+                                    &agg.field,
+                                    agg.expr.as_ref(),
+                                    sub_docs,
+                                );
                                 let json_val: serde_json::Value = val.into();
-                                sub_row.insert(agg_key, json_val);
+                                sub_row.insert(agg.alias.clone(), json_val);
                             }
                             sub_results.push(serde_json::Value::Object(sub_row));
                         }
