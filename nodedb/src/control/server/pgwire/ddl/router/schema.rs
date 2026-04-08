@@ -83,9 +83,9 @@ pub(super) async fn dispatch(
     // ALTER TABLE ADD COLUMN — schema modification for strict/columnar collections.
     if upper.starts_with("ALTER TABLE ") && (upper.contains("ADD COLUMN") || upper.contains("ADD "))
     {
-        return Some(super::super::collection::alter_table_add_column(
-            state, identity, parts, sql,
-        ));
+        return Some(
+            super::super::collection::alter_table_add_column(state, identity, parts, sql).await,
+        );
     }
 
     // RLS policies.

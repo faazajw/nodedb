@@ -11,7 +11,7 @@ use super::super::super::types::sqlstate_error;
 use super::helpers::parse_origin_column_def;
 
 /// ALTER TABLE <name> ADD [COLUMN] <name> <type> [NOT NULL] [DEFAULT ...]
-pub fn alter_table_add_column(
+pub async fn alter_table_add_column(
     state: &SharedState,
     identity: &AuthenticatedIdentity,
     parts: &[&str],
@@ -80,6 +80,9 @@ pub fn alter_table_add_column(
             }
         }
     }
+
+    // Re-register the collection with the Data Plane to refresh the cached schema.
+    super::create::dispatch_register_if_needed(state, identity, parts, sql).await;
 
     state.audit_record(
         AuditEvent::AdminAction,
