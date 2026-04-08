@@ -1,4 +1,5 @@
 //! Shared test helpers for CoreLoop integration tests.
+#![allow(dead_code)]
 
 use std::time::{Duration, Instant};
 
@@ -24,11 +25,32 @@ pub fn make_core() -> (
     Consumer<BridgeResponse>,
     tempfile::TempDir,
 ) {
+    make_core_with_id(0)
+}
+
+pub fn make_core_with_id(
+    core_id: usize,
+) -> (
+    CoreLoop,
+    Producer<BridgeRequest>,
+    Consumer<BridgeResponse>,
+    tempfile::TempDir,
+) {
     let dir = tempfile::tempdir().unwrap();
     let (req_tx, req_rx) = RingBuffer::channel::<BridgeRequest>(64);
     let (resp_tx, resp_rx) = RingBuffer::channel::<BridgeResponse>(64);
-    let core = CoreLoop::open(0, req_rx, resp_tx, dir.path()).unwrap();
+    let core = CoreLoop::open(core_id, req_rx, resp_tx, dir.path()).unwrap();
     (core, req_tx, resp_rx, dir)
+}
+
+pub fn make_ctx_with_id(core_id: usize) -> TestCtx {
+    let (core, tx, rx, dir) = make_core_with_id(core_id);
+    TestCtx {
+        core,
+        tx,
+        rx,
+        _dir: dir,
+    }
 }
 
 pub fn make_ctx() -> TestCtx {

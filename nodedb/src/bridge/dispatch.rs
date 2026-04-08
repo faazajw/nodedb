@@ -217,13 +217,31 @@ impl Dispatcher {
             });
         }
 
+        let tenant_id = request.tenant_id.as_u32();
+        let req_id = request.request_id.as_u64();
         let channel = &mut self.cores[core_id];
+
+        // Mirror the normal dispatch path so direct-to-core traffic participates
+        // in the same observability and response bookkeeping.
+        let util = channel.request_tx.utilization();
+        if let Some(new_state) = channel.backpressure.update(util) {
+            warn!(
+                core_id,
+                utilization = util,
+                state = ?new_state,
+                "backpressure transition"
+            );
+        }
+
         channel
             .request_tx
             .try_push(BridgeRequest { inner: request })
             .map_err(|e| crate::Error::Dispatch {
                 detail: format!("core {core_id}: {e}"),
             })?;
+
+        *self.tenant_inflight.entry(tenant_id).or_insert(0) += 1;
+        self.request_tenant.insert(req_id, tenant_id);
 
         if let Some(ref notifier) = channel.wake_notifier {
             notifier.notify();
@@ -369,5 +387,40 @@ mod tests {
         // Next dispatch should fail — queue is full.
         let result = dispatcher.dispatch(make_request(0));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn dispatch_to_core_tracks_request_lifecycle() {
+        let (mut dispatcher, mut data_sides) = Dispatcher::new(2, 64);
+        let request = make_request(0);
+        let tenant_id = request.tenant_id.as_u32();
+        let request_id = request.request_id.as_u64();
+
+        dispatcher.dispatch_to_core(1, request).unwrap();
+
+        assert_eq!(dispatcher.tenant_inflight.get(&tenant_id), Some(&1));
+        assert_eq!(dispatcher.request_tenant.get(&request_id), Some(&tenant_id));
+        assert_eq!(data_sides[1].request_rx.len(), 1);
+
+        let _req = data_sides[1].request_rx.try_pop().unwrap();
+        data_sides[1]
+            .response_tx
+            .try_push(BridgeResponse {
+                inner: envelope::Response {
+                    request_id: RequestId::new(request_id),
+                    status: Status::Ok,
+                    attempt: 1,
+                    partial: false,
+                    payload: Payload::empty(),
+                    watermark_lsn: Lsn::ZERO,
+                    error_code: None,
+                },
+            })
+            .unwrap();
+
+        let responses = dispatcher.poll_responses();
+        assert_eq!(responses.len(), 1);
+        assert_eq!(dispatcher.tenant_inflight.get(&tenant_id), Some(&0));
+        assert!(!dispatcher.request_tenant.contains_key(&request_id));
     }
 }

@@ -8,6 +8,8 @@ mod test_array_ops;
 mod test_conditional_update;
 #[path = "executor_tests/test_cross_engine_validation.rs"]
 mod test_cross_engine_validation;
+#[path = "executor_tests/test_cross_type_join.rs"]
+mod test_cross_type_join;
 #[path = "executor_tests/test_document.rs"]
 mod test_document;
 #[path = "executor_tests/test_facet.rs"]
