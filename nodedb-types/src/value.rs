@@ -209,6 +209,50 @@ impl Value {
     }
 }
 
+/// Object/array access methods for use as internal document representation.
+impl Value {
+    /// Look up a field by name. Returns `None` for non-Object variants.
+    pub fn get(&self, field: &str) -> Option<&Value> {
+        match self {
+            Value::Object(map) => map.get(field),
+            _ => None,
+        }
+    }
+
+    /// Mutable field lookup. Returns `None` for non-Object variants.
+    pub fn get_mut(&mut self, field: &str) -> Option<&mut Value> {
+        match self {
+            Value::Object(map) => map.get_mut(field),
+            _ => None,
+        }
+    }
+
+    /// Try to extract as an object (HashMap reference).
+    pub fn as_object(&self) -> Option<&HashMap<String, Value>> {
+        match self {
+            Value::Object(map) => Some(map),
+            _ => None,
+        }
+    }
+
+    /// Try to extract as a mutable object.
+    pub fn as_object_mut(&mut self) -> Option<&mut HashMap<String, Value>> {
+        match self {
+            Value::Object(map) => Some(map),
+            _ => None,
+        }
+    }
+
+    /// Try to extract as an array slice.
+    pub fn as_array(&self) -> Option<&[Value]> {
+        match self {
+            Value::Array(arr) => Some(arr),
+            Value::Set(arr) => Some(arr),
+            _ => None,
+        }
+    }
+}
+
 /// Cross-type comparison with `serde_json::Value` (for ScanFilter evaluation).
 impl Value {
     /// Coerced equality against a serde_json::Value (from a document field).
