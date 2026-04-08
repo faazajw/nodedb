@@ -261,6 +261,7 @@ fn convert_one(
             } else {
                 None
             };
+            let inline_right = inline_join_side(right, tenant_id, ctx)?;
 
             // RIGHT JOIN → swap sides and convert to LEFT JOIN.
             let mut on_keys = on.to_vec();
@@ -288,6 +289,7 @@ fn convert_one(
                     projection: proj_names,
                     post_filters: filter_bytes,
                     inline_left,
+                    inline_right,
                 }),
                 post_set_op: PostSetOp::None,
             }])
@@ -299,7 +301,7 @@ fn convert_one(
             aggregates,
             having,
             limit,
-        } => convert_aggregate(input, group_by, aggregates, having, *limit, tenant_id),
+        } => convert_aggregate(input, group_by, aggregates, having, *limit, tenant_id, ctx),
 
         SqlPlan::TimeseriesScan {
             collection,
@@ -786,6 +788,7 @@ fn convert_aggregate(
     having: &[Filter],
     limit: usize,
     tenant_id: TenantId,
+    ctx: &ConvertContext,
 ) -> crate::Result<Vec<PhysicalTask>> {
     // Check if aggregating over a join.
     if let SqlPlan::Join {
@@ -802,6 +805,8 @@ fn convert_aggregate(
 
         let group_strs = group_by_to_strings(group_by);
         let agg_pairs = aggregates.iter().map(agg_expr_to_pair).collect();
+        let inline_left = inline_join_side(left, tenant_id, ctx)?;
+        let inline_right = inline_join_side(right, tenant_id, ctx)?;
 
         // RIGHT JOIN → swap sides and convert to LEFT JOIN.
         let mut on_keys = on.to_vec();
@@ -828,7 +833,8 @@ fn convert_aggregate(
                 post_aggregates: agg_pairs,
                 projection: Vec::new(),
                 post_filters: Vec::new(),
-                inline_left: None,
+                inline_left,
+                inline_right,
             }),
             post_set_op: PostSetOp::None,
         }]);
@@ -889,6 +895,27 @@ fn convert_aggregate(
 }
 
 // ── Helpers ──
+
+fn inline_join_side(
+    plan: &SqlPlan,
+    tenant_id: TenantId,
+    ctx: &ConvertContext,
+) -> crate::Result<Option<Box<PhysicalPlan>>> {
+    if matches!(plan, SqlPlan::Scan { .. } | SqlPlan::PointGet { .. }) {
+        return Ok(None);
+    }
+
+    let mut tasks = convert_one(plan, tenant_id, ctx)?;
+    if tasks.len() > 1 {
+        return Err(crate::Error::PlanError {
+            detail: format!(
+                "inline join side must produce exactly 1 task, got {}",
+                tasks.len()
+            ),
+        });
+    }
+    Ok(tasks.pop().map(|t| Box::new(t.plan)))
+}
 
 fn extract_collection_name(plan: &SqlPlan) -> String {
     match plan {
@@ -1297,6 +1324,24 @@ fn sql_expr_to_scan_filters(expr: &SqlExpr) -> Vec<nodedb_query::scan_filter::Sc
             };
             let value = match right.as_ref() {
                 SqlExpr::Literal(v) => sql_value_to_nodedb_value(v),
+                SqlExpr::Column { name, .. } => {
+                    // Column-vs-column comparison (e.g. scalar subquery result).
+                    let col_op = match op {
+                        nodedb_sql::types::BinaryOp::Gt => FilterOp::GtColumn,
+                        nodedb_sql::types::BinaryOp::Ge => FilterOp::GteColumn,
+                        nodedb_sql::types::BinaryOp::Lt => FilterOp::LtColumn,
+                        nodedb_sql::types::BinaryOp::Le => FilterOp::LteColumn,
+                        nodedb_sql::types::BinaryOp::Eq => FilterOp::EqColumn,
+                        nodedb_sql::types::BinaryOp::Ne => FilterOp::NeColumn,
+                        _ => return vec![match_all()],
+                    };
+                    return vec![ScanFilter {
+                        field,
+                        op: col_op,
+                        value: nodedb_types::Value::String(name.clone()),
+                        clauses: Vec::new(),
+                    }];
+                }
                 _ => return vec![match_all()],
             };
             let filter_op = match op {

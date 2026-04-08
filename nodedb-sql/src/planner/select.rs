@@ -189,8 +189,35 @@ fn plan_select(
         window_functions,
     };
 
-    // 10. Wrap with subquery joins (semi/anti) if any.
+    // 10. Wrap with subquery joins (semi/anti/cross) if any.
     for sq in subquery_joins {
+        // For cross-joins (scalar subqueries), move column-referencing filters
+        // from the base scan to the join's post-filters. The filter compares
+        // a field from the base scan with a field from the subquery result,
+        // so it can only be evaluated after the join merges both sides.
+        let join_filters = if sq.join_type == JoinType::Cross {
+            if let SqlPlan::Scan {
+                ref mut filters, ..
+            } = plan
+            {
+                // Move filters that reference the scalar result column to the join.
+                let mut moved = Vec::new();
+                filters.retain(|f| {
+                    if has_column_ref_filter(&f.expr) {
+                        moved.push(f.clone());
+                        false
+                    } else {
+                        true
+                    }
+                });
+                moved
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        };
+
         plan = SqlPlan::Join {
             left: Box::new(plan),
             right: Box::new(sq.inner_plan),
@@ -199,11 +226,37 @@ fn plan_select(
             condition: None,
             limit: 10000,
             projection: Vec::new(),
-            filters: Vec::new(),
+            filters: join_filters,
         };
     }
 
     Ok(plan)
+}
+
+/// Check if a filter expression contains a column-vs-column comparison
+/// (from scalar subquery rewriting). These filters must be evaluated
+/// post-join, not pre-join, since one column comes from the subquery result.
+fn has_column_ref_filter(expr: &FilterExpr) -> bool {
+    match expr {
+        FilterExpr::Expr(sql_expr) => has_column_comparison(sql_expr),
+        FilterExpr::And(filters) => filters.iter().any(|f| has_column_ref_filter(&f.expr)),
+        FilterExpr::Or(filters) => filters.iter().any(|f| has_column_ref_filter(&f.expr)),
+        _ => false,
+    }
+}
+
+fn has_column_comparison(expr: &SqlExpr) -> bool {
+    match expr {
+        SqlExpr::BinaryOp { left, right, .. } => {
+            let left_is_col = matches!(left.as_ref(), SqlExpr::Column { .. });
+            let right_is_col = matches!(right.as_ref(), SqlExpr::Column { .. });
+            if left_is_col && right_is_col {
+                return true;
+            }
+            has_column_comparison(left) || has_column_comparison(right)
+        }
+        _ => false,
+    }
 }
 
 /// Check if a SELECT has aggregation (GROUP BY or aggregate functions in projection).

@@ -43,6 +43,10 @@ pub enum QueryOp {
         /// runs this sub-plan first and uses its result as the left side
         /// instead of scanning `left_collection`.
         inline_left: Option<Box<crate::bridge::envelope::PhysicalPlan>>,
+        /// Inline right sub-plan for scalar subqueries or other materialized
+        /// small-side inputs. The Control Plane executes this plan first,
+        /// merges it if needed, then embeds the result into `BroadcastJoin`.
+        inline_right: Option<Box<crate::bridge::envelope::PhysicalPlan>>,
     },
 
     /// Inline hash join: both sides are pre-gathered msgpack data.
