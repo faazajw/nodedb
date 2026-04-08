@@ -41,6 +41,29 @@ pub(super) fn decode_document(bytes: &[u8]) -> Option<serde_json::Value> {
     // doc_configs.storage_mode and use strict_format::binary_tuple_to_json().
 }
 
+/// Convert a document byte blob to `nodedb_types::Value`.
+///
+/// Preserves all native types (Geometry, DateTime, Decimal, etc.) that
+/// would be lost when decoding to `serde_json::Value`.
+/// Auto-detects msgpack vs JSON. Binary Tuple requires schema — callers
+/// should use `strict_format::binary_tuple_to_value` for strict collections.
+pub(super) fn decode_document_value(bytes: &[u8]) -> Option<nodedb_types::Value> {
+    if bytes.is_empty() {
+        return None;
+    }
+
+    let first = bytes[0];
+    if ((0x80..=0x8F).contains(&first) || first == 0xDE || first == 0xDF)
+        && let Ok(val) = nodedb_types::value_from_msgpack(bytes)
+    {
+        return Some(val);
+    }
+
+    // JSON input boundary: parse then convert.
+    let json: serde_json::Value = sonic_rs::from_slice(bytes).ok()?;
+    Some(nodedb_types::Value::from(json))
+}
+
 /// Encode a JSON value as MessagePack bytes for storage.
 ///
 /// If encoding fails (should not happen for valid `serde_json::Value`),

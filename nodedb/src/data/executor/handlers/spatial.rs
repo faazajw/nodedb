@@ -3,6 +3,8 @@
 //! Documents with geometry fields are auto-indexed into per-field R-trees
 //! on insert (see `handlers/point.rs`). Spatial queries use the R-tree for
 //! fast bbox candidate selection, then refine with exact predicates.
+//!
+//! Internal document representation: `nodedb_types::Value` (no JSON intermediary).
 
 use sonic_rs;
 use tracing::debug;
@@ -13,15 +15,15 @@ use crate::bridge::physical_plan::SpatialPredicate;
 use crate::bridge::scan_filter::ScanFilter;
 use crate::data::executor::core_loop::CoreLoop;
 use crate::data::executor::task::ExecutionTask;
+use nodedb_types::Value;
 
 impl CoreLoop {
     /// Execute a spatial scan using the R-tree index.
     ///
     /// 1. Parse query geometry from GeoJSON bytes
-    /// 2. Get or lazily create R-tree for `collection:field`
-    /// 3. R-tree range search for bbox candidates
-    /// 4. Exact predicate refinement (load document geometry, apply ST_*)
-    /// 5. Return matching documents up to limit
+    /// 2. R-tree range search for bbox candidates
+    /// 3. Exact predicate refinement (extract geometry, apply ST_*)
+    /// 4. Return matching documents up to limit
     #[allow(clippy::too_many_arguments)]
     pub(in crate::data::executor) fn execute_spatial_scan(
         &mut self,
@@ -79,14 +81,11 @@ impl CoreLoop {
             query_bbox
         };
 
-        // 3. Get R-tree index for this collection:field.
         let index_key = format!("{tid}:{collection}:{field}");
         let has_index = self.spatial_indexes.contains_key(&index_key);
-
         let limit = if limit == 0 { 1000 } else { limit };
 
-        // If no R-tree exists yet, do a full document scan with predicate post-filter.
-        // This handles cold-start (no inserts yet with geometry) and ensures correctness.
+        // No R-tree: full scan with predicate post-filter.
         if !has_index {
             return self.spatial_full_scan(
                 task,
@@ -106,32 +105,34 @@ impl CoreLoop {
         let rtree = match self.spatial_indexes.get(&index_key) {
             Some(rt) => rt,
             None => {
-                // Should not happen (has_index was true), but handle gracefully.
-                match response_codec::encode_json_vec(&[]) {
-                    Ok(payload) => return self.response_with_payload(task, payload),
-                    Err(e) => {
-                        return self.response_error(
-                            task,
-                            ErrorCode::Internal {
-                                detail: e.to_string(),
-                            },
-                        );
-                    }
-                }
+                return match response_codec::encode_value_vec(&[]) {
+                    Ok(payload) => self.response_with_payload(task, payload),
+                    Err(e) => self.response_error(
+                        task,
+                        ErrorCode::Internal {
+                            detail: e.to_string(),
+                        },
+                    ),
+                };
             }
         };
 
         // 4. R-tree range search → candidate entry IDs.
         let candidates = rtree.search(&search_bbox);
-
         debug!(
             core = self.core_id,
             candidates = candidates.len(),
             "spatial R-tree candidates"
         );
 
-        // 5. Exact predicate refinement: for each candidate, load document,
-        //    extract geometry, apply spatial predicate.
+        // Pre-load all docs from scan_collection (handles both sparse and columnar).
+        let all_docs: std::collections::HashMap<String, Vec<u8>> = self
+            .scan_collection(tid, collection, 10_000)
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+
+        // 5. Exact predicate refinement.
         let mut results = Vec::new();
 
         for entry in &candidates {
@@ -139,48 +140,41 @@ impl CoreLoop {
                 break;
             }
 
-            // Resolve entry_id → doc_id via the reverse map populated at insert time.
             let doc_id = match self.spatial_doc_map.get(&(index_key.clone(), entry.id)) {
-                Some(id) => id.as_str(),
+                Some(id) => id.clone(),
                 None => continue,
             };
 
-            let doc_bytes = match self.sparse.get(tid, collection, doc_id) {
-                Ok(Some(b)) => b,
-                _ => continue,
+            let doc_bytes = match all_docs.get(&doc_id) {
+                Some(b) => b,
+                None => continue,
             };
 
-            let doc = match super::super::doc_format::decode_document(&doc_bytes) {
+            let doc = match super::super::doc_format::decode_document_value(doc_bytes) {
                 Some(d) => d,
                 None => continue,
             };
 
-            let geom_value = match doc.get(field) {
-                Some(v) => v,
+            let doc_geom = match extract_geometry(&doc, field) {
+                Some(g) => g,
                 None => continue,
             };
-            let doc_geom: nodedb_types::geometry::Geometry =
-                match serde_json::from_value(geom_value.clone()) {
-                    Ok(g) => g,
-                    Err(_) => continue,
-                };
 
             if !apply_predicate(predicate, &query_geom, &doc_geom, distance_meters) {
                 continue;
             }
 
-            // Apply attribute and RLS post-filters.
-            if !attr_filters.iter().all(|f| f.matches(&doc)) {
+            if !attr_filters.iter().all(|f| f.matches_value(&doc)) {
                 continue;
             }
-            if !row_level_filters.iter().all(|f| f.matches(&doc)) {
+            if !row_level_filters.iter().all(|f| f.matches_value(&doc)) {
                 continue;
             }
 
-            results.push(project_doc(&doc, doc_id, projection));
+            results.push(project_doc(&doc, &doc_id, projection));
         }
 
-        match response_codec::encode_json_vec(&results) {
+        match response_codec::encode_value_vec(&results) {
             Ok(payload) => self.response_with_payload(task, payload),
             Err(e) => self.response_error(
                 task,
@@ -191,9 +185,7 @@ impl CoreLoop {
         }
     }
 
-    /// Full scan fallback when no R-tree exists for the field.
-    ///
-    /// Scans all documents in the collection, extracts geometry, applies predicate.
+    /// Full scan when no R-tree exists for the field.
     #[allow(clippy::too_many_arguments)]
     fn spatial_full_scan(
         &self,
@@ -209,14 +201,10 @@ impl CoreLoop {
         attr_filters: &[ScanFilter],
         rls_filters: &[ScanFilter],
     ) -> Response {
-        debug!(
-            core = self.core_id,
-            %collection,
-            "spatial full scan (no R-tree index yet)"
-        );
+        debug!(core = self.core_id, %collection, "spatial full scan (no R-tree index yet)");
 
         let scan_limit = limit * 10;
-        let entries = match self.sparse.scan_documents(tid, collection, scan_limit) {
+        let entries = match self.scan_collection(tid, collection, scan_limit) {
             Ok(e) => e,
             Err(e) => {
                 return self.response_error(
@@ -234,37 +222,31 @@ impl CoreLoop {
                 break;
             }
 
-            let doc = match super::super::doc_format::decode_document(doc_bytes) {
+            let doc = match super::super::doc_format::decode_document_value(doc_bytes) {
                 Some(d) => d,
                 None => continue,
             };
 
-            let geom_value = match doc.get(field) {
-                Some(v) => v,
+            let doc_geom = match extract_geometry(&doc, field) {
+                Some(g) => g,
                 None => continue,
             };
-            let doc_geom: nodedb_types::geometry::Geometry =
-                match serde_json::from_value(geom_value.clone()) {
-                    Ok(g) => g,
-                    Err(_) => continue,
-                };
 
             if !apply_predicate(predicate, query_geom, &doc_geom, distance_meters) {
                 continue;
             }
 
-            // Apply attribute and RLS post-filters.
-            if !attr_filters.iter().all(|f| f.matches(&doc)) {
+            if !attr_filters.iter().all(|f| f.matches_value(&doc)) {
                 continue;
             }
-            if !rls_filters.iter().all(|f| f.matches(&doc)) {
+            if !rls_filters.iter().all(|f| f.matches_value(&doc)) {
                 continue;
             }
 
             results.push(project_doc(&doc, doc_id, projection));
         }
 
-        match response_codec::encode_json_vec(&results) {
+        match response_codec::encode_value_vec(&results) {
             Ok(payload) => self.response_with_payload(task, payload),
             Err(e) => self.response_error(
                 task,
@@ -273,6 +255,26 @@ impl CoreLoop {
                 },
             ),
         }
+    }
+}
+
+/// Extract geometry from a document field.
+///
+/// Handles three storage forms:
+/// - `Value::Geometry(g)` — native geometry (columnar path preserves type)
+/// - `Value::String(s)` — GeoJSON string (from SQL ST_Point → serialized)
+/// - `Value::Object(_)` — GeoJSON object (from schemaless doc storage)
+fn extract_geometry(doc: &Value, field: &str) -> Option<nodedb_types::geometry::Geometry> {
+    let field_val = doc.get(field)?;
+    match field_val {
+        Value::Geometry(g) => Some(g.clone()),
+        Value::String(s) => sonic_rs::from_str(s).ok(),
+        Value::Object(map) => {
+            // GeoJSON object stored as Value::Object — serialize to JSON then parse.
+            let json = serde_json::Value::from(Value::Object(map.clone()));
+            serde_json::from_value(json).ok()
+        }
+        _ => None,
     }
 }
 
@@ -293,22 +295,26 @@ fn apply_predicate(
     }
 }
 
-/// Apply projection to a document.
-fn project_doc(doc: &serde_json::Value, doc_id: &str, projection: &[String]) -> serde_json::Value {
+/// Apply projection to a document, returning `nodedb_types::Value`.
+fn project_doc(doc: &Value, doc_id: &str, projection: &[String]) -> Value {
     if projection.is_empty() {
-        doc.clone()
+        // Add id if not present.
+        if let Value::Object(mut map) = doc.clone() {
+            map.entry("id".to_string())
+                .or_insert(Value::String(doc_id.to_string()));
+            Value::Object(map)
+        } else {
+            doc.clone()
+        }
     } else {
-        let mut projected = serde_json::Map::new();
-        projected.insert(
-            "id".to_string(),
-            serde_json::Value::String(doc_id.to_string()),
-        );
+        let mut map = std::collections::HashMap::new();
+        map.insert("id".to_string(), Value::String(doc_id.to_string()));
         for col in projection {
             if let Some(v) = doc.get(col) {
-                projected.insert(col.clone(), v.clone());
+                map.insert(col.clone(), v.clone());
             }
         }
-        serde_json::Value::Object(projected)
+        Value::Object(map)
     }
 }
 

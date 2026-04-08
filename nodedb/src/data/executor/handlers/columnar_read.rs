@@ -87,7 +87,9 @@ impl CoreLoop {
 }
 
 /// Convert a `nodedb_types::Value` to `serde_json::Value` for response encoding.
-fn value_to_json(val: &nodedb_types::value::Value) -> serde_json::Value {
+pub(in crate::data::executor) fn value_to_json(
+    val: &nodedb_types::value::Value,
+) -> serde_json::Value {
     use nodedb_types::value::Value;
     match val {
         Value::Null => serde_json::Value::Null,
@@ -105,6 +107,14 @@ fn value_to_json(val: &nodedb_types::value::Value) -> serde_json::Value {
             serde_json::Value::String(base64::engine::general_purpose::STANDARD.encode(b))
         }
         Value::Array(arr) => serde_json::Value::Array(arr.iter().map(value_to_json).collect()),
+        Value::Geometry(g) => serde_json::to_value(g).unwrap_or(serde_json::Value::Null),
+        Value::Object(map) => {
+            let obj: serde_json::Map<String, serde_json::Value> = map
+                .iter()
+                .map(|(k, v)| (k.clone(), value_to_json(v)))
+                .collect();
+            serde_json::Value::Object(obj)
+        }
         _ => serde_json::Value::Null,
     }
 }

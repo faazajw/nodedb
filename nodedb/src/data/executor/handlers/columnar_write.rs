@@ -98,6 +98,59 @@ impl CoreLoop {
             }
         }
 
+        // Populate R-tree for geometry columns so spatial predicates work.
+        {
+            let tid = task.request.tenant_id;
+            let schema = engine.schema().clone();
+            let geom_cols: Vec<usize> = schema
+                .columns
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| c.column_type == ColumnType::Geometry)
+                .map(|(i, _)| i)
+                .collect();
+
+            if !geom_cols.is_empty() {
+                for row in &ndb_rows {
+                    let obj = match row {
+                        nodedb_types::Value::Object(m) => m,
+                        _ => continue,
+                    };
+                    let doc_id = obj
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    if doc_id.is_empty() {
+                        continue;
+                    }
+                    for &col_idx in &geom_cols {
+                        let col_def = &schema.columns[col_idx];
+                        let field_val = match obj.get(&col_def.name) {
+                            Some(v) => v,
+                            None => continue,
+                        };
+                        // Geometry may be stored as Value::Geometry or Value::String (GeoJSON).
+                        let geom: nodedb_types::geometry::Geometry = match field_val {
+                            Value::Geometry(g) => g.clone(),
+                            Value::String(s) => match sonic_rs::from_str(s) {
+                                Ok(g) => g,
+                                Err(_) => continue,
+                            },
+                            _ => continue,
+                        };
+                        let bbox = nodedb_types::bbox::geometry_bbox(&geom);
+                        let index_key = format!("{tid}:{collection}:{}", col_def.name);
+                        let entry_id = crate::util::fnv1a_hash(doc_id.as_bytes());
+                        let rtree = self.spatial_indexes.entry(index_key.clone()).or_default();
+                        rtree.insert(crate::engine::spatial::RTreeEntry { id: entry_id, bbox });
+                        self.spatial_doc_map
+                            .insert((index_key, entry_id), doc_id.clone());
+                    }
+                }
+            }
+        }
+
         tracing::debug!(
             core = self.core_id,
             %collection,

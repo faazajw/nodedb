@@ -7,7 +7,7 @@
 //! - Schemaless document → msgpack (already standard or legacy JSON)
 //! - Strict document → Binary Tuple → decode → msgpack
 //! - Key-Value → zerompk Value → transcode → msgpack
-//! - Columnar → memtable rows → JSON → msgpack
+//! - Columnar → memtable/engine rows → JSON → msgpack
 
 use crate::data::executor::core_loop::CoreLoop;
 use crate::data::executor::msgpack_utils::write_str;
@@ -19,7 +19,7 @@ impl CoreLoop {
     ///
     /// Routing order:
     /// 1. KV engine (if collection has KV entries)
-    /// 2. Columnar memtable (if collection has columnar data)
+    /// 2. Columnar storage (timeseries memtable or plain/spatial engine)
     /// 3. Sparse/document engine (default)
     ///
     /// All results are normalized to standard msgpack maps so callers
@@ -63,41 +63,67 @@ impl CoreLoop {
         results
     }
 
-    /// Scan columnar memtable rows → standard msgpack.
+    /// Scan columnar rows → standard msgpack.
     fn scan_columnar(&self, _tid: u32, collection: &str, limit: usize) -> Vec<(String, Vec<u8>)> {
-        let mt = match self.columnar_memtables.get(collection) {
-            Some(mt) => mt,
-            None => return Vec::new(),
+        if let Some(mt) = self.columnar_memtables.get(collection) {
+            let schema = mt.schema();
+            let row_count = (mt.row_count() as usize).min(limit);
+            let col_meta: Vec<_> = schema
+                .columns
+                .iter()
+                .enumerate()
+                .map(|(i, (name, ty))| (i, name.clone(), *ty))
+                .collect();
+
+            let mut results = Vec::with_capacity(row_count);
+            for idx in 0..row_count {
+                let mut row = serde_json::Map::new();
+                for (col_idx, col_name, col_type) in &col_meta {
+                    let col_data = mt.column(*col_idx);
+                    let val = super::handlers::columnar_read::emit_column_value(
+                        mt, *col_idx, col_type, col_data, idx,
+                    );
+                    row.insert(col_name.to_string(), val);
+                }
+                let id = row
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let mp = nodedb_types::json_to_msgpack(&serde_json::Value::Object(row))
+                    .unwrap_or_default();
+                results.push((id, mp));
+            }
+            return results;
+        }
+
+        let Some(engine) = self.columnar_engines.get(collection) else {
+            return Vec::new();
         };
 
-        let schema = mt.schema();
-        let row_count = (mt.row_count() as usize).min(limit);
-        let col_meta: Vec<_> = schema
-            .columns
-            .iter()
-            .enumerate()
-            .map(|(i, (name, ty))| (i, name.clone(), *ty))
-            .collect();
+        let schema = engine.schema();
+        let rows: Vec<_> = engine.scan_memtable_rows().take(limit).collect();
+        let mut results = Vec::with_capacity(rows.len());
 
-        let mut results = Vec::with_capacity(row_count);
-        for idx in 0..row_count {
-            let mut row = serde_json::Map::new();
-            for (col_idx, col_name, col_type) in &col_meta {
-                let col_data = mt.column(*col_idx);
-                let val = super::handlers::columnar_read::emit_column_value(
-                    mt, *col_idx, col_type, col_data, idx,
-                );
-                row.insert(col_name.to_string(), val);
+        for row in rows {
+            // Build a nodedb_types::Value::Object directly — no JSON intermediary.
+            let mut map = std::collections::HashMap::new();
+            let mut id = String::new();
+            for (i, col_def) in schema.columns.iter().enumerate() {
+                if i < row.len() {
+                    if col_def.name == "id"
+                        && let nodedb_types::value::Value::String(s) = &row[i]
+                    {
+                        id.clone_from(s);
+                    }
+                    map.insert(col_def.name.clone(), row[i].clone());
+                }
             }
-            let id = row
-                .get("id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let mp =
-                nodedb_types::json_to_msgpack(&serde_json::Value::Object(row)).unwrap_or_default();
+            let ndb_val = nodedb_types::value::Value::Object(map);
+            let mp = nodedb_types::value_to_msgpack(&ndb_val).unwrap_or_default();
             results.push((id, mp));
         }
+
         results
     }
 
