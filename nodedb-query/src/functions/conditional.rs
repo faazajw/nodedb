@@ -1,8 +1,9 @@
 //! Conditional scalar functions: coalesce, nullif, greatest, least.
 
-use crate::json_ops::compare_json;
+use crate::value_ops::compare_values;
+use nodedb_types::Value;
 
-pub(super) fn try_eval(name: &str, args: &[serde_json::Value]) -> Option<serde_json::Value> {
+pub(super) fn try_eval(name: &str, args: &[Value]) -> Option<Value> {
     let v = match name {
         "coalesce" => {
             for arg in args {
@@ -10,27 +11,27 @@ pub(super) fn try_eval(name: &str, args: &[serde_json::Value]) -> Option<serde_j
                     return Some(arg.clone());
                 }
             }
-            serde_json::Value::Null
+            Value::Null
         }
         "nullif" => {
             if args.len() >= 2 && args[0] == args[1] {
-                serde_json::Value::Null
+                Value::Null
             } else {
-                args.first().cloned().unwrap_or(serde_json::Value::Null)
+                args.first().cloned().unwrap_or(Value::Null)
             }
         }
         "greatest" => args
             .iter()
             .filter(|v| !v.is_null())
-            .max_by(|a, b| compare_json(a, b))
+            .max_by(|a, b| compare_values(a, b))
             .cloned()
-            .unwrap_or(serde_json::Value::Null),
+            .unwrap_or(Value::Null),
         "least" => args
             .iter()
             .filter(|v| !v.is_null())
-            .min_by(|a, b| compare_json(a, b))
+            .min_by(|a, b| compare_values(a, b))
             .cloned()
-            .unwrap_or(serde_json::Value::Null),
+            .unwrap_or(Value::Null),
         _ => return None,
     };
     Some(v)

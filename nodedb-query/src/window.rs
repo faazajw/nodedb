@@ -224,7 +224,7 @@ fn apply_ntile(rows: &mut [(String, serde_json::Value)], indices: &[usize], spec
         .first()
         .and_then(|e| {
             if let SqlExpr::Literal(v) = e {
-                as_f64(v).map(|x| x as usize)
+                v.as_f64().map(|x| x as usize)
             } else {
                 None
             }
@@ -255,7 +255,7 @@ fn apply_lag(rows: &mut [(String, serde_json::Value)], indices: &[usize], spec: 
         .get(1)
         .and_then(|e| {
             if let SqlExpr::Literal(v) = e {
-                as_f64(v).map(|n| n as usize)
+                v.as_f64().map(|n| n as usize)
             } else {
                 None
             }
@@ -266,7 +266,7 @@ fn apply_lag(rows: &mut [(String, serde_json::Value)], indices: &[usize], spec: 
         .get(2)
         .and_then(|e| {
             if let SqlExpr::Literal(v) = e {
-                Some(v.clone())
+                Some(serde_json::Value::from(v.clone()))
             } else {
                 None
             }
@@ -300,7 +300,7 @@ fn apply_lead(rows: &mut [(String, serde_json::Value)], indices: &[usize], spec:
         .get(1)
         .and_then(|e| {
             if let SqlExpr::Literal(v) = e {
-                as_f64(v).map(|n| n as usize)
+                v.as_f64().map(|n| n as usize)
             } else {
                 None
             }
@@ -311,7 +311,7 @@ fn apply_lead(rows: &mut [(String, serde_json::Value)], indices: &[usize], spec:
         .get(2)
         .and_then(|e| {
             if let SqlExpr::Literal(v) = e {
-                Some(v.clone())
+                Some(serde_json::Value::from(v.clone()))
             } else {
                 None
             }

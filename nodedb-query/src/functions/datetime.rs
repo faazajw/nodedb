@@ -1,41 +1,40 @@
 //! DateTime and duration scalar functions.
 
-use crate::json_ops::{json_to_display_string, to_json_number};
+use crate::value_ops::{to_value_number, value_to_display_string};
+use nodedb_types::Value;
 
-pub(super) fn try_eval(name: &str, args: &[serde_json::Value]) -> Option<serde_json::Value> {
+pub(super) fn try_eval(name: &str, args: &[Value]) -> Option<Value> {
     let v = match name {
         "now" | "current_timestamp" => {
             let dt = nodedb_types::NdbDateTime::now();
-            serde_json::Value::String(dt.to_iso8601())
+            Value::String(dt.to_iso8601())
         }
         "datetime" | "to_datetime" => args
             .first()
             .and_then(|v| match v {
-                serde_json::Value::String(s) => nodedb_types::NdbDateTime::parse(s)
-                    .map(|dt| serde_json::Value::String(dt.to_iso8601())),
-                serde_json::Value::Number(n) => {
-                    let micros = n.as_i64().unwrap_or(0);
-                    Some(serde_json::Value::String(
-                        nodedb_types::NdbDateTime::from_micros(micros).to_iso8601(),
-                    ))
+                Value::String(s) => {
+                    nodedb_types::NdbDateTime::parse(s).map(|dt| Value::String(dt.to_iso8601()))
                 }
+                Value::Integer(micros) => Some(Value::String(
+                    nodedb_types::NdbDateTime::from_micros(*micros).to_iso8601(),
+                )),
+                Value::Float(f) => Some(Value::String(
+                    nodedb_types::NdbDateTime::from_micros(*f as i64).to_iso8601(),
+                )),
+                Value::DateTime(dt) => Some(Value::String(dt.to_iso8601())),
                 _ => None,
             })
-            .unwrap_or(serde_json::Value::Null),
+            .unwrap_or(Value::Null),
         "unix_secs" | "epoch_secs" => args
             .first()
             .and_then(|v| v.as_str())
             .and_then(nodedb_types::NdbDateTime::parse)
-            .map_or(serde_json::Value::Null, |dt| {
-                serde_json::Value::Number(dt.unix_secs().into())
-            }),
+            .map_or(Value::Null, |dt| Value::Integer(dt.unix_secs())),
         "unix_millis" | "epoch_millis" => args
             .first()
             .and_then(|v| v.as_str())
             .and_then(nodedb_types::NdbDateTime::parse)
-            .map_or(serde_json::Value::Null, |dt| {
-                serde_json::Value::Number(dt.unix_millis().into())
-            }),
+            .map_or(Value::Null, |dt| Value::Integer(dt.unix_millis())),
         "extract" | "date_part" => {
             let part = args.first().and_then(|v| v.as_str()).unwrap_or("");
             let dt = args
@@ -58,11 +57,11 @@ pub(super) fn try_eval(name: &str, args: &[serde_json::Value]) -> Option<serde_j
                             let days = dt.micros / 86_400_000_000;
                             (days + 4) % 7
                         }
-                        _ => return Some(serde_json::Value::Null),
+                        _ => return Some(Value::Null),
                     };
-                    serde_json::Value::Number(val.into())
+                    Value::Integer(val)
                 }
-                None => serde_json::Value::Null,
+                None => Value::Null,
             }
         }
         "date_trunc" | "datetrunc" => {
@@ -101,11 +100,9 @@ pub(super) fn try_eval(name: &str, args: &[serde_json::Value]) -> Option<serde_j
                         )),
                         _ => None,
                     };
-                    truncated.map_or(serde_json::Value::Null, |t| {
-                        serde_json::Value::String(t.to_iso8601())
-                    })
+                    truncated.map_or(Value::Null, |t| Value::String(t.to_iso8601()))
                 }
-                None => serde_json::Value::Null,
+                None => Value::Null,
             }
         }
         "date_add" | "datetime_add" => {
@@ -118,10 +115,8 @@ pub(super) fn try_eval(name: &str, args: &[serde_json::Value]) -> Option<serde_j
                 .and_then(|v| v.as_str())
                 .and_then(nodedb_types::NdbDuration::parse);
             match (dt, dur) {
-                (Some(dt), Some(dur)) => {
-                    serde_json::Value::String(dt.add_duration(dur).to_iso8601())
-                }
-                _ => serde_json::Value::Null,
+                (Some(dt), Some(dur)) => Value::String(dt.add_duration(dur).to_iso8601()),
+                _ => Value::Null,
             }
         }
         "date_sub" | "datetime_sub" => {
@@ -134,10 +129,8 @@ pub(super) fn try_eval(name: &str, args: &[serde_json::Value]) -> Option<serde_j
                 .and_then(|v| v.as_str())
                 .and_then(nodedb_types::NdbDuration::parse);
             match (dt, dur) {
-                (Some(dt), Some(dur)) => {
-                    serde_json::Value::String(dt.sub_duration(dur).to_iso8601())
-                }
-                _ => serde_json::Value::Null,
+                (Some(dt), Some(dur)) => Value::String(dt.sub_duration(dur).to_iso8601()),
+                _ => Value::Null,
             }
         }
         "date_diff" | "datediff" => {
@@ -150,22 +143,20 @@ pub(super) fn try_eval(name: &str, args: &[serde_json::Value]) -> Option<serde_j
                 .and_then(|v| v.as_str())
                 .and_then(nodedb_types::NdbDateTime::parse);
             match (dt1, dt2) {
-                (Some(a), Some(b)) => to_json_number(a.duration_since(&b).as_secs_f64()),
-                _ => serde_json::Value::Null,
+                (Some(a), Some(b)) => to_value_number(a.duration_since(&b).as_secs_f64()),
+                _ => Value::Null,
             }
         }
         "duration" | "to_duration" => args
             .first()
             .and_then(|v| v.as_str())
             .and_then(nodedb_types::NdbDuration::parse)
-            .map_or(serde_json::Value::Null, |d| {
-                serde_json::Value::String(d.to_human())
-            }),
-        "decimal" | "to_decimal" => args.first().map_or(serde_json::Value::Null, |v| {
-            let s = json_to_display_string(v);
+            .map_or(Value::Null, |d| Value::String(d.to_human())),
+        "decimal" | "to_decimal" => args.first().map_or(Value::Null, |v| {
+            let s = value_to_display_string(v);
             match s.parse::<rust_decimal::Decimal>() {
-                Ok(d) => serde_json::Value::String(d.to_string()),
-                Err(_) => serde_json::Value::Null,
+                Ok(d) => Value::String(d.to_string()),
+                Err(_) => Value::Null,
             }
         }),
         _ => return None,

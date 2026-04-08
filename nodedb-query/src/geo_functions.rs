@@ -3,18 +3,19 @@
 //! All ST_* predicates, geometry operations, and geo_* utility functions.
 //! Called from `functions::eval_function` for any geo-prefixed or ST_-prefixed name.
 
-use crate::json_ops::{json_to_f64, to_json_number};
+use crate::value_ops::{to_value_number, value_to_f64};
+use nodedb_types::Value;
 
 /// Try to evaluate a geo/spatial function. Returns `Some(result)` if the
 /// function name matched, `None` if unrecognized (caller falls through).
-pub fn eval_geo_function(name: &str, args: &[serde_json::Value]) -> Option<serde_json::Value> {
+pub fn eval_geo_function(name: &str, args: &[Value]) -> Option<Value> {
     let result = match name {
         "geo_distance" | "haversine_distance" => {
             let lng1 = num_arg(args, 0).unwrap_or(0.0);
             let lat1 = num_arg(args, 1).unwrap_or(0.0);
             let lng2 = num_arg(args, 2).unwrap_or(0.0);
             let lat2 = num_arg(args, 3).unwrap_or(0.0);
-            to_json_number(nodedb_types::geometry::haversine_distance(
+            to_value_number(nodedb_types::geometry::haversine_distance(
                 lng1, lat1, lng2, lat2,
             ))
         }
@@ -23,40 +24,48 @@ pub fn eval_geo_function(name: &str, args: &[serde_json::Value]) -> Option<serde
             let lat1 = num_arg(args, 1).unwrap_or(0.0);
             let lng2 = num_arg(args, 2).unwrap_or(0.0);
             let lat2 = num_arg(args, 3).unwrap_or(0.0);
-            to_json_number(nodedb_types::geometry::haversine_bearing(
+            to_value_number(nodedb_types::geometry::haversine_bearing(
                 lng1, lat1, lng2, lat2,
             ))
         }
         "geo_point" => {
             let lng = num_arg(args, 0).unwrap_or(0.0);
             let lat = num_arg(args, 1).unwrap_or(0.0);
-            let point = nodedb_types::geometry::Geometry::point(lng, lat);
-            serde_json::to_value(&point).unwrap_or(serde_json::Value::Null)
+            Value::Geometry(nodedb_types::geometry::Geometry::point(lng, lat))
         }
         "geo_geohash" => {
             let lng = num_arg(args, 0).unwrap_or(0.0);
             let lat = num_arg(args, 1).unwrap_or(0.0);
             let precision = num_arg(args, 2).unwrap_or(6.0) as u8;
-            serde_json::Value::String(nodedb_spatial::geohash_encode(lng, lat, precision))
+            Value::String(nodedb_spatial::geohash_encode(lng, lat, precision))
         }
         "geo_geohash_decode" => {
             let hash = str_arg(args, 0).unwrap_or_default();
             match nodedb_spatial::geohash_decode(&hash) {
-                Some(bb) => serde_json::json!({
-                    "min_lng": bb.min_lng, "min_lat": bb.min_lat,
-                    "max_lng": bb.max_lng, "max_lat": bb.max_lat,
-                }),
-                None => serde_json::Value::Null,
+                Some(bb) => {
+                    let mut map = std::collections::HashMap::new();
+                    map.insert("min_lng".to_string(), Value::Float(bb.min_lng));
+                    map.insert("min_lat".to_string(), Value::Float(bb.min_lat));
+                    map.insert("max_lng".to_string(), Value::Float(bb.max_lng));
+                    map.insert("max_lat".to_string(), Value::Float(bb.max_lat));
+                    Value::Object(map)
+                }
+                None => Value::Null,
             }
         }
         "geo_geohash_neighbors" => {
             let hash = str_arg(args, 0).unwrap_or_default();
             let neighbors = nodedb_spatial::geohash_neighbors(&hash);
-            let arr: Vec<serde_json::Value> = neighbors
+            let arr: Vec<Value> = neighbors
                 .into_iter()
-                .map(|(dir, h)| serde_json::json!({"direction": format!("{dir:?}"), "hash": h}))
+                .map(|(dir, h)| {
+                    let mut map = std::collections::HashMap::new();
+                    map.insert("direction".to_string(), Value::String(format!("{dir:?}")));
+                    map.insert("hash".to_string(), Value::String(h));
+                    Value::Object(map)
+                })
                 .collect();
-            serde_json::Value::Array(arr)
+            Value::Array(arr)
         }
 
         // ── Spatial predicates (ST_*) ──
@@ -66,84 +75,97 @@ pub fn eval_geo_function(name: &str, args: &[serde_json::Value]) -> Option<serde
         "st_disjoint" => geo_predicate_2(args, nodedb_spatial::st_disjoint),
         "st_dwithin" => {
             let (Some(a), Some(b)) = (geom_arg(args, 0), geom_arg(args, 1)) else {
-                return Some(serde_json::Value::Null);
+                return Some(Value::Null);
             };
             let dist = num_arg(args, 2).unwrap_or(0.0);
-            serde_json::Value::Bool(nodedb_spatial::st_dwithin(&a, &b, dist))
+            Value::Bool(nodedb_spatial::st_dwithin(&a, &b, dist))
         }
         "st_distance" => {
             let (Some(a), Some(b)) = (geom_arg(args, 0), geom_arg(args, 1)) else {
-                return Some(serde_json::Value::Null);
+                return Some(Value::Null);
             };
-            to_json_number(nodedb_spatial::st_distance(&a, &b))
+            to_value_number(nodedb_spatial::st_distance(&a, &b))
         }
         "st_buffer" => {
             let Some(geom) = geom_arg(args, 0) else {
-                return Some(serde_json::Value::Null);
+                return Some(Value::Null);
             };
             let dist = num_arg(args, 1).unwrap_or(0.0);
             let segs = num_arg(args, 2).unwrap_or(32.0) as usize;
-            let result = nodedb_spatial::st_buffer(&geom, dist, segs);
-            serde_json::to_value(&result).unwrap_or(serde_json::Value::Null)
+            Value::Geometry(nodedb_spatial::st_buffer(&geom, dist, segs))
         }
         "st_envelope" => {
             let Some(geom) = geom_arg(args, 0) else {
-                return Some(serde_json::Value::Null);
+                return Some(Value::Null);
             };
-            let result = nodedb_spatial::st_envelope(&geom);
-            serde_json::to_value(&result).unwrap_or(serde_json::Value::Null)
+            Value::Geometry(nodedb_spatial::st_envelope(&geom))
         }
         "st_union" => {
             let (Some(a), Some(b)) = (geom_arg(args, 0), geom_arg(args, 1)) else {
-                return Some(serde_json::Value::Null);
+                return Some(Value::Null);
             };
-            let result = nodedb_spatial::st_union(&a, &b);
-            serde_json::to_value(&result).unwrap_or(serde_json::Value::Null)
+            Value::Geometry(nodedb_spatial::st_union(&a, &b))
         }
 
         // ── Extended geo functions ──
         "geo_length" => {
             let Some(geom) = geom_arg(args, 0) else {
-                return Some(serde_json::Value::Null);
+                return Some(Value::Null);
             };
-            to_json_number(geo_linestring_length(&geom))
+            to_value_number(geo_linestring_length(&geom))
         }
         "geo_perimeter" => {
             let Some(geom) = geom_arg(args, 0) else {
-                return Some(serde_json::Value::Null);
+                return Some(Value::Null);
             };
-            to_json_number(geo_polygon_perimeter(&geom))
+            to_value_number(geo_polygon_perimeter(&geom))
         }
         "geo_line" => {
             let coords: Vec<[f64; 2]> = args
                 .iter()
                 .filter_map(|v| {
-                    let g: nodedb_types::geometry::Geometry =
-                        serde_json::from_value(v.clone()).ok()?;
-                    if let nodedb_types::geometry::Geometry::Point { coordinates } = g {
-                        Some(coordinates)
+                    let geom = v.as_geometry()?;
+                    if let nodedb_types::geometry::Geometry::Point { coordinates } = geom {
+                        Some(*coordinates)
                     } else {
                         None
                     }
                 })
                 .collect();
             if coords.len() < 2 {
-                serde_json::Value::Null
+                Value::Null
             } else {
-                let ls = nodedb_types::geometry::Geometry::line_string(coords);
-                serde_json::to_value(&ls).unwrap_or(serde_json::Value::Null)
+                Value::Geometry(nodedb_types::geometry::Geometry::line_string(coords))
             }
         }
         "geo_polygon" => {
+            // Args are arrays of coordinate pairs. Convert from Value::Array.
             let rings: Vec<Vec<[f64; 2]>> = args
                 .iter()
-                .filter_map(|v| serde_json::from_value::<Vec<[f64; 2]>>(v.clone()).ok())
+                .filter_map(|v| {
+                    let arr = v.as_array()?;
+                    let coords: Vec<[f64; 2]> = arr
+                        .iter()
+                        .filter_map(|pt| {
+                            let inner = pt.as_array()?;
+                            if inner.len() >= 2 {
+                                Some([inner[0].as_f64()?, inner[1].as_f64()?])
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    if coords.is_empty() {
+                        None
+                    } else {
+                        Some(coords)
+                    }
+                })
                 .collect();
             if rings.is_empty() {
-                serde_json::Value::Null
+                Value::Null
             } else {
-                let poly = nodedb_types::geometry::Geometry::polygon(rings);
-                serde_json::to_value(&poly).unwrap_or(serde_json::Value::Null)
+                Value::Geometry(nodedb_types::geometry::Geometry::polygon(rings))
             }
         }
         "geo_circle" => {
@@ -156,88 +178,87 @@ pub fn eval_geo_function(name: &str, args: &[serde_json::Value]) -> Option<serde
                 radius,
                 segs,
             );
-            serde_json::to_value(&circle).unwrap_or(serde_json::Value::Null)
+            Value::Geometry(circle)
         }
         "geo_bbox" => {
             let min_lng = num_arg(args, 0).unwrap_or(0.0);
             let min_lat = num_arg(args, 1).unwrap_or(0.0);
             let max_lng = num_arg(args, 2).unwrap_or(0.0);
             let max_lat = num_arg(args, 3).unwrap_or(0.0);
-            let poly = nodedb_types::geometry::Geometry::polygon(vec![vec![
+            Value::Geometry(nodedb_types::geometry::Geometry::polygon(vec![vec![
                 [min_lng, min_lat],
                 [max_lng, min_lat],
                 [max_lng, max_lat],
                 [min_lng, max_lat],
                 [min_lng, min_lat],
-            ]]);
-            serde_json::to_value(&poly).unwrap_or(serde_json::Value::Null)
+            ]]))
         }
         "geo_as_geojson" => {
             let Some(geom) = geom_arg(args, 0) else {
-                return Some(serde_json::Value::Null);
+                return Some(Value::Null);
             };
             match sonic_rs::to_string(&geom) {
-                Ok(s) => serde_json::Value::String(s),
-                Err(_) => serde_json::Value::Null,
+                Ok(s) => Value::String(s),
+                Err(_) => Value::Null,
             }
         }
         "geo_from_geojson" => {
             let s = str_arg(args, 0).unwrap_or_default();
             match sonic_rs::from_str::<nodedb_types::geometry::Geometry>(&s) {
-                Ok(g) => serde_json::to_value(&g).unwrap_or(serde_json::Value::Null),
-                Err(_) => serde_json::Value::Null,
+                Ok(g) => Value::Geometry(g),
+                Err(_) => Value::Null,
             }
         }
         "geo_as_wkt" => {
             let Some(geom) = geom_arg(args, 0) else {
-                return Some(serde_json::Value::Null);
+                return Some(Value::Null);
             };
-            serde_json::Value::String(nodedb_spatial::geometry_to_wkt(&geom))
+            Value::String(nodedb_spatial::geometry_to_wkt(&geom))
         }
         "geo_from_wkt" => {
             let s = str_arg(args, 0).unwrap_or_default();
             match nodedb_spatial::geometry_from_wkt(&s) {
-                Some(g) => serde_json::to_value(&g).unwrap_or(serde_json::Value::Null),
-                None => serde_json::Value::Null,
+                Some(g) => Value::Geometry(g),
+                None => Value::Null,
             }
         }
         "geo_x" => {
             let Some(geom) = geom_arg(args, 0) else {
-                return Some(serde_json::Value::Null);
+                return Some(Value::Null);
             };
             if let nodedb_types::geometry::Geometry::Point { coordinates } = geom {
-                to_json_number(coordinates[0])
+                to_value_number(coordinates[0])
             } else {
-                serde_json::Value::Null
+                Value::Null
             }
         }
         "geo_y" => {
             let Some(geom) = geom_arg(args, 0) else {
-                return Some(serde_json::Value::Null);
+                return Some(Value::Null);
             };
             if let nodedb_types::geometry::Geometry::Point { coordinates } = geom {
-                to_json_number(coordinates[1])
+                to_value_number(coordinates[1])
             } else {
-                serde_json::Value::Null
+                Value::Null
             }
         }
         "geo_num_points" => {
             let Some(geom) = geom_arg(args, 0) else {
-                return Some(serde_json::Value::Null);
+                return Some(Value::Null);
             };
-            serde_json::Value::Number(serde_json::Number::from(count_points(&geom) as i64))
+            Value::Integer(count_points(&geom) as i64)
         }
         "geo_type" => {
             let Some(geom) = geom_arg(args, 0) else {
-                return Some(serde_json::Value::Null);
+                return Some(Value::Null);
             };
-            serde_json::Value::String(geom.geometry_type().to_string())
+            Value::String(geom.geometry_type().to_string())
         }
         "geo_is_valid" => {
             let Some(geom) = geom_arg(args, 0) else {
-                return Some(serde_json::Value::Null);
+                return Some(Value::Null);
             };
-            serde_json::Value::Bool(nodedb_spatial::is_valid(&geom))
+            Value::Bool(nodedb_spatial::is_valid(&geom))
         }
 
         // ── H3 hexagonal index ──
@@ -246,38 +267,37 @@ pub fn eval_geo_function(name: &str, args: &[serde_json::Value]) -> Option<serde
             let lat = num_arg(args, 1).unwrap_or(0.0);
             let resolution = num_arg(args, 2).unwrap_or(7.0) as u8;
             match nodedb_spatial::h3::h3_encode_string(lng, lat, resolution) {
-                Some(hex) => serde_json::Value::String(hex),
-                None => serde_json::Value::Null,
+                Some(hex) => Value::String(hex),
+                None => Value::Null,
             }
         }
         "geo_h3_to_boundary" => {
             let h3_str = str_arg(args, 0).unwrap_or_default();
             let h3_idx = u64::from_str_radix(&h3_str, 16).unwrap_or(0);
             if !nodedb_spatial::h3::h3_is_valid(h3_idx) {
-                return Some(serde_json::Value::Null);
+                return Some(Value::Null);
             }
             match nodedb_spatial::h3::h3_to_boundary(h3_idx) {
-                Some(geom) => serde_json::to_value(&geom).unwrap_or(serde_json::Value::Null),
-                None => serde_json::Value::Null,
+                Some(geom) => Value::Geometry(geom),
+                None => Value::Null,
             }
         }
         "geo_h3_resolution" => {
             let h3_str = str_arg(args, 0).unwrap_or_default();
             let h3_idx = u64::from_str_radix(&h3_str, 16).unwrap_or(0);
             if !nodedb_spatial::h3::h3_is_valid(h3_idx) {
-                return Some(serde_json::Value::Null);
+                return Some(Value::Null);
             }
             match nodedb_spatial::h3::h3_resolution(h3_idx) {
-                Some(r) => serde_json::Value::Number(serde_json::Number::from(r as i64)),
-                None => serde_json::Value::Null,
+                Some(r) => Value::Integer(r as i64),
+                None => Value::Null,
             }
         }
         "st_intersection" => {
             let (Some(a), Some(b)) = (geom_arg(args, 0), geom_arg(args, 1)) else {
-                return Some(serde_json::Value::Null);
+                return Some(Value::Null);
             };
-            let result = nodedb_spatial::st_intersection(&a, &b);
-            serde_json::to_value(&result).unwrap_or(serde_json::Value::Null)
+            Value::Geometry(nodedb_spatial::st_intersection(&a, &b))
         }
 
         _ => return None,
@@ -287,26 +307,35 @@ pub fn eval_geo_function(name: &str, args: &[serde_json::Value]) -> Option<serde
 
 // ── Helpers ──
 
-fn str_arg(args: &[serde_json::Value], idx: usize) -> Option<String> {
+fn str_arg(args: &[Value], idx: usize) -> Option<String> {
     args.get(idx)?.as_str().map(|s| s.to_string())
 }
 
-fn num_arg(args: &[serde_json::Value], idx: usize) -> Option<f64> {
-    args.get(idx).and_then(|v| json_to_f64(v, true))
+fn num_arg(args: &[Value], idx: usize) -> Option<f64> {
+    args.get(idx).and_then(|v| value_to_f64(v, true))
 }
 
-fn geom_arg(args: &[serde_json::Value], idx: usize) -> Option<nodedb_types::geometry::Geometry> {
-    serde_json::from_value::<nodedb_types::geometry::Geometry>(args.get(idx)?.clone()).ok()
+/// Extract a geometry argument. Supports `Value::Geometry` directly,
+/// or falls back to JSON deserialization for `Value::Object` (GeoJSON).
+fn geom_arg(args: &[Value], idx: usize) -> Option<nodedb_types::geometry::Geometry> {
+    match args.get(idx)? {
+        Value::Geometry(g) => Some(g.clone()),
+        other => {
+            // Fallback: convert Value → JSON → Geometry for GeoJSON objects.
+            let json = serde_json::Value::from(other.clone());
+            serde_json::from_value(json).ok()
+        }
+    }
 }
 
 fn geo_predicate_2(
-    args: &[serde_json::Value],
+    args: &[Value],
     f: fn(&nodedb_types::geometry::Geometry, &nodedb_types::geometry::Geometry) -> bool,
-) -> serde_json::Value {
+) -> Value {
     let (Some(a), Some(b)) = (geom_arg(args, 0), geom_arg(args, 1)) else {
-        return serde_json::Value::Null;
+        return Value::Null;
     };
-    serde_json::Value::Bool(f(&a, &b))
+    Value::Bool(f(&a, &b))
 }
 
 fn geo_linestring_length(geom: &nodedb_types::geometry::Geometry) -> f64 {

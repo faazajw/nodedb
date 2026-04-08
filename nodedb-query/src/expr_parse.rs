@@ -17,6 +17,7 @@
 //! Determinism validation: rejects `NOW()`, `RANDOM()`, `NEXTVAL()`, `UUID()`.
 
 use super::expr::{BinaryOp, SqlExpr};
+use nodedb_types::Value;
 
 /// Parse a SQL expression string into an SqlExpr AST.
 ///
@@ -326,9 +327,9 @@ fn parse_primary(tokens: &[Token], pos: &mut usize) -> Result<SqlExpr, String> {
         TokenKind::Number => {
             *pos += 1;
             if let Ok(i) = token.text.parse::<i64>() {
-                Ok(SqlExpr::Literal(serde_json::json!(i)))
+                Ok(SqlExpr::Literal(Value::Integer(i)))
             } else if let Ok(f) = token.text.parse::<f64>() {
-                Ok(SqlExpr::Literal(serde_json::json!(f)))
+                Ok(SqlExpr::Literal(Value::Float(f)))
             } else {
                 Err(format!("invalid number: '{}'", token.text))
             }
@@ -337,9 +338,7 @@ fn parse_primary(tokens: &[Token], pos: &mut usize) -> Result<SqlExpr, String> {
         // String literal.
         TokenKind::StringLit => {
             *pos += 1;
-            Ok(SqlExpr::Literal(serde_json::Value::String(
-                token.text.clone(),
-            )))
+            Ok(SqlExpr::Literal(Value::String(token.text.clone())))
         }
 
         // Identifier: column ref, function call, keyword (NULL, TRUE, FALSE, CASE, COALESCE).
@@ -349,9 +348,9 @@ fn parse_primary(tokens: &[Token], pos: &mut usize) -> Result<SqlExpr, String> {
             *pos += 1;
 
             match upper.as_str() {
-                "NULL" => Ok(SqlExpr::Literal(serde_json::Value::Null)),
-                "TRUE" => Ok(SqlExpr::Literal(serde_json::Value::Bool(true))),
-                "FALSE" => Ok(SqlExpr::Literal(serde_json::Value::Bool(false))),
+                "NULL" => Ok(SqlExpr::Literal(Value::Null)),
+                "TRUE" => Ok(SqlExpr::Literal(Value::Bool(true))),
+                "FALSE" => Ok(SqlExpr::Literal(Value::Bool(false))),
                 "CASE" => parse_case(tokens, pos),
                 "COALESCE" => {
                     let args = parse_arg_list(tokens, pos)?;
@@ -579,6 +578,7 @@ fn collect_columns(expr: &SqlExpr, deps: &mut Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nodedb_types::Value;
 
     fn parse_ok(text: &str) -> (SqlExpr, Vec<String>) {
         parse_generated_expr(text).unwrap()
@@ -588,7 +588,7 @@ mod tests {
     fn simple_arithmetic() {
         let (expr, deps) = parse_ok("price * (1 + tax_rate)");
         assert_eq!(deps, vec!["price", "tax_rate"]);
-        let doc = serde_json::json!({"price": 100.0, "tax_rate": 0.08});
+        let doc = Value::from(serde_json::json!({"price": 100.0, "tax_rate": 0.08}));
         let result = expr.eval(&doc);
         // eval returns integer when result is whole number.
         assert_eq!(result.as_f64(), Some(108.0));
@@ -598,24 +598,24 @@ mod tests {
     fn round_function() {
         let (expr, deps) = parse_ok("ROUND(price * (1 + tax_rate), 2)");
         assert_eq!(deps, vec!["price", "tax_rate"]);
-        let doc = serde_json::json!({"price": 99.99, "tax_rate": 0.08});
+        let doc = Value::from(serde_json::json!({"price": 99.99, "tax_rate": 0.08}));
         let result = expr.eval(&doc);
-        assert_eq!(result, serde_json::json!(107.99));
+        assert_eq!(result, Value::Float(107.99));
     }
 
     #[test]
     fn concat_function() {
         let (expr, deps) = parse_ok("CONCAT(name, ' ', brand)");
         assert_eq!(deps, vec!["brand", "name"]);
-        let doc = serde_json::json!({"name": "Shoe", "brand": "Nike"});
-        assert_eq!(expr.eval(&doc), serde_json::json!("Shoe Nike"));
+        let doc = Value::from(serde_json::json!({"name": "Shoe", "brand": "Nike"}));
+        assert_eq!(expr.eval(&doc), Value::String("Shoe Nike".into()));
     }
 
     #[test]
     fn coalesce() {
         let (expr, _) = parse_ok("COALESCE(description, '')");
-        let doc = serde_json::json!({"description": null});
-        assert_eq!(expr.eval(&doc), serde_json::json!(""));
+        let doc = Value::from(serde_json::json!({"description": null}));
+        assert_eq!(expr.eval(&doc), Value::String("".into()));
     }
 
     #[test]
@@ -625,10 +625,10 @@ mod tests {
         assert!(deps.contains(&"discount".to_string()));
         assert!(deps.contains(&"price".to_string()));
 
-        let doc = serde_json::json!({"price": 100.0, "discount": 0.2});
+        let doc = Value::from(serde_json::json!({"price": 100.0, "discount": 0.2}));
         assert_eq!(expr.eval(&doc).as_f64(), Some(80.0));
 
-        let doc2 = serde_json::json!({"price": 100.0, "discount": 0});
+        let doc2 = Value::from(serde_json::json!({"price": 100.0, "discount": 0}));
         assert_eq!(expr.eval(&doc2).as_f64(), Some(100.0));
     }
 
@@ -650,21 +650,21 @@ mod tests {
     #[test]
     fn string_literal() {
         let (expr, _) = parse_ok("CONCAT(name, ' - ', 'default')");
-        let doc = serde_json::json!({"name": "Product"});
-        assert_eq!(expr.eval(&doc), serde_json::json!("Product - default"));
+        let doc = Value::from(serde_json::json!({"name": "Product"}));
+        assert_eq!(expr.eval(&doc), Value::String("Product - default".into()));
     }
 
     #[test]
     fn null_literal() {
         let (expr, _) = parse_ok("COALESCE(x, NULL, 0)");
-        let doc = serde_json::json!({"x": null});
-        assert_eq!(expr.eval(&doc), serde_json::json!(0));
+        let doc = Value::from(serde_json::json!({"x": null}));
+        assert_eq!(expr.eval(&doc), Value::Integer(0));
     }
 
     #[test]
     fn nested_functions() {
         let (expr, _) = parse_ok("ROUND(price * (1 - COALESCE(discount, 0)), 2)");
-        let doc = serde_json::json!({"price": 49.99});
-        assert_eq!(expr.eval(&doc), serde_json::json!(49.99));
+        let doc = Value::from(serde_json::json!({"price": 49.99}));
+        assert_eq!(expr.eval(&doc), Value::Float(49.99));
     }
 }

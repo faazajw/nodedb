@@ -1,16 +1,17 @@
 //! SqlExpr AST definition and core evaluation.
 
-use crate::json_ops::{
-    coerced_eq, compare_json, is_truthy, json_to_display_string, json_to_f64, to_json_number,
+use crate::value_ops::{
+    coerced_eq, compare_values, is_truthy, to_value_number, value_to_display_string, value_to_f64,
 };
+use nodedb_types::Value;
 
-/// A serializable SQL expression that can be evaluated against a JSON document.
+/// A serializable SQL expression that can be evaluated against a document.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum SqlExpr {
     /// Column reference: extract field value from the document.
     Column(String),
     /// Literal value.
-    Literal(serde_json::Value),
+    Literal(Value),
     /// Binary operation: left op right.
     BinaryOp {
         left: Box<SqlExpr>,
@@ -105,9 +106,8 @@ pub struct ComputedColumn {
 
 // ─── Manual zerompk impls for SqlExpr ────────────────────────────────────────
 //
-// SqlExpr contains `serde_json::Value` (in the Literal variant) which does not
-// implement `zerompk::ToMessagePack` directly. We use `nodedb_types::json_msgpack::JsonValue`
-// as a bridge for that variant.
+// SqlExpr contains `nodedb_types::Value` (in the Literal variant) which implements
+// `zerompk::ToMessagePack` and `zerompk::FromMessagePack` natively.
 //
 // Encoding format: each variant is an array `[tag_u8, field1, field2, ...]`.
 // Tags: Column=0, Literal=1, BinaryOp=2, Negate=3, Function=4, Cast=5,
@@ -115,7 +115,6 @@ pub struct ComputedColumn {
 
 impl zerompk::ToMessagePack for SqlExpr {
     fn write<W: zerompk::Write>(&self, writer: &mut W) -> zerompk::Result<()> {
-        use nodedb_types::json_msgpack::JsonValue;
         match self {
             SqlExpr::Column(s) => {
                 writer.write_array_len(2)?;
@@ -125,7 +124,7 @@ impl zerompk::ToMessagePack for SqlExpr {
             SqlExpr::Literal(v) => {
                 writer.write_array_len(2)?;
                 writer.write_u8(1)?;
-                JsonValue(v.clone()).write(writer)
+                v.write(writer)
             }
             SqlExpr::BinaryOp { left, op, right } => {
                 writer.write_array_len(4)?;
@@ -196,7 +195,6 @@ impl zerompk::ToMessagePack for SqlExpr {
 
 impl<'a> zerompk::FromMessagePack<'a> for SqlExpr {
     fn read<R: zerompk::Read<'a>>(reader: &mut R) -> zerompk::Result<Self> {
-        use nodedb_types::json_msgpack::JsonValue;
         let len = reader.read_array_len()?;
         if len == 0 {
             return Err(zerompk::Error::ArrayLengthMismatch {
@@ -211,9 +209,9 @@ impl<'a> zerompk::FromMessagePack<'a> for SqlExpr {
                 Ok(SqlExpr::Column(reader.read_string()?.into_owned()))
             }
             1 => {
-                // Literal(serde_json::Value)
-                let jv = JsonValue::read(reader)?;
-                Ok(SqlExpr::Literal(jv.0))
+                // Literal(Value)
+                let v = Value::read(reader)?;
+                Ok(SqlExpr::Literal(v))
             }
             2 => {
                 // BinaryOp { left, op, right }
@@ -300,13 +298,13 @@ impl<'a> zerompk::FromMessagePack<'a> for SqlExpr {
 }
 
 impl SqlExpr {
-    /// Evaluate this expression against a JSON document.
+    /// Evaluate this expression against a document.
     ///
-    /// Returns a JSON value. Column references look up fields in the document.
-    /// Missing fields return `null`. Arithmetic on non-numeric values returns `null`.
-    pub fn eval(&self, doc: &serde_json::Value) -> serde_json::Value {
+    /// Returns a `Value`. Column references look up fields in the document.
+    /// Missing fields return `Null`. Arithmetic on non-numeric values returns `Null`.
+    pub fn eval(&self, doc: &Value) -> Value {
         match self {
-            SqlExpr::Column(name) => doc.get(name).cloned().unwrap_or(serde_json::Value::Null),
+            SqlExpr::Column(name) => doc.get(name).cloned().unwrap_or(Value::Null),
 
             SqlExpr::Literal(v) => v.clone(),
 
@@ -318,19 +316,18 @@ impl SqlExpr {
 
             SqlExpr::Negate(inner) => {
                 let v = inner.eval(doc);
-                // Booleans: NOT (logical negation). Numbers: arithmetic negation.
                 if let Some(b) = v.as_bool() {
-                    serde_json::Value::Bool(!b)
+                    Value::Bool(!b)
                 } else {
-                    match json_to_f64(&v, false) {
-                        Some(n) => to_json_number(-n),
-                        None => serde_json::Value::Null,
+                    match value_to_f64(&v, false) {
+                        Some(n) => to_value_number(-n),
+                        None => Value::Null,
                     }
                 }
             }
 
             SqlExpr::Function { name, args } => {
-                let evaluated: Vec<serde_json::Value> = args.iter().map(|a| a.eval(doc)).collect();
+                let evaluated: Vec<Value> = args.iter().map(|a| a.eval(doc)).collect();
                 crate::functions::eval_function(name, &evaluated)
             }
 
@@ -357,7 +354,7 @@ impl SqlExpr {
                 }
                 match else_expr {
                     Some(e) => e.eval(doc),
-                    None => serde_json::Value::Null,
+                    None => Value::Null,
                 }
             }
 
@@ -368,14 +365,14 @@ impl SqlExpr {
                         return v;
                     }
                 }
-                serde_json::Value::Null
+                Value::Null
             }
 
             SqlExpr::NullIf(a, b) => {
                 let va = a.eval(doc);
                 let vb = b.eval(doc);
                 if coerced_eq(&va, &vb) {
-                    serde_json::Value::Null
+                    Value::Null
                 } else {
                     va
                 }
@@ -384,10 +381,10 @@ impl SqlExpr {
             SqlExpr::IsNull { expr, negated } => {
                 let v = expr.eval(doc);
                 let is_null = v.is_null();
-                serde_json::Value::Bool(if *negated { !is_null } else { is_null })
+                Value::Bool(if *negated { !is_null } else { is_null })
             }
 
-            SqlExpr::OldColumn(_) => serde_json::Value::Null,
+            SqlExpr::OldColumn(_) => Value::Null,
         }
     }
 
@@ -395,20 +392,10 @@ impl SqlExpr {
     ///
     /// `Column(name)` resolves against `new_doc`.
     /// `OldColumn(name)` resolves against `old_doc`.
-    pub fn eval_with_old(
-        &self,
-        new_doc: &serde_json::Value,
-        old_doc: &serde_json::Value,
-    ) -> serde_json::Value {
+    pub fn eval_with_old(&self, new_doc: &Value, old_doc: &Value) -> Value {
         match self {
-            SqlExpr::Column(name) => new_doc
-                .get(name)
-                .cloned()
-                .unwrap_or(serde_json::Value::Null),
-            SqlExpr::OldColumn(name) => old_doc
-                .get(name)
-                .cloned()
-                .unwrap_or(serde_json::Value::Null),
+            SqlExpr::Column(name) => new_doc.get(name).cloned().unwrap_or(Value::Null),
+            SqlExpr::OldColumn(name) => old_doc.get(name).cloned().unwrap_or(Value::Null),
             SqlExpr::Literal(v) => v.clone(),
             SqlExpr::BinaryOp { left, op, right } => {
                 let l = left.eval_with_old(new_doc, old_doc);
@@ -418,16 +405,16 @@ impl SqlExpr {
             SqlExpr::Negate(inner) => {
                 let v = inner.eval_with_old(new_doc, old_doc);
                 if let Some(b) = v.as_bool() {
-                    serde_json::Value::Bool(!b)
+                    Value::Bool(!b)
                 } else {
-                    match json_to_f64(&v, false) {
-                        Some(n) => to_json_number(-n),
-                        None => serde_json::Value::Null,
+                    match value_to_f64(&v, false) {
+                        Some(n) => to_value_number(-n),
+                        None => Value::Null,
                     }
                 }
             }
             SqlExpr::Function { name, args } => {
-                let evaluated: Vec<serde_json::Value> = args
+                let evaluated: Vec<Value> = args
                     .iter()
                     .map(|a| a.eval_with_old(new_doc, old_doc))
                     .collect();
@@ -455,7 +442,7 @@ impl SqlExpr {
                 }
                 match else_expr {
                     Some(e) => e.eval_with_old(new_doc, old_doc),
-                    None => serde_json::Value::Null,
+                    None => Value::Null,
                 }
             }
             SqlExpr::Coalesce(exprs) => {
@@ -465,13 +452,13 @@ impl SqlExpr {
                         return v;
                     }
                 }
-                serde_json::Value::Null
+                Value::Null
             }
             SqlExpr::NullIf(a, b) => {
                 let va = a.eval_with_old(new_doc, old_doc);
                 let vb = b.eval_with_old(new_doc, old_doc);
                 if coerced_eq(&va, &vb) {
-                    serde_json::Value::Null
+                    Value::Null
                 } else {
                     va
                 }
@@ -479,110 +466,103 @@ impl SqlExpr {
             SqlExpr::IsNull { expr, negated } => {
                 let v = expr.eval_with_old(new_doc, old_doc);
                 let is_null = v.is_null();
-                serde_json::Value::Bool(if *negated { !is_null } else { is_null })
+                Value::Bool(if *negated { !is_null } else { is_null })
             }
         }
     }
 }
 
-fn eval_binary_op(
-    left: &serde_json::Value,
-    op: BinaryOp,
-    right: &serde_json::Value,
-) -> serde_json::Value {
+fn eval_binary_op(left: &Value, op: BinaryOp, right: &Value) -> Value {
     match op {
-        BinaryOp::Add => match (json_to_f64(left, true), json_to_f64(right, true)) {
-            (Some(a), Some(b)) => to_json_number(a + b),
-            _ => serde_json::Value::Null,
+        BinaryOp::Add => match (value_to_f64(left, true), value_to_f64(right, true)) {
+            (Some(a), Some(b)) => to_value_number(a + b),
+            _ => Value::Null,
         },
-        BinaryOp::Sub => match (json_to_f64(left, true), json_to_f64(right, true)) {
-            (Some(a), Some(b)) => to_json_number(a - b),
-            _ => serde_json::Value::Null,
+        BinaryOp::Sub => match (value_to_f64(left, true), value_to_f64(right, true)) {
+            (Some(a), Some(b)) => to_value_number(a - b),
+            _ => Value::Null,
         },
-        BinaryOp::Mul => match (json_to_f64(left, true), json_to_f64(right, true)) {
-            (Some(a), Some(b)) => to_json_number(a * b),
-            _ => serde_json::Value::Null,
+        BinaryOp::Mul => match (value_to_f64(left, true), value_to_f64(right, true)) {
+            (Some(a), Some(b)) => to_value_number(a * b),
+            _ => Value::Null,
         },
-        BinaryOp::Div => match (json_to_f64(left, true), json_to_f64(right, true)) {
+        BinaryOp::Div => match (value_to_f64(left, true), value_to_f64(right, true)) {
             (Some(a), Some(b)) => {
                 if b == 0.0 {
-                    serde_json::Value::Null
+                    Value::Null
                 } else {
-                    to_json_number(a / b)
+                    to_value_number(a / b)
                 }
             }
-            _ => serde_json::Value::Null,
+            _ => Value::Null,
         },
-        BinaryOp::Mod => match (json_to_f64(left, true), json_to_f64(right, true)) {
+        BinaryOp::Mod => match (value_to_f64(left, true), value_to_f64(right, true)) {
             (Some(a), Some(b)) => {
                 if b == 0.0 {
-                    serde_json::Value::Null
+                    Value::Null
                 } else {
-                    to_json_number(a % b)
+                    to_value_number(a % b)
                 }
             }
-            _ => serde_json::Value::Null,
+            _ => Value::Null,
         },
         BinaryOp::Concat => {
-            let ls = json_to_display_string(left);
-            let rs = json_to_display_string(right);
-            serde_json::Value::String(format!("{ls}{rs}"))
+            let ls = value_to_display_string(left);
+            let rs = value_to_display_string(right);
+            Value::String(format!("{ls}{rs}"))
         }
-        BinaryOp::Eq => serde_json::Value::Bool(coerced_eq(left, right)),
-        BinaryOp::NotEq => serde_json::Value::Bool(!coerced_eq(left, right)),
-        BinaryOp::Gt => {
-            serde_json::Value::Bool(compare_json(left, right) == std::cmp::Ordering::Greater)
-        }
+        BinaryOp::Eq => Value::Bool(coerced_eq(left, right)),
+        BinaryOp::NotEq => Value::Bool(!coerced_eq(left, right)),
+        BinaryOp::Gt => Value::Bool(compare_values(left, right) == std::cmp::Ordering::Greater),
         BinaryOp::GtEq => {
-            let c = compare_json(left, right);
-            serde_json::Value::Bool(
-                c == std::cmp::Ordering::Greater || c == std::cmp::Ordering::Equal,
-            )
+            let c = compare_values(left, right);
+            Value::Bool(c == std::cmp::Ordering::Greater || c == std::cmp::Ordering::Equal)
         }
-        BinaryOp::Lt => {
-            serde_json::Value::Bool(compare_json(left, right) == std::cmp::Ordering::Less)
-        }
+        BinaryOp::Lt => Value::Bool(compare_values(left, right) == std::cmp::Ordering::Less),
         BinaryOp::LtEq => {
-            let c = compare_json(left, right);
-            serde_json::Value::Bool(c == std::cmp::Ordering::Less || c == std::cmp::Ordering::Equal)
+            let c = compare_values(left, right);
+            Value::Bool(c == std::cmp::Ordering::Less || c == std::cmp::Ordering::Equal)
         }
-        BinaryOp::And => serde_json::Value::Bool(is_truthy(left) && is_truthy(right)),
-        BinaryOp::Or => serde_json::Value::Bool(is_truthy(left) || is_truthy(right)),
+        BinaryOp::And => Value::Bool(is_truthy(left) && is_truthy(right)),
+        BinaryOp::Or => Value::Bool(is_truthy(left) || is_truthy(right)),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
-    fn doc() -> serde_json::Value {
-        json!({
-            "name": "Alice",
-            "age": 30,
-            "price": 10.5,
-            "qty": 4,
-            "active": true,
-            "email": null
-        })
+    fn doc() -> Value {
+        Value::Object(
+            [
+                ("name".to_string(), Value::String("Alice".into())),
+                ("age".to_string(), Value::Integer(30)),
+                ("price".to_string(), Value::Float(10.5)),
+                ("qty".to_string(), Value::Integer(4)),
+                ("active".to_string(), Value::Bool(true)),
+                ("email".to_string(), Value::Null),
+            ]
+            .into_iter()
+            .collect(),
+        )
     }
 
     #[test]
     fn column_ref() {
         let expr = SqlExpr::Column("name".into());
-        assert_eq!(expr.eval(&doc()), json!("Alice"));
+        assert_eq!(expr.eval(&doc()), Value::String("Alice".into()));
     }
 
     #[test]
     fn missing_column() {
         let expr = SqlExpr::Column("missing".into());
-        assert_eq!(expr.eval(&doc()), json!(null));
+        assert_eq!(expr.eval(&doc()), Value::Null);
     }
 
     #[test]
     fn literal() {
-        let expr = SqlExpr::Literal(json!(42));
-        assert_eq!(expr.eval(&doc()), json!(42));
+        let expr = SqlExpr::Literal(Value::Integer(42));
+        assert_eq!(expr.eval(&doc()), Value::Integer(42));
     }
 
     #[test]
@@ -590,9 +570,9 @@ mod tests {
         let expr = SqlExpr::BinaryOp {
             left: Box::new(SqlExpr::Column("price".into())),
             op: BinaryOp::Add,
-            right: Box::new(SqlExpr::Literal(json!(1.5))),
+            right: Box::new(SqlExpr::Literal(Value::Float(1.5))),
         };
-        assert_eq!(expr.eval(&doc()), json!(12));
+        assert_eq!(expr.eval(&doc()), Value::Integer(12));
     }
 
     #[test]
@@ -602,7 +582,7 @@ mod tests {
             op: BinaryOp::Mul,
             right: Box::new(SqlExpr::Column("qty".into())),
         };
-        assert_eq!(expr.eval(&doc()), json!(42));
+        assert_eq!(expr.eval(&doc()), Value::Integer(42));
     }
 
     #[test]
@@ -613,22 +593,25 @@ mod tests {
                 SqlExpr::BinaryOp {
                     left: Box::new(SqlExpr::Column("age".into())),
                     op: BinaryOp::GtEq,
-                    right: Box::new(SqlExpr::Literal(json!(18))),
+                    right: Box::new(SqlExpr::Literal(Value::Integer(18))),
                 },
-                SqlExpr::Literal(json!("adult")),
+                SqlExpr::Literal(Value::String("adult".into())),
             )],
-            else_expr: Some(Box::new(SqlExpr::Literal(json!("minor")))),
+            else_expr: Some(Box::new(SqlExpr::Literal(Value::String("minor".into())))),
         };
-        assert_eq!(expr.eval(&doc()), json!("adult"));
+        assert_eq!(expr.eval(&doc()), Value::String("adult".into()));
     }
 
     #[test]
     fn coalesce() {
         let expr = SqlExpr::Coalesce(vec![
             SqlExpr::Column("email".into()),
-            SqlExpr::Literal(json!("default@example.com")),
+            SqlExpr::Literal(Value::String("default@example.com".into())),
         ]);
-        assert_eq!(expr.eval(&doc()), json!("default@example.com"));
+        assert_eq!(
+            expr.eval(&doc()),
+            Value::String("default@example.com".into())
+        );
     }
 
     #[test]
@@ -637,6 +620,6 @@ mod tests {
             expr: Box::new(SqlExpr::Column("email".into())),
             negated: false,
         };
-        assert_eq!(expr.eval(&doc()), json!(true));
+        assert_eq!(expr.eval(&doc()), Value::Bool(true));
     }
 }

@@ -14,6 +14,7 @@ pub mod simd_agg_i64;
 pub mod simd_filter;
 pub mod text_search;
 pub mod ts_functions;
+pub mod value_ops;
 pub mod window;
 
 pub use chunk_text::{ChunkError, ChunkStrategy, TextChunk, chunk_text};

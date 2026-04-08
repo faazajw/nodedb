@@ -1,66 +1,87 @@
 //! CAST evaluation for SqlExpr.
 
-use crate::expr::CastType;
-use crate::json_ops::{is_truthy, json_to_display_string};
+use crate::value_ops::{is_truthy, value_to_display_string};
+use nodedb_types::Value;
 
-pub fn eval_cast(val: &serde_json::Value, to_type: &CastType) -> serde_json::Value {
+pub fn eval_cast(val: &Value, to_type: &crate::expr::CastType) -> Value {
+    use crate::expr::CastType;
     match to_type {
         CastType::Int => match val {
-            serde_json::Value::Number(n) => {
-                let i = n.as_i64().unwrap_or(n.as_f64().unwrap_or(0.0) as i64);
-                serde_json::Value::Number(i.into())
+            Value::Integer(_) => val.clone(),
+            Value::Float(f) => Value::Integer(*f as i64),
+            Value::String(s) => s.parse::<i64>().map(Value::Integer).unwrap_or(Value::Null),
+            Value::Bool(b) => Value::Integer(*b as i64),
+            Value::Decimal(d) => {
+                use rust_decimal::prelude::ToPrimitive;
+                d.to_i64().map(Value::Integer).unwrap_or(Value::Null)
             }
-            serde_json::Value::String(s) => s
-                .parse::<i64>()
-                .map(|n| serde_json::Value::Number(n.into()))
-                .unwrap_or(serde_json::Value::Null),
-            serde_json::Value::Bool(b) => serde_json::Value::Number((*b as i64).into()),
-            _ => serde_json::Value::Null,
+            _ => Value::Null,
         },
         CastType::Float => match val {
-            serde_json::Value::Number(n) => n
-                .as_f64()
-                .and_then(serde_json::Number::from_f64)
-                .map(serde_json::Value::Number)
-                .unwrap_or(serde_json::Value::Null),
-            serde_json::Value::String(s) => s
+            Value::Float(_) => val.clone(),
+            Value::Integer(i) => Value::Float(*i as f64),
+            Value::String(s) => s
                 .parse::<f64>()
+                .map(Value::Float)
                 .ok()
-                .and_then(serde_json::Number::from_f64)
-                .map(serde_json::Value::Number)
-                .unwrap_or(serde_json::Value::Null),
-            _ => serde_json::Value::Null,
+                .unwrap_or(Value::Null),
+            Value::Decimal(d) => {
+                use rust_decimal::prelude::ToPrimitive;
+                d.to_f64().map(Value::Float).unwrap_or(Value::Null)
+            }
+            _ => Value::Null,
         },
-        CastType::String => serde_json::Value::String(json_to_display_string(val)),
-        CastType::Bool => serde_json::Value::Bool(is_truthy(val)),
+        CastType::String => Value::String(value_to_display_string(val)),
+        CastType::Bool => Value::Bool(is_truthy(val)),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use crate::expr::CastType;
 
     #[test]
     fn cast_string_to_int() {
-        assert_eq!(eval_cast(&json!("42"), &CastType::Int), json!(42));
+        assert_eq!(
+            eval_cast(&Value::String("42".into()), &CastType::Int),
+            Value::Integer(42)
+        );
     }
 
     #[test]
     fn cast_float_to_int() {
-        assert_eq!(eval_cast(&json!(3.7), &CastType::Int), json!(3));
+        assert_eq!(
+            eval_cast(&Value::Float(3.7), &CastType::Int),
+            Value::Integer(3)
+        );
     }
 
     #[test]
     fn cast_int_to_string() {
-        assert_eq!(eval_cast(&json!(42), &CastType::String), json!("42"));
+        assert_eq!(
+            eval_cast(&Value::Integer(42), &CastType::String),
+            Value::String("42".into())
+        );
     }
 
     #[test]
     fn cast_to_bool() {
-        assert_eq!(eval_cast(&json!(1), &CastType::Bool), json!(true));
-        assert_eq!(eval_cast(&json!(0), &CastType::Bool), json!(false));
-        assert_eq!(eval_cast(&json!(""), &CastType::Bool), json!(false));
-        assert_eq!(eval_cast(&json!("x"), &CastType::Bool), json!(true));
+        assert_eq!(
+            eval_cast(&Value::Integer(1), &CastType::Bool),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            eval_cast(&Value::Integer(0), &CastType::Bool),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            eval_cast(&Value::String(String::new()), &CastType::Bool),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            eval_cast(&Value::String("x".into()), &CastType::Bool),
+            Value::Bool(true)
+        );
     }
 }
