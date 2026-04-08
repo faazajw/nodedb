@@ -195,10 +195,13 @@ pub fn value_to_msgpack(value: &crate::Value) -> zerompk::Result<Vec<u8>> {
     zerompk::to_msgpack_vec(value)
 }
 
-/// Deserialize a `nodedb_types::Value` from MessagePack bytes using zerompk.
-#[inline]
+/// Deserialize a `nodedb_types::Value` from standard MessagePack bytes.
+///
+/// Uses a cursor-based parser that handles standard msgpack format (fixmap 0x80-0x8F etc.)
+/// directly into `Value` — no `serde_json` intermediary, no zerompk serde dependency.
 pub fn value_from_msgpack(bytes: &[u8]) -> zerompk::Result<crate::Value> {
-    zerompk::from_msgpack(bytes)
+    let mut cursor = Cursor::new(bytes);
+    read_native_value(&mut cursor)
 }
 
 struct Cursor<'a> {
@@ -516,6 +519,217 @@ fn base64_encode(data: &[u8]) -> String {
         }
     }
     out
+}
+
+/// Read a standard msgpack value into `nodedb_types::Value`.
+fn read_native_value(c: &mut Cursor<'_>) -> zerompk::Result<crate::Value> {
+    if c.depth > 500 {
+        return Err(zerompk::Error::DepthLimitExceeded { max: 500 });
+    }
+
+    let marker = c.take()?;
+    match marker {
+        // nil
+        0xC0 => Ok(crate::Value::Null),
+        // bool
+        0xC2 => Ok(crate::Value::Bool(false)),
+        0xC3 => Ok(crate::Value::Bool(true)),
+        // positive fixint
+        0x00..=0x7F => Ok(crate::Value::Integer(marker as i64)),
+        // negative fixint
+        0xE0..=0xFF => Ok(crate::Value::Integer(marker as i8 as i64)),
+        // uint 8
+        0xCC => Ok(crate::Value::Integer(c.take()? as i64)),
+        // uint 16
+        0xCD => Ok(crate::Value::Integer(c.read_u16_be()? as i64)),
+        // uint 32
+        0xCE => Ok(crate::Value::Integer(c.read_u32_be()? as i64)),
+        // uint 64
+        0xCF => {
+            let b = c.take_n(8)?;
+            Ok(crate::Value::Integer(u64::from_be_bytes([
+                b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+            ]) as i64))
+        }
+        // int 8
+        0xD0 => Ok(crate::Value::Integer(c.take()? as i8 as i64)),
+        // int 16
+        0xD1 => {
+            let b = c.take_n(2)?;
+            Ok(crate::Value::Integer(
+                i16::from_be_bytes([b[0], b[1]]) as i64
+            ))
+        }
+        // int 32
+        0xD2 => {
+            let b = c.take_n(4)?;
+            Ok(crate::Value::Integer(
+                i32::from_be_bytes([b[0], b[1], b[2], b[3]]) as i64,
+            ))
+        }
+        // int 64
+        0xD3 => {
+            let b = c.take_n(8)?;
+            Ok(crate::Value::Integer(i64::from_be_bytes([
+                b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+            ])))
+        }
+        // float 32
+        0xCA => {
+            let b = c.take_n(4)?;
+            Ok(crate::Value::Float(
+                f32::from_be_bytes([b[0], b[1], b[2], b[3]]) as f64,
+            ))
+        }
+        // float 64
+        0xCB => {
+            let b = c.take_n(8)?;
+            Ok(crate::Value::Float(f64::from_be_bytes([
+                b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+            ])))
+        }
+        // fixstr
+        m @ 0xA0..=0xBF => {
+            let len = (m & 0x1F) as usize;
+            let bytes = c.take_n(len)?;
+            let s =
+                String::from_utf8(bytes.to_vec()).map_err(|_| zerompk::Error::InvalidMarker(0))?;
+            Ok(crate::Value::String(s))
+        }
+        // str 8
+        0xD9 => {
+            let len = c.take()? as usize;
+            let bytes = c.take_n(len)?;
+            let s =
+                String::from_utf8(bytes.to_vec()).map_err(|_| zerompk::Error::InvalidMarker(0))?;
+            Ok(crate::Value::String(s))
+        }
+        // str 16
+        0xDA => {
+            let len = c.read_u16_be()? as usize;
+            let bytes = c.take_n(len)?;
+            let s =
+                String::from_utf8(bytes.to_vec()).map_err(|_| zerompk::Error::InvalidMarker(0))?;
+            Ok(crate::Value::String(s))
+        }
+        // str 32
+        0xDB => {
+            let len = c.read_u32_be()? as usize;
+            let bytes = c.take_n(len)?;
+            let s =
+                String::from_utf8(bytes.to_vec()).map_err(|_| zerompk::Error::InvalidMarker(0))?;
+            Ok(crate::Value::String(s))
+        }
+        // bin 8/16/32
+        0xC4 => {
+            let len = c.take()? as usize;
+            Ok(crate::Value::Bytes(c.take_n(len)?.to_vec()))
+        }
+        0xC5 => {
+            let len = c.read_u16_be()? as usize;
+            Ok(crate::Value::Bytes(c.take_n(len)?.to_vec()))
+        }
+        0xC6 => {
+            let len = c.read_u32_be()? as usize;
+            Ok(crate::Value::Bytes(c.take_n(len)?.to_vec()))
+        }
+        // fixarray
+        m @ 0x90..=0x9F => read_native_array(c, (m & 0x0F) as usize),
+        // array 16
+        0xDC => {
+            let len = c.read_u16_be()? as usize;
+            read_native_array(c, len)
+        }
+        // array 32
+        0xDD => {
+            let len = c.read_u32_be()? as usize;
+            read_native_array(c, len)
+        }
+        // fixmap
+        m @ 0x80..=0x8F => read_native_map(c, (m & 0x0F) as usize),
+        // map 16
+        0xDE => {
+            let len = c.read_u16_be()? as usize;
+            read_native_map(c, len)
+        }
+        // map 32
+        0xDF => {
+            let len = c.read_u32_be()? as usize;
+            read_native_map(c, len)
+        }
+        // ext types — skip
+        0xD4 => {
+            c.take_n(2)?;
+            Ok(crate::Value::Null)
+        }
+        0xD5 => {
+            c.take_n(3)?;
+            Ok(crate::Value::Null)
+        }
+        0xD6 => {
+            c.take_n(5)?;
+            Ok(crate::Value::Null)
+        }
+        0xD7 => {
+            c.take_n(9)?;
+            Ok(crate::Value::Null)
+        }
+        0xD8 => {
+            c.take_n(17)?;
+            Ok(crate::Value::Null)
+        }
+        0xC7 => {
+            let len = c.take()? as usize;
+            c.take_n(1 + len)?;
+            Ok(crate::Value::Null)
+        }
+        0xC8 => {
+            let len = c.read_u16_be()? as usize;
+            c.take_n(1 + len)?;
+            Ok(crate::Value::Null)
+        }
+        0xC9 => {
+            let len = c.read_u32_be()? as usize;
+            c.take_n(1 + len)?;
+            Ok(crate::Value::Null)
+        }
+        _ => Err(zerompk::Error::InvalidMarker(marker)),
+    }
+}
+
+fn read_native_array(c: &mut Cursor<'_>, len: usize) -> zerompk::Result<crate::Value> {
+    c.depth += 1;
+    let mut arr = Vec::with_capacity(len.min(4096));
+    for _ in 0..len {
+        arr.push(read_native_value(c)?);
+    }
+    c.depth -= 1;
+    Ok(crate::Value::Array(arr))
+}
+
+fn read_native_map(c: &mut Cursor<'_>, len: usize) -> zerompk::Result<crate::Value> {
+    c.depth += 1;
+    let mut map = std::collections::HashMap::with_capacity(len.min(4096));
+    for _ in 0..len {
+        let key_marker = c.peek()?;
+        let key = if (0xA0..=0xBF).contains(&key_marker)
+            || key_marker == 0xD9
+            || key_marker == 0xDA
+            || key_marker == 0xDB
+        {
+            match read_native_value(c)? {
+                crate::Value::String(s) => s,
+                other => format!("{other:?}"),
+            }
+        } else {
+            let v = read_native_value(c)?;
+            format!("{v:?}")
+        };
+        let val = read_native_value(c)?;
+        map.insert(key, val);
+    }
+    c.depth -= 1;
+    Ok(crate::Value::Object(map))
 }
 
 #[cfg(test)]

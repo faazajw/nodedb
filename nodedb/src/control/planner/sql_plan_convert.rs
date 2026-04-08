@@ -164,6 +164,43 @@ fn convert_one(
             column_defaults,
         } => convert_insert(collection, engine, rows, column_defaults, tenant_id),
 
+        SqlPlan::KvInsert {
+            collection,
+            entries,
+        } => {
+            let vshard = VShardId::from_collection(collection);
+            let mut tasks = Vec::with_capacity(entries.len());
+            for (key_val, value_cols) in entries {
+                let key = sql_value_to_bytes(key_val);
+                // Value is the payload columns as msgpack map.
+                let value = if value_cols.len() == 1 && value_cols[0].0 == "value" {
+                    // Simple (key, value) form — value is raw bytes.
+                    sql_value_to_bytes(&value_cols[0].1)
+                } else {
+                    // Typed columns form — write standard msgpack map directly.
+                    let mut buf = Vec::with_capacity(value_cols.len() * 32);
+                    write_msgpack_map_header(&mut buf, value_cols.len());
+                    for (col, val) in value_cols {
+                        write_msgpack_str(&mut buf, col);
+                        write_msgpack_value(&mut buf, val);
+                    }
+                    buf
+                };
+                tasks.push(PhysicalTask {
+                    tenant_id,
+                    vshard_id: vshard,
+                    plan: PhysicalPlan::Kv(KvOp::Put {
+                        collection: collection.into(),
+                        key,
+                        value,
+                        ttl_ms: 0,
+                    }),
+                    post_set_op: PostSetOp::None,
+                });
+            }
+            Ok(tasks)
+        }
+
         SqlPlan::Update {
             collection,
             engine,
@@ -547,25 +584,10 @@ fn convert_insert(
             .map(|(_, v)| sql_value_to_string(v))
             .unwrap_or_default();
 
-        let value_bytes = row_to_msgpack(row)?;
-
         match engine {
             EngineType::KeyValue => {
-                let key = row
-                    .iter()
-                    .find(|(k, _)| k == "key")
-                    .map(|(_, v)| sql_value_to_bytes(v))
-                    .unwrap_or_else(|| doc_id.as_bytes().to_vec());
-                tasks.push(PhysicalTask {
-                    tenant_id,
-                    vshard_id: vshard,
-                    plan: PhysicalPlan::Kv(KvOp::Put {
-                        collection: collection.into(),
-                        key,
-                        value: value_bytes,
-                        ttl_ms: 0,
-                    }),
-                    post_set_op: PostSetOp::None,
+                return Err(crate::Error::PlanError {
+                    detail: "KV INSERT must use SqlPlan::KvInsert path".into(),
                 });
             }
             EngineType::Columnar | EngineType::Spatial => {
@@ -574,6 +596,7 @@ fn convert_insert(
                 columnar_rows.push(row);
             }
             _ => {
+                let value_bytes = row_to_msgpack(row)?;
                 tasks.push(PhysicalTask {
                     tenant_id,
                     vshard_id: vshard,
@@ -627,7 +650,7 @@ fn convert_update(
                 .iter()
                 .filter_map(|(field, expr)| {
                     if let SqlExpr::Literal(val) = expr {
-                        Some((field.clone(), sql_value_to_bytes(val)))
+                        Some((field.clone(), sql_value_to_msgpack(val)))
                     } else {
                         None
                     }
@@ -1289,10 +1312,10 @@ fn rows_to_msgpack_array(
             }
             // Apply column defaults for missing fields.
             for (col_name, default_expr) in column_defaults {
-                if !map.contains_key(col_name) {
-                    if let Some(val) = evaluate_default_expr(default_expr) {
-                        map.insert(col_name.clone(), val);
-                    }
+                if !map.contains_key(col_name)
+                    && let Some(val) = evaluate_default_expr(default_expr)
+                {
+                    map.insert(col_name.clone(), val);
                 }
             }
             nodedb_types::Value::Object(map)
@@ -1375,16 +1398,114 @@ fn sql_value_to_bytes(v: &SqlValue) -> Vec<u8> {
     }
 }
 
+/// Encode a SQL value as standard msgpack for field-level updates.
+fn sql_value_to_msgpack(v: &SqlValue) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(16);
+    write_msgpack_value(&mut buf, v);
+    buf
+}
+
 fn row_to_msgpack(row: &[(String, SqlValue)]) -> crate::Result<Vec<u8>> {
-    let mut map = std::collections::HashMap::new();
+    // Write standard msgpack map directly from SqlValue — no JSON or zerompk intermediary.
+    let mut buf = Vec::with_capacity(row.len() * 32);
+    write_msgpack_map_header(&mut buf, row.len());
     for (key, val) in row {
-        map.insert(key.clone(), sql_value_to_nodedb_value(val));
+        write_msgpack_str(&mut buf, key);
+        write_msgpack_value(&mut buf, val);
     }
-    let obj = nodedb_types::Value::Object(map);
-    zerompk::to_msgpack_vec(&obj).map_err(|e| crate::Error::Serialization {
-        format: "msgpack".into(),
-        detail: format!("row serialization: {e}"),
-    })
+    Ok(buf)
+}
+
+fn write_msgpack_map_header(buf: &mut Vec<u8>, len: usize) {
+    if len < 16 {
+        buf.push(0x80 | len as u8);
+    } else if len <= u16::MAX as usize {
+        buf.push(0xDE);
+        buf.extend_from_slice(&(len as u16).to_be_bytes());
+    } else {
+        buf.push(0xDF);
+        buf.extend_from_slice(&(len as u32).to_be_bytes());
+    }
+}
+
+fn write_msgpack_str(buf: &mut Vec<u8>, s: &str) {
+    let bytes = s.as_bytes();
+    let len = bytes.len();
+    if len < 32 {
+        buf.push(0xA0 | len as u8);
+    } else if len <= u8::MAX as usize {
+        buf.push(0xD9);
+        buf.push(len as u8);
+    } else if len <= u16::MAX as usize {
+        buf.push(0xDA);
+        buf.extend_from_slice(&(len as u16).to_be_bytes());
+    } else {
+        buf.push(0xDB);
+        buf.extend_from_slice(&(len as u32).to_be_bytes());
+    }
+    buf.extend_from_slice(bytes);
+}
+
+fn write_msgpack_value(buf: &mut Vec<u8>, val: &SqlValue) {
+    match val {
+        SqlValue::Null => buf.push(0xC0),
+        SqlValue::Bool(true) => buf.push(0xC3),
+        SqlValue::Bool(false) => buf.push(0xC2),
+        SqlValue::Int(i) => {
+            let i = *i;
+            if (0..=127).contains(&i) {
+                buf.push(i as u8);
+            } else if (-32..0).contains(&i) {
+                buf.push(i as u8); // negative fixint
+            } else if i >= i8::MIN as i64 && i <= i8::MAX as i64 {
+                buf.push(0xD0);
+                buf.push(i as i8 as u8);
+            } else if i >= i16::MIN as i64 && i <= i16::MAX as i64 {
+                buf.push(0xD1);
+                buf.extend_from_slice(&(i as i16).to_be_bytes());
+            } else if i >= i32::MIN as i64 && i <= i32::MAX as i64 {
+                buf.push(0xD2);
+                buf.extend_from_slice(&(i as i32).to_be_bytes());
+            } else {
+                buf.push(0xD3);
+                buf.extend_from_slice(&i.to_be_bytes());
+            }
+        }
+        SqlValue::Float(f) => {
+            buf.push(0xCB);
+            buf.extend_from_slice(&f.to_be_bytes());
+        }
+        SqlValue::String(s) => write_msgpack_str(buf, s),
+        SqlValue::Array(arr) => {
+            let len = arr.len();
+            if len < 16 {
+                buf.push(0x90 | len as u8);
+            } else if len <= u16::MAX as usize {
+                buf.push(0xDC);
+                buf.extend_from_slice(&(len as u16).to_be_bytes());
+            } else {
+                buf.push(0xDD);
+                buf.extend_from_slice(&(len as u32).to_be_bytes());
+            }
+            for item in arr {
+                write_msgpack_value(buf, item);
+            }
+        }
+        SqlValue::Bytes(b) => {
+            let len = b.len();
+            if len <= u8::MAX as usize {
+                buf.push(0xC4);
+                buf.push(len as u8);
+            } else if len <= u16::MAX as usize {
+                buf.push(0xC5);
+                buf.extend_from_slice(&(len as u16).to_be_bytes());
+            } else {
+                buf.push(0xC6);
+                buf.extend_from_slice(&(len as u32).to_be_bytes());
+            }
+            buf.extend_from_slice(b);
+        }
+    }
 }
 
 fn assignments_to_bytes(
@@ -1392,14 +1513,15 @@ fn assignments_to_bytes(
 ) -> crate::Result<Vec<(String, Vec<u8>)>> {
     let mut result = Vec::new();
     for (field, expr) in assignments {
-        let value = match expr {
-            SqlExpr::Literal(v) => sql_value_to_nodedb_value(v),
-            _ => nodedb_types::Value::String(format!("{expr:?}")),
+        let bytes = match expr {
+            SqlExpr::Literal(v) => sql_value_to_msgpack(v),
+            _ => {
+                // Non-literal expression — encode as string.
+                let mut buf = Vec::new();
+                write_msgpack_str(&mut buf, &format!("{expr:?}"));
+                buf
+            }
         };
-        let bytes = zerompk::to_msgpack_vec(&value).map_err(|e| crate::Error::Serialization {
-            format: "msgpack".into(),
-            detail: format!("assignment serialization: {e}"),
-        })?;
         result.push((field.clone(), bytes));
     }
     Ok(result)
@@ -1578,4 +1700,45 @@ fn parse_timestamp_to_ms(s: &str) -> Option<i64> {
     }
     // Raw milliseconds as string
     s.parse::<i64>().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn row_to_msgpack_produces_standard_format() {
+        let row = vec![
+            ("count".to_string(), SqlValue::Int(1)),
+            ("label".to_string(), SqlValue::String("homepage".into())),
+        ];
+        let bytes = row_to_msgpack(&row).unwrap();
+        // First byte should be a fixmap header (0x82 = map with 2 entries).
+        assert_eq!(
+            bytes[0], 0x82,
+            "expected fixmap(2), got 0x{:02X}. bytes={bytes:?}",
+            bytes[0]
+        );
+        // Should be decodable by json_from_msgpack (standard msgpack parser).
+        let json = nodedb_types::json_from_msgpack(&bytes).unwrap();
+        let obj = json.as_object().unwrap();
+        assert_eq!(obj["count"], 1);
+        assert_eq!(obj["label"], "homepage");
+    }
+
+    #[test]
+    fn write_msgpack_value_int() {
+        let mut buf = Vec::new();
+        write_msgpack_value(&mut buf, &SqlValue::Int(42));
+        // 42 fits in positive fixint (0x00-0x7F).
+        assert_eq!(buf, vec![42]);
+    }
+
+    #[test]
+    fn write_msgpack_value_string() {
+        let mut buf = Vec::new();
+        write_msgpack_value(&mut buf, &SqlValue::String("hi".into()));
+        // fixstr: 0xA0 | 2 = 0xA2, then "hi".
+        assert_eq!(buf, vec![0xA2, b'h', b'i']);
+    }
 }
