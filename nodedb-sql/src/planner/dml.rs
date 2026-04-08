@@ -65,10 +65,16 @@ pub fn plan_insert(ins: &ast::Insert, catalog: &dyn SqlCatalog) -> Result<Vec<Sq
     }
 
     let rows = convert_value_rows(&columns, rows_ast)?;
+    let column_defaults: Vec<(String, String)> = info
+        .columns
+        .iter()
+        .filter_map(|c| c.default.as_ref().map(|d| (c.name.clone(), d.clone())))
+        .collect();
     Ok(vec![SqlPlan::Insert {
         collection: table_name,
         engine: info.engine,
         rows,
+        column_defaults,
     }])
 }
 
@@ -218,9 +224,46 @@ fn expr_to_sql_value(expr: &ast::Expr) -> Result<SqlValue> {
             let vals = elem.iter().map(expr_to_sql_value).collect::<Result<_>>()?;
             Ok(SqlValue::Array(vals))
         }
-        ast::Expr::Function(_) => {
-            // Functions like now() in VALUES — store as string for runtime eval.
-            Ok(SqlValue::String(format!("{expr}")))
+        ast::Expr::Function(func) => {
+            let func_name = func
+                .name
+                .0
+                .iter()
+                .map(|p| match p {
+                    ast::ObjectNamePart::Identifier(ident) => normalize_ident(ident),
+                    _ => String::new(),
+                })
+                .collect::<Vec<_>>()
+                .join(".")
+                .to_lowercase();
+            match func_name.as_str() {
+                "st_point" => {
+                    // ST_Point(lon, lat) → GeoJSON string at plan time.
+                    let args = super::select::extract_func_args(func)?;
+                    if args.len() >= 2 {
+                        let lon = super::select::extract_float(&args[0])?;
+                        let lat = super::select::extract_float(&args[1])?;
+                        Ok(SqlValue::String(format!(
+                            r#"{{"type":"Point","coordinates":[{lon},{lat}]}}"#
+                        )))
+                    } else {
+                        Ok(SqlValue::String(format!("{expr}")))
+                    }
+                }
+                "st_geomfromgeojson" => {
+                    let args = super::select::extract_func_args(func)?;
+                    if !args.is_empty() {
+                        let s = super::select::extract_string_literal(&args[0])?;
+                        Ok(SqlValue::String(s))
+                    } else {
+                        Ok(SqlValue::String(format!("{expr}")))
+                    }
+                }
+                _ => {
+                    // Other functions like now() — store as string for runtime eval.
+                    Ok(SqlValue::String(format!("{expr}")))
+                }
+            }
         }
         _ => Err(SqlError::Unsupported {
             detail: format!("value expression: {expr}"),

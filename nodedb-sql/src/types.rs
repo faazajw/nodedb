@@ -45,6 +45,9 @@ pub enum SqlPlan {
         collection: String,
         engine: EngineType,
         rows: Vec<Vec<(String, SqlValue)>>,
+        /// Column defaults from schema: `(column_name, default_expr)`.
+        /// Used to auto-generate values for missing columns (e.g. `id` with `UUID_V7`).
+        column_defaults: Vec<(String, String)>,
     },
     InsertSelect {
         target: String,
@@ -456,4 +459,6 @@ pub struct ColumnInfo {
     pub data_type: SqlDataType,
     pub nullable: bool,
     pub is_primary_key: bool,
+    /// Default value expression (e.g. "UUID_V7", "ULID", "NANOID(10)", "0", "'active'").
+    pub default: Option<String>,
 }

@@ -664,7 +664,7 @@ pub fn convert_where_to_filters(expr: &ast::Expr) -> Result<Vec<Filter>> {
     }])
 }
 
-fn extract_func_args(func: &ast::Function) -> Result<Vec<ast::Expr>> {
+pub(crate) fn extract_func_args(func: &ast::Function) -> Result<Vec<ast::Expr>> {
     match &func.args {
         ast::FunctionArguments::List(args) => Ok(args
             .args
@@ -756,7 +756,7 @@ fn extract_column_name(expr: &ast::Expr) -> Result<String> {
     }
 }
 
-fn extract_string_literal(expr: &ast::Expr) -> Result<String> {
+pub(crate) fn extract_string_literal(expr: &ast::Expr) -> Result<String> {
     match expr {
         ast::Expr::Value(v) => match &v.value {
             ast::Value::SingleQuotedString(s) | ast::Value::DoubleQuotedString(s) => Ok(s.clone()),
@@ -770,7 +770,7 @@ fn extract_string_literal(expr: &ast::Expr) -> Result<String> {
     }
 }
 
-fn extract_float(expr: &ast::Expr) -> Result<f64> {
+pub(crate) fn extract_float(expr: &ast::Expr) -> Result<f64> {
     match expr {
         ast::Expr::Value(v) => match &v.value {
             ast::Value::Number(n, _) => n.parse::<f64>().map_err(|_| SqlError::TypeMismatch {

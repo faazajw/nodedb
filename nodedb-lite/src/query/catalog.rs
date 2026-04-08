@@ -46,6 +46,7 @@ impl<S: StorageEngine> SqlCatalog for LiteCatalog<S> {
                     data_type: convert_column_type(&c.column_type),
                     nullable: c.nullable,
                     is_primary_key: c.primary_key,
+                    default: c.default.clone(),
                 })
                 .collect();
             let pk = schema
@@ -87,6 +88,7 @@ impl<S: StorageEngine> SqlCatalog for LiteCatalog<S> {
                     data_type: SqlDataType::String,
                     nullable: false,
                     is_primary_key: true,
+                    default: None,
                 }],
                 primary_key: Some("id".into()),
                 has_auto_tier: false,
