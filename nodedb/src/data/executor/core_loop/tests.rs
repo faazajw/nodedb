@@ -122,3 +122,37 @@ fn cancel_removes_pending_task() {
         .unwrap();
     assert_eq!(core.tick(), 2);
 }
+
+#[test]
+fn point_put_stores_schemaless_docs_as_canonical_msgpack_maps() {
+    let (mut core, mut req_tx, mut resp_rx, _dir) = make_core();
+
+    let mut obj = std::collections::HashMap::new();
+    obj.insert(
+        "user_id".to_string(),
+        nodedb_types::Value::String("u1".into()),
+    );
+    obj.insert(
+        "item".to_string(),
+        nodedb_types::Value::String("book".into()),
+    );
+    let tagged = zerompk::to_msgpack_vec(&nodedb_types::Value::Object(obj)).unwrap();
+
+    req_tx
+        .try_push(BridgeRequest {
+            inner: make_request(PhysicalPlan::Document(DocumentOp::PointPut {
+                collection: "orders".into(),
+                document_id: "o1".into(),
+                value: tagged,
+            })),
+        })
+        .unwrap();
+    core.tick();
+    let resp = resp_rx.try_pop().unwrap();
+    assert_eq!(resp.inner.status, Status::Ok);
+
+    let stored = core.sparse.get(1, "orders", "o1").unwrap().unwrap();
+    assert!(nodedb_query::msgpack_scan::map_header(&stored, 0).is_some());
+    assert!(nodedb_query::msgpack_scan::extract_field(&stored, 0, "user_id").is_some());
+    assert!(nodedb_query::msgpack_scan::extract_field(&stored, 0, "item").is_some());
+}

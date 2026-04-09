@@ -463,7 +463,7 @@ impl CoreLoop {
                 value.to_vec()
             }
         } else {
-            super::super::doc_format::json_to_msgpack(value)
+            super::super::doc_format::canonicalize_document_for_storage(value)
         };
         let value = &value;
 

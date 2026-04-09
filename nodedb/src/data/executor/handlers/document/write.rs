@@ -18,7 +18,12 @@ impl CoreLoop {
         debug!(core = self.core_id, %collection, count = documents.len(), "document batch insert");
         let converted: Vec<(String, Vec<u8>)> = documents
             .iter()
-            .map(|(id, val)| (id.clone(), val.clone()))
+            .map(|(id, val)| {
+                (
+                    id.clone(),
+                    super::super::super::doc_format::canonicalize_document_for_storage(val),
+                )
+            })
             .collect();
         let refs: Vec<(&str, &[u8])> = converted
             .iter()

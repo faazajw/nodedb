@@ -284,9 +284,11 @@ impl CoreLoop {
                         value,
                         hash_chain_enabled,
                     )
-                    .unwrap_or_else(|| super::super::doc_format::json_to_msgpack(value))
+                    .unwrap_or_else(|| {
+                        super::super::doc_format::canonicalize_document_for_storage(value)
+                    })
                 } else {
-                    super::super::doc_format::json_to_msgpack(value)
+                    super::super::doc_format::canonicalize_document_for_storage(value)
                 };
                 match self.sparse.put(tid, collection, document_id, &stored) {
                     Ok(()) => {

@@ -75,16 +75,14 @@ pub(super) fn encode_to_msgpack(value: &serde_json::Value) -> Vec<u8> {
     })
 }
 
-/// Convert JSON bytes to MessagePack bytes for storage.
+/// Convert JSON bytes to MessagePack bytes.
 ///
 /// If the input is already MessagePack, returns it unchanged.
-/// Ensure bytes are in standard MessagePack map format.
 ///
 /// Handles three input formats:
 /// - Standard msgpack map (0x80–0x8F / 0xDE / 0xDF): returned as-is.
-/// - zerompk `nodedb_types::Value` tagged format: transcoded to standard msgpack map.
 /// - JSON bytes: parsed and re-encoded as standard msgpack map.
-/// - Unknown: stored as-is (storage engine is format-agnostic).
+/// - Unknown bytes: returned as-is.
 pub(super) fn json_to_msgpack(bytes: &[u8]) -> Vec<u8> {
     if bytes.is_empty() {
         return bytes.to_vec();
@@ -96,19 +94,51 @@ pub(super) fn json_to_msgpack(bytes: &[u8]) -> Vec<u8> {
         return bytes.to_vec();
     }
 
-    // Try decoding as nodedb_types::Value (zerompk tagged format) and transcode.
-    // Only accept if the result is an Object — zerompk can spuriously "succeed"
-    // on JSON bytes by interpreting the first byte (e.g. '{' = 0x7B) as a fixint.
-    if let Ok(val @ nodedb_types::Value::Object(_)) = nodedb_types::value_from_msgpack(bytes) {
-        if let Ok(mp) = nodedb_types::value_to_msgpack(&val) {
+    // Try parsing as JSON and converting to MessagePack.
+    match sonic_rs::from_slice::<serde_json::Value>(bytes) {
+        Ok(value) => encode_to_msgpack(&value),
+        Err(_) => bytes.to_vec(),
+    }
+}
+
+fn is_standard_msgpack_map(bytes: &[u8]) -> bool {
+    let first = bytes[0];
+    ((0x80..=0x8F).contains(&first) || first == 0xDE || first == 0xDF)
+        && nodedb_query::msgpack_scan::map_header(bytes, 0).is_some()
+}
+
+/// Canonicalize a schemaless document for storage as a top-level standard msgpack map.
+///
+/// This is the write-path invariant for schemaless collections. Scans should not
+/// rely on this helper for repair; new writes must already be canonical.
+pub(super) fn canonicalize_document_for_storage(bytes: &[u8]) -> Vec<u8> {
+    if bytes.is_empty() {
+        return bytes.to_vec();
+    }
+
+    if is_standard_msgpack_map(bytes) {
+        return bytes.to_vec();
+    }
+
+    if let Ok(val @ nodedb_types::Value::Object(_)) =
+        zerompk::from_msgpack::<nodedb_types::Value>(bytes)
+    {
+        let json: serde_json::Value = val.into();
+        let mp = encode_to_msgpack(&json);
+        if is_standard_msgpack_map(&mp) {
             return mp;
         }
     }
 
-    // Try parsing as JSON and converting to MessagePack.
     match sonic_rs::from_slice::<serde_json::Value>(bytes) {
-        Ok(value) => encode_to_msgpack(&value),
-        Err(_) => bytes.to_vec(), // Unknown format — store as-is.
+        Ok(value) if value.is_object() => {
+            let mp = encode_to_msgpack(&value);
+            if is_standard_msgpack_map(&mp) {
+                return mp;
+            }
+            bytes.to_vec()
+        }
+        _ => bytes.to_vec(),
     }
 }
 
@@ -154,6 +184,40 @@ mod tests {
         let msgpack = nodedb_types::json_to_msgpack(&value).unwrap();
         let result = json_to_msgpack(&msgpack);
         assert_eq!(result, msgpack, "msgpack should pass through unchanged");
+    }
+
+    #[test]
+    fn noncanonical_msgpack_is_not_rewritten_on_read_path() {
+        let mut obj = std::collections::HashMap::new();
+        obj.insert(
+            "user_id".to_string(),
+            nodedb_types::Value::String("u1".into()),
+        );
+        let tagged = zerompk::to_msgpack_vec(&nodedb_types::Value::Object(obj)).unwrap();
+
+        let result = json_to_msgpack(&tagged);
+        assert_eq!(result, tagged);
+    }
+
+    #[test]
+    fn tagged_object_msgpack_is_canonicalized_to_standard_map_for_storage() {
+        let mut obj = std::collections::HashMap::new();
+        obj.insert(
+            "user_id".to_string(),
+            nodedb_types::Value::String("u1".into()),
+        );
+        obj.insert(
+            "item".to_string(),
+            nodedb_types::Value::String("book".into()),
+        );
+        let tagged = zerompk::to_msgpack_vec(&nodedb_types::Value::Object(obj)).unwrap();
+
+        let canonical = canonicalize_document_for_storage(&tagged);
+        assert!(
+            nodedb_query::msgpack_scan::map_header(&canonical, 0).is_some(),
+            "expected standard msgpack map"
+        );
+        assert!(nodedb_query::msgpack_scan::extract_field(&canonical, 0, "user_id").is_some());
     }
 
     #[test]
