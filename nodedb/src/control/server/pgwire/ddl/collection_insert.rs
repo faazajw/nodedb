@@ -13,16 +13,37 @@ use crate::control::security::identity::AuthenticatedIdentity;
 use crate::control::state::SharedState;
 
 use super::super::types::sqlstate_error;
-use super::sql_parse::{parse_array_literal, parse_sql_value, split_values};
+use super::sql_parse::{parse_sql_value, split_values};
 
 /// Parsed INSERT/UPSERT statement fields.
 struct ParsedInsert {
     coll_name: String,
     doc_id: String,
     fields: std::collections::HashMap<String, nodedb_types::Value>,
-    vector_fields: Vec<(String, Vec<f32>)>,
     value_bytes: Vec<u8>,
     has_returning: bool,
+}
+
+fn extract_vector_fields(
+    fields: &std::collections::HashMap<String, nodedb_types::Value>,
+) -> Vec<(String, Vec<f32>)> {
+    fields
+        .iter()
+        .filter_map(|(field_name, value)| match value {
+            nodedb_types::Value::Array(items) => {
+                let vector: Vec<f32> = items
+                    .iter()
+                    .map(|item| match item {
+                        nodedb_types::Value::Float(v) => Some(*v as f32),
+                        nodedb_types::Value::Integer(v) => Some(*v as f32),
+                        _ => None,
+                    })
+                    .collect::<Option<Vec<_>>>()?;
+                Some((field_name.clone(), vector))
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 /// Parse an INSERT/UPSERT SQL statement into structured fields.
@@ -126,16 +147,6 @@ fn parse_write_statement(
         doc_id = nodedb_types::id_gen::uuid_v7();
     }
 
-    // Detect vector fields.
-    let mut vector_fields: Vec<(String, Vec<f32>)> = Vec::new();
-    for (col, val) in columns.iter().zip(values.iter()) {
-        let col = col.trim().trim_matches('"');
-        let val = val.trim();
-        if let Some(vec_data) = parse_array_literal(val) {
-            vector_fields.push((col.to_string(), vec_data));
-        }
-    }
-
     let value_bytes = nodedb_types::value_to_msgpack(&nodedb_types::Value::Object(fields.clone()))
         .unwrap_or_default();
     let has_returning = upper.contains("RETURNING");
@@ -144,7 +155,6 @@ fn parse_write_statement(
         coll_name,
         doc_id,
         fields,
-        vector_fields,
         value_bytes,
         has_returning,
     }))
@@ -341,9 +351,10 @@ pub async fn insert_document(
         return Some(Err(sqlstate_error("XX000", &format!("trigger error: {e}"))));
     }
 
-    // Dispatch VectorInsert for vector fields.
+    // Dispatch VectorInsert for vector fields using the final stored document,
+    // so BEFORE triggers and sequence injection are reflected in the index.
     let vec_vshard = crate::types::VShardId::from_collection(&parsed.coll_name);
-    for (field_name, vector) in &parsed.vector_fields {
+    for (field_name, vector) in extract_vector_fields(&fields) {
         let dim = vector.len();
 
         // Enforce strict_dimensions if model metadata is set.
@@ -369,9 +380,9 @@ pub async fn insert_document(
         }
         let vec_plan = crate::bridge::envelope::PhysicalPlan::Vector(VectorOp::Insert {
             collection: parsed.coll_name.clone(),
-            vector: vector.clone(),
+            vector,
             dim,
-            field_name: String::new(),
+            field_name: field_name.clone(),
             doc_id: Some(parsed.doc_id.clone()),
         });
 
@@ -394,6 +405,36 @@ pub async fn insert_document(
     }
 
     Some(Ok(vec![Response::Execution(Tag::new("INSERT"))]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_vector_fields;
+
+    #[test]
+    fn extract_vector_fields_keeps_named_numeric_arrays() {
+        let fields = std::collections::HashMap::from([
+            (
+                "embedding".to_string(),
+                nodedb_types::Value::Array(vec![
+                    nodedb_types::Value::Float(1.0),
+                    nodedb_types::Value::Integer(2),
+                    nodedb_types::Value::Float(3.5),
+                ]),
+            ),
+            (
+                "tags".to_string(),
+                nodedb_types::Value::Array(vec![nodedb_types::Value::String("rust".into())]),
+            ),
+        ]);
+
+        let vectors = extract_vector_fields(&fields);
+
+        assert_eq!(
+            vectors,
+            vec![("embedding".to_string(), vec![1.0, 2.0, 3.5])]
+        );
+    }
 }
 
 /// UPSERT INTO <collection> (col1, col2, ...) VALUES (val1, val2, ...)

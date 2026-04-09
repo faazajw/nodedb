@@ -227,7 +227,7 @@ pub async fn search_fusion(
 // ── CREATE VECTOR INDEX ─────────────────────────────────────────────
 
 /// CREATE VECTOR INDEX <name> ON <collection> [METRIC cosine|l2|hamming] [M <m>] [EF_CONSTRUCTION <ef>] [DIM <dim>]
-pub fn create_vector_index(
+pub async fn create_vector_index(
     state: &SharedState,
     identity: &AuthenticatedIdentity,
     parts: &[&str],
@@ -267,6 +267,30 @@ pub fn create_vector_index(
             catalog.as_ref(),
         )
         .map_err(|e| sqlstate_error("XX000", &e.to_string()))?;
+
+    // Dispatch SetParams to the Data Plane so vector_params is populated.
+    // This enables schemaless collections to index vector fields on INSERT.
+    let vshard = crate::types::VShardId::from_collection(collection);
+    let set_params_plan = crate::bridge::envelope::PhysicalPlan::Vector(
+        crate::bridge::physical_plan::VectorOp::SetParams {
+            collection: collection.to_string(),
+            m,
+            ef_construction,
+            metric: metric.to_lowercase(),
+            index_type: String::new(),
+            pq_m: 0,
+            ivf_cells: 0,
+            ivf_nprobe: 0,
+        },
+    );
+    let _ = crate::control::server::dispatch_utils::dispatch_to_data_plane(
+        state,
+        tenant_id,
+        vshard,
+        set_params_plan,
+        0,
+    )
+    .await;
 
     state.audit_record(
         crate::control::security::audit::AuditEvent::AdminAction,

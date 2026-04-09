@@ -62,6 +62,10 @@ pub enum ReplicatedWrite {
         collection: String,
         vector: Vec<f32>,
         dim: usize,
+        #[serde(default)]
+        field_name: String,
+        #[serde(default)]
+        doc_id: Option<String>,
     },
     VectorBatchInsert {
         collection: String,
@@ -230,12 +234,14 @@ pub fn to_replicated_entry(
             collection,
             vector,
             dim,
-            field_name: _,
-            doc_id: _,
+            field_name,
+            doc_id,
         }) => ReplicatedWrite::VectorInsert {
             collection: collection.clone(),
             vector: vector.clone(),
             dim: *dim,
+            field_name: field_name.clone(),
+            doc_id: doc_id.clone(),
         },
         PhysicalPlan::Vector(VectorOp::BatchInsert {
             collection,
@@ -462,12 +468,14 @@ fn to_physical_plan(write: &ReplicatedWrite) -> PhysicalPlan {
             collection,
             vector,
             dim,
+            field_name,
+            doc_id,
         } => PhysicalPlan::Vector(VectorOp::Insert {
             collection: collection.clone(),
             vector: vector.clone(),
             dim: *dim,
-            field_name: String::new(),
-            doc_id: None,
+            field_name: field_name.clone(),
+            doc_id: doc_id.clone(),
         }),
         ReplicatedWrite::VectorBatchInsert {
             collection,
@@ -697,6 +705,8 @@ mod tests {
                 collection: "v".into(),
                 vector: vec![1.0, 2.0, 3.0],
                 dim: 3,
+                field_name: "embedding".into(),
+                doc_id: Some("doc-1".into()),
             },
             ReplicatedWrite::CrdtApply {
                 collection: "c".into(),

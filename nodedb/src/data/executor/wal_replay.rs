@@ -81,7 +81,55 @@ impl CoreLoop {
             }
 
             if is_vector_put {
-                if let Ok((collection, vector, dim)) =
+                if let Ok((collection, vector, dim, field_name, doc_id)) =
+                    zerompk::from_msgpack::<(String, Vec<f32>, usize, String, Option<String>)>(
+                        &record.payload,
+                    )
+                {
+                    if vector.len() != dim {
+                        tracing::warn!(
+                            core = self.core_id,
+                            %collection,
+                            expected = dim,
+                            actual = vector.len(),
+                            "skipping WAL vector record: dimension mismatch"
+                        );
+                        continue;
+                    }
+                    let index_key = CoreLoop::vector_index_key(tenant_id, &collection, &field_name);
+                    let params = self
+                        .vector_params
+                        .get(&index_key)
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            tracing::debug!(
+                                core = self.core_id,
+                                %collection,
+                            "no VectorParams found during WAL replay; using defaults"
+                            );
+                            HnswParams::default()
+                        });
+                    let index = self
+                        .vector_collections
+                        .entry(index_key)
+                        .or_insert_with(|| VectorCollection::new(dim, params));
+                    if index.dim() != dim {
+                        tracing::warn!(
+                            core = self.core_id,
+                            %collection,
+                            index_dim = index.dim(),
+                            record_dim = dim,
+                            "skipping WAL vector record: index dimension mismatch"
+                        );
+                        continue;
+                    }
+                    if let Some(doc_id) = doc_id {
+                        index.insert_with_doc_id(vector, doc_id);
+                    } else {
+                        index.insert(vector);
+                    }
+                    inserted += 1;
+                } else if let Ok((collection, vector, dim)) =
                     zerompk::from_msgpack::<(String, Vec<f32>, usize)>(&record.payload)
                 {
                     if vector.len() != dim {

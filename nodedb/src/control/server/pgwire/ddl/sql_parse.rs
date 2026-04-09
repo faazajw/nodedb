@@ -1,29 +1,5 @@
 //! SQL parsing helpers shared across DDL handlers.
 
-/// Parse an `ARRAY[0.1, 0.2, 0.3]` literal into `Vec<f32>`.
-/// Also handles quoted form: `'ARRAY[0.1, 0.2, 0.3]'`.
-pub(super) fn parse_array_literal(val: &str) -> Option<Vec<f32>> {
-    let trimmed = val.trim().trim_matches('\'');
-    let upper = trimmed.to_uppercase();
-    if !upper.starts_with("ARRAY[") {
-        return None;
-    }
-    let start = trimmed.find('[')? + 1;
-    let end = trimmed.rfind(']')?;
-    if end <= start {
-        return None;
-    }
-    let inner = &trimmed[start..end];
-    let values: Vec<f32> = inner
-        .split(',')
-        .filter_map(|s| s.trim().parse::<f32>().ok())
-        .collect();
-    if values.is_empty() {
-        return None;
-    }
-    Some(values)
-}
-
 /// Split VALUES content respecting quoted strings and brackets.
 ///
 /// `'hello', 42, 'it''s'` → `["'hello'", "42", "'it''s'"]`
@@ -55,6 +31,22 @@ pub(super) fn split_values(s: &str) -> Vec<&str> {
 /// Parse a SQL literal value to a `serde_json::Value`.
 pub(super) fn parse_sql_value(val: &str) -> nodedb_types::Value {
     let trimmed = val.trim();
+    let upper = trimmed.to_uppercase();
+    if upper.starts_with("ARRAY[") && trimmed.ends_with(']') {
+        let Some(start) = trimmed.find('[') else {
+            return nodedb_types::Value::Null;
+        };
+        let inner = &trimmed[start + 1..trimmed.len() - 1];
+        let items = if inner.trim().is_empty() {
+            Vec::new()
+        } else {
+            split_values(inner)
+                .into_iter()
+                .map(parse_sql_value)
+                .collect()
+        };
+        return nodedb_types::Value::Array(items);
+    }
     if trimmed.eq_ignore_ascii_case("NULL") {
         return nodedb_types::Value::Null;
     }
@@ -122,6 +114,41 @@ pub(crate) fn extract_collection_after(sql: &str, marker: &str) -> Option<String
     let after = sql[pos + marker.len()..].trim();
     let name = after.split_whitespace().next()?.to_lowercase();
     if name.is_empty() { None } else { Some(name) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_sql_value;
+
+    #[test]
+    fn parse_sql_value_decodes_numeric_array_literals() {
+        let value = parse_sql_value("ARRAY[1.0, 2, 3.5]");
+
+        assert_eq!(
+            value,
+            nodedb_types::Value::Array(vec![
+                nodedb_types::Value::Float(1.0),
+                nodedb_types::Value::Integer(2),
+                nodedb_types::Value::Float(3.5),
+            ])
+        );
+    }
+
+    #[test]
+    fn parse_sql_value_decodes_nested_arrays_and_strings() {
+        let value = parse_sql_value("ARRAY['rust', ARRAY[1, 2]]");
+
+        assert_eq!(
+            value,
+            nodedb_types::Value::Array(vec![
+                nodedb_types::Value::String("rust".into()),
+                nodedb_types::Value::Array(vec![
+                    nodedb_types::Value::Integer(1),
+                    nodedb_types::Value::Integer(2),
+                ]),
+            ])
+        );
+    }
 }
 
 /// Parse a timestamp from a SINCE clause.

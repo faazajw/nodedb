@@ -61,15 +61,14 @@ pub fn wal_append_if_write_with_creds(
             collection,
             vector,
             dim,
-            field_name: _,
-            doc_id: _,
+            field_name,
+            doc_id,
         }) => {
-            let entry = zerompk::to_msgpack_vec(&(collection, vector, dim)).map_err(|e| {
-                crate::Error::Serialization {
+            let entry = zerompk::to_msgpack_vec(&(collection, vector, dim, field_name, doc_id))
+                .map_err(|e| crate::Error::Serialization {
                     format: "msgpack".into(),
                     detail: format!("wal vector insert: {e}"),
-                }
-            })?;
+                })?;
             wal.append_vector_put(tenant_id, vshard_id, &entry)?;
         }
         PhysicalPlan::Vector(VectorOp::BatchInsert {

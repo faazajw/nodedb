@@ -29,9 +29,7 @@ pub(super) async fn dispatch(
 
     // DSL: CREATE VECTOR INDEX / CREATE FULLTEXT INDEX.
     if upper.starts_with("CREATE VECTOR INDEX ") {
-        return Some(super::super::dsl::create_vector_index(
-            state, identity, parts,
-        ));
+        return Some(super::super::dsl::create_vector_index(state, identity, parts).await);
     }
     if upper.starts_with("CREATE FULLTEXT INDEX ") {
         return Some(super::super::dsl::create_fulltext_index(
