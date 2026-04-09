@@ -1,8 +1,6 @@
 //! Scan and search plan conversions (read-only query paths).
 
-use nodedb_sql::types::{
-    AggregateExpr, EngineType, Filter, Projection, SortKey, SqlPlan, SqlValue,
-};
+use nodedb_sql::types::{EngineType, Filter, SqlPlan, SqlValue};
 
 use crate::bridge::envelope::PhysicalPlan;
 use crate::bridge::physical_plan::*;
@@ -13,26 +11,30 @@ use super::aggregate::{
     agg_expr_to_pair, extract_collection_name, extract_join_projection_specs,
     extract_projection_names, extract_scan_alias,
 };
-use super::convert::{ConvertContext, convert_one};
+use super::convert::convert_one;
 use super::expr::convert_sort_keys;
 use super::filter::serialize_filters;
+use super::scan_params::{
+    HybridSearchParams, JoinPlanParams, ScanParams, SpatialScanParams, TimeseriesScanParams,
+};
 use super::value::{
     extract_time_range, row_to_msgpack, sql_value_to_bytes, sql_value_to_string,
     write_msgpack_array_header,
 };
 
-pub(super) fn convert_scan(
-    collection: &str,
-    engine: &EngineType,
-    filters: &[Filter],
-    projection: &[Projection],
-    sort_keys: &[SortKey],
-    limit: &Option<usize>,
-    offset: &usize,
-    distinct: &bool,
-    window_functions: &[nodedb_sql::types::WindowSpec],
-    tenant_id: TenantId,
-) -> crate::Result<Vec<PhysicalTask>> {
+pub(super) fn convert_scan(p: ScanParams<'_>) -> crate::Result<Vec<PhysicalTask>> {
+    let ScanParams {
+        collection,
+        engine,
+        filters,
+        projection,
+        sort_keys,
+        limit,
+        offset,
+        distinct,
+        window_functions,
+        tenant_id,
+    } = p;
     let filter_bytes = serialize_filters(filters)?;
     let proj_names = extract_projection_names(projection, window_functions);
     let sort = convert_sort_keys(sort_keys);
@@ -117,17 +119,18 @@ pub(super) fn convert_point_get(
     }])
 }
 
-pub(super) fn convert_join(
-    left: &SqlPlan,
-    right: &SqlPlan,
-    on: &[(String, String)],
-    join_type: &nodedb_sql::types::JoinType,
-    limit: &usize,
-    projection: &[Projection],
-    filters: &[Filter],
-    tenant_id: TenantId,
-    ctx: &ConvertContext,
-) -> crate::Result<Vec<PhysicalTask>> {
+pub(super) fn convert_join(p: JoinPlanParams<'_>) -> crate::Result<Vec<PhysicalTask>> {
+    let JoinPlanParams {
+        left,
+        right,
+        on,
+        join_type,
+        limit,
+        projection,
+        filters,
+        tenant_id,
+        ctx,
+    } = p;
     let mut left_collection = extract_collection_name(left);
     let mut right_collection = extract_collection_name(right);
     let mut left_alias = extract_scan_alias(left);
@@ -182,19 +185,22 @@ pub(super) fn convert_join(
 }
 
 pub(super) fn convert_timeseries_scan(
-    collection: &str,
-    time_range: &(i64, i64),
-    bucket_interval_ms: &i64,
-    group_by: &[String],
-    aggregates: &[AggregateExpr],
-    filters: &[Filter],
-    projection: &[Projection],
-    gap_fill: &str,
-    limit: &usize,
-    tiered: &bool,
-    tenant_id: TenantId,
-    ctx: &ConvertContext,
+    p: TimeseriesScanParams<'_>,
 ) -> crate::Result<Vec<PhysicalTask>> {
+    let TimeseriesScanParams {
+        collection,
+        time_range,
+        bucket_interval_ms,
+        group_by,
+        aggregates,
+        filters,
+        projection,
+        gap_fill,
+        limit,
+        tiered,
+        tenant_id,
+        ctx,
+    } = p;
     let filter_bytes = serialize_filters(filters)?;
     let agg_pairs: Vec<(String, String)> = aggregates.iter().map(agg_expr_to_pair).collect();
 
@@ -311,15 +317,18 @@ pub(super) fn convert_text_search(
 }
 
 pub(super) fn convert_hybrid_search(
-    collection: &str,
-    query_vector: &[f32],
-    query_text: &str,
-    top_k: &usize,
-    ef_search: &usize,
-    vector_weight: &f32,
-    fuzzy: &bool,
-    tenant_id: TenantId,
+    p: HybridSearchParams<'_>,
 ) -> crate::Result<Vec<PhysicalTask>> {
+    let HybridSearchParams {
+        collection,
+        query_vector,
+        query_text,
+        top_k,
+        ef_search,
+        vector_weight,
+        fuzzy,
+        tenant_id,
+    } = p;
     let vshard = VShardId::from_collection(collection);
     Ok(vec![PhysicalTask {
         tenant_id,
@@ -340,16 +349,19 @@ pub(super) fn convert_hybrid_search(
 }
 
 pub(super) fn convert_spatial_scan(
-    collection: &str,
-    field: &str,
-    predicate: &nodedb_sql::types::SpatialPredicate,
-    query_geometry: &[u8],
-    distance_meters: &f64,
-    attribute_filters: &[Filter],
-    limit: &usize,
-    projection: &[Projection],
-    tenant_id: TenantId,
+    p: SpatialScanParams<'_>,
 ) -> crate::Result<Vec<PhysicalTask>> {
+    let SpatialScanParams {
+        collection,
+        field,
+        predicate,
+        query_geometry,
+        distance_meters,
+        attribute_filters,
+        limit,
+        projection,
+        tenant_id,
+    } = p;
     let vshard = VShardId::from_collection(collection);
     let attr_bytes = serialize_filters(attribute_filters)?;
     let proj_names = extract_projection_names(projection, &[]);

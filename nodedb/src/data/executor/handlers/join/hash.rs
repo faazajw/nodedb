@@ -4,10 +4,10 @@ use tracing::debug;
 
 use crate::bridge::envelope::{ErrorCode, Response};
 use crate::data::executor::core_loop::CoreLoop;
-use crate::data::executor::task::ExecutionTask;
 use nodedb_query::msgpack_scan;
 
 use super::merge_join_docs_binary;
+use super::params::{BroadcastJoinParams, HashJoinParams, InlineHashJoinParams};
 
 /// Hash a join key from raw msgpack bytes — zero String allocation.
 ///
@@ -23,7 +23,7 @@ pub(super) fn hash_join_key(
     let mut hasher = state.build_hasher();
     let mut ranges = Vec::with_capacity(keys.len());
     for key in keys {
-        if let Some((start, end)) = msgpack_scan::extract_field(doc, 0, key) {
+        if let Some((start, end)) = extract_join_key_range(doc, key) {
             hasher.write(&doc[start..end]);
             ranges.push((start, end));
         } else {
@@ -33,6 +33,13 @@ pub(super) fn hash_join_key(
         }
     }
     (hasher.finish(), ranges)
+}
+
+fn extract_join_key_range(doc: &[u8], key: &str) -> Option<(usize, usize)> {
+    msgpack_scan::extract_field(doc, 0, key).or_else(|| {
+        key.rsplit_once('.')
+            .and_then(|(_, field)| msgpack_scan::extract_field(doc, 0, field))
+    })
 }
 
 /// (doc_index, key_ranges) for a single hash bucket entry.
@@ -211,41 +218,38 @@ pub(super) fn probe_hash_index(p: &ProbeParams<'_>) -> Vec<Vec<u8>> {
 }
 
 impl CoreLoop {
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
     pub(in crate::data::executor) fn execute_hash_join(
         &mut self,
-        task: &ExecutionTask,
-        tid: u32,
-        left_collection: &str,
-        right_collection: &str,
-        left_alias: Option<&str>,
-        right_alias: Option<&str>,
-        on: &[(String, String)],
-        join_type: &str,
-        limit: usize,
-        projection: &[crate::bridge::physical_plan::JoinProjection],
-        post_filter_bytes: &[u8],
-        inline_left: Option<&crate::bridge::envelope::PhysicalPlan>,
-        inline_right: Option<&crate::bridge::envelope::PhysicalPlan>,
+        p: HashJoinParams<'_>,
     ) -> Response {
+        let HashJoinParams {
+            join,
+            tid,
+            left_collection,
+            right_collection,
+            left_alias,
+            right_alias,
+            inline_left,
+            inline_right,
+        } = p;
+
         debug!(
             core = self.core_id,
             %left_collection,
             %right_collection,
             left_alias = left_alias.unwrap_or(""),
             right_alias = right_alias.unwrap_or(""),
-            keys = on.len(),
-            %join_type,
+            keys = join.on.len(),
+            %join.join_type,
             inline = inline_left.is_some(),
             "hash join"
         );
 
-        let scan_limit = (limit * 10).min(50000);
+        let scan_limit = (join.limit * 10).min(50000);
 
         // If inline_left is set, execute the sub-plan to get left side docs.
         let left_docs = if let Some(sub_plan) = inline_left {
-            let sub_response = self.execute_plan(task, sub_plan);
+            let sub_response = self.execute_plan(join.task, sub_plan);
             match super::super::super::response_codec::decode_response_to_docs(&sub_response) {
                 Some(docs) => docs,
                 None => {
@@ -258,7 +262,7 @@ impl CoreLoop {
                 Ok(d) => d,
                 Err(e) => {
                     return self.response_error(
-                        task,
+                        join.task,
                         ErrorCode::Internal {
                             detail: e.to_string(),
                         },
@@ -267,7 +271,7 @@ impl CoreLoop {
             }
         };
         let right_docs = if let Some(sub_plan) = inline_right {
-            let sub_response = self.execute_plan(task, sub_plan);
+            let sub_response = self.execute_plan(join.task, sub_plan);
             match super::super::super::response_codec::decode_response_to_docs(&sub_response) {
                 Some(docs) => docs,
                 None => {
@@ -279,7 +283,7 @@ impl CoreLoop {
                 Ok(d) => d,
                 Err(e) => {
                     return self.response_error(
-                        task,
+                        join.task,
                         ErrorCode::Internal {
                             detail: e.to_string(),
                         },
@@ -291,8 +295,8 @@ impl CoreLoop {
         let left_prefix = left_alias.unwrap_or(left_collection);
         let right_prefix = right_alias.unwrap_or(right_collection);
 
-        let right_keys: Vec<&str> = on.iter().map(|(_, r)| r.as_str()).collect();
-        let left_keys: Vec<&str> = on.iter().map(|(l, _)| l.as_str()).collect();
+        let right_keys: Vec<&str> = join.on.iter().map(|(_, r)| r.as_str()).collect();
+        let left_keys: Vec<&str> = join.on.iter().map(|(l, _)| l.as_str()).collect();
 
         // Build hash index on the right (build) side — raw byte hashing, zero String alloc.
         let right_index = HashIndex::build(&right_docs, &right_keys);
@@ -304,54 +308,38 @@ impl CoreLoop {
             index: &right_index,
             index_docs: &right_docs,
             probe_keys: &left_keys,
-            join_type,
-            limit,
+            join_type: join.join_type,
+            limit: join.limit,
             probe_collection: left_prefix,
             index_collection: right_prefix,
             emit_unmatched_right: true,
         });
 
-        // Apply post-join WHERE filters (binary — no JSON roundtrip).
-        if !post_filter_bytes.is_empty() {
-            let filters: Vec<crate::bridge::scan_filter::ScanFilter> =
-                zerompk::from_msgpack(post_filter_bytes).unwrap_or_default();
-            if !filters.is_empty() {
-                results.retain(|row| super::binary_row_matches_filters(row, &filters));
-            }
-        }
-
-        // Apply post-join projection (binary — no JSON roundtrip).
-        if !projection.is_empty() {
-            for row in &mut results {
-                *row = super::binary_row_project(row, projection);
-            }
-        }
+        join.filter_and_project(&mut results);
 
         let payload = super::super::super::response_codec::encode_binary_rows(&results);
-        self.response_with_payload(task, payload)
+        self.response_with_payload(join.task, payload)
     }
 
     /// Inline hash join: both sides are pre-gathered as msgpack data.
     /// Used for multi-way joins where the left side is an inner join result.
-    #[allow(clippy::too_many_arguments)]
     pub(in crate::data::executor) fn execute_inline_hash_join(
         &mut self,
-        task: &ExecutionTask,
-        left_data: &[u8],
-        right_data: &[u8],
-        right_alias: Option<&str>,
-        on: &[(String, String)],
-        join_type: &str,
-        limit: usize,
-        projection: &[crate::bridge::physical_plan::JoinProjection],
-        post_filter_bytes: &[u8],
+        p: InlineHashJoinParams<'_>,
     ) -> Response {
+        let InlineHashJoinParams {
+            join,
+            left_data,
+            right_data,
+            right_alias,
+        } = p;
+
         debug!(
             core = self.core_id,
             left_bytes = left_data.len(),
             right_bytes = right_data.len(),
-            keys = on.len(),
-            %join_type,
+            keys = join.on.len(),
+            %join.join_type,
             "inline hash join"
         );
 
@@ -362,7 +350,7 @@ impl CoreLoop {
                 Some(d) => d,
                 None => {
                     return self.response_with_payload(
-                        task,
+                        join.task,
                         super::super::super::response_codec::encode_binary_rows(&[]),
                     );
                 }
@@ -372,14 +360,10 @@ impl CoreLoop {
         let right_docs = super::super::super::response_codec::decode_raw_scan_to_docs(right_data);
 
         // Left docs come from a merged join result where field names are
-        // prefixed as "collection.field". The join keys from the planner are
-        // unqualified (e.g. "id"). Resolve qualified names by scanning the
-        // first left doc for fields ending in ".{key}".
-        //
-        // Multi-way joins can contain multiple matching suffixes
-        // (`users.id`, `orders.id`, ...). The outer join key should bind to
-        // the most recently joined column, so prefer the last suffix match.
-        let mut left_key_strs: Vec<String> = on.iter().map(|(l, _)| l.clone()).collect();
+        // prefixed as "collection.field". The planner preserves qualified
+        // join keys when present, so bind to the exact key first and only
+        // fall back to suffix matching for legacy unqualified plans.
+        let mut left_key_strs: Vec<String> = join.on.iter().map(|(l, _)| l.clone()).collect();
         if let Some((_, first_doc)) = left_docs.first() {
             for key in &mut left_key_strs {
                 // If the key doesn't exist directly, find a qualified version.
@@ -393,6 +377,7 @@ impl CoreLoop {
                                 && field_name.ends_with(&suffix)
                             {
                                 resolved = Some(field_name.to_string());
+                                break;
                             }
                             pos = match msgpack_scan::skip_value(first_doc, pos) {
                                 Some(p) => p,
@@ -411,7 +396,7 @@ impl CoreLoop {
             }
         }
         let left_keys: Vec<&str> = left_key_strs.iter().map(|s| s.as_str()).collect();
-        let right_keys: Vec<&str> = on.iter().map(|(_, r)| r.as_str()).collect();
+        let right_keys: Vec<&str> = join.on.iter().map(|(_, r)| r.as_str()).collect();
 
         let right_index = HashIndex::build(&right_docs, &right_keys);
 
@@ -420,52 +405,38 @@ impl CoreLoop {
             index: &right_index,
             index_docs: &right_docs,
             probe_keys: &left_keys,
-            join_type,
-            limit,
+            join_type: join.join_type,
+            limit: join.limit,
             // Inline left rows are already merged and collection-qualified.
             probe_collection: "",
             index_collection: right_alias.unwrap_or("inline_right"),
             emit_unmatched_right: true,
         });
 
-        if !post_filter_bytes.is_empty() {
-            let filters: Vec<crate::bridge::scan_filter::ScanFilter> =
-                zerompk::from_msgpack(post_filter_bytes).unwrap_or_default();
-            if !filters.is_empty() {
-                results.retain(|row| super::binary_row_matches_filters(row, &filters));
-            }
-        }
-
-        if !projection.is_empty() {
-            for row in &mut results {
-                *row = super::binary_row_project(row, projection);
-            }
-        }
+        join.filter_and_project(&mut results);
 
         let payload = super::super::super::response_codec::encode_binary_rows(&results);
-        self.response_with_payload(task, payload)
+        self.response_with_payload(join.task, payload)
     }
 
     /// Broadcast join: the small side is pre-serialized by the Control Plane
     /// and included directly in the plan (`broadcast_data`). Each core builds
     /// a local hash map from the broadcast data and probes with its local
     /// large-side scan. Avoids a second storage scan for the small side.
-    #[allow(clippy::too_many_arguments)]
     pub(in crate::data::executor) fn execute_broadcast_join(
         &mut self,
-        task: &ExecutionTask,
-        tid: u32,
-        large_collection: &str,
-        small_collection: &str,
-        large_alias: Option<&str>,
-        small_alias: Option<&str>,
-        broadcast_data: &[u8],
-        on: &[(String, String)],
-        join_type: &str,
-        limit: usize,
-        projection: &[crate::bridge::physical_plan::JoinProjection],
-        post_filter_bytes: &[u8],
+        p: BroadcastJoinParams<'_>,
     ) -> Response {
+        let BroadcastJoinParams {
+            join,
+            tid,
+            large_collection,
+            small_collection,
+            large_alias,
+            small_alias,
+            broadcast_data,
+        } = p;
+
         debug!(
             core = self.core_id,
             %large_collection,
@@ -473,8 +444,8 @@ impl CoreLoop {
             large_alias = large_alias.unwrap_or(""),
             small_alias = small_alias.unwrap_or(""),
             broadcast_bytes = broadcast_data.len(),
-            keys = on.len(),
-            %join_type,
+            keys = join.on.len(),
+            %join.join_type,
             "broadcast join"
         );
 
@@ -495,12 +466,12 @@ impl CoreLoop {
             "broadcast join: decoded small side"
         );
 
-        let scan_limit = (limit * 10).min(50000);
+        let scan_limit = (join.limit * 10).min(50000);
         let large_docs = match self.scan_collection(tid, large_collection, scan_limit) {
             Ok(d) => d,
             Err(e) => {
                 return self.response_error(
-                    task,
+                    join.task,
                     ErrorCode::Internal {
                         detail: e.to_string(),
                     },
@@ -509,8 +480,8 @@ impl CoreLoop {
         };
 
         // The `on` pairs are `(large_field, small_field)`.
-        let large_keys: Vec<&str> = on.iter().map(|(l, _)| l.as_str()).collect();
-        let small_keys: Vec<&str> = on.iter().map(|(_, s)| s.as_str()).collect();
+        let large_keys: Vec<&str> = join.on.iter().map(|(l, _)| l.as_str()).collect();
+        let small_keys: Vec<&str> = join.on.iter().map(|(_, s)| s.as_str()).collect();
 
         // Build hash index on the small (broadcast) side — raw byte hashing.
         let small_index = HashIndex::build(&small_docs_raw, &small_keys);
@@ -524,30 +495,16 @@ impl CoreLoop {
             index: &small_index,
             index_docs: &small_docs_raw,
             probe_keys: &large_keys,
-            join_type,
-            limit,
+            join_type: join.join_type,
+            limit: join.limit,
             probe_collection: large_prefix,
             index_collection: small_prefix,
             emit_unmatched_right: false,
         });
 
-        // Apply post-join WHERE filters (binary).
-        if !post_filter_bytes.is_empty() {
-            let filters: Vec<crate::bridge::scan_filter::ScanFilter> =
-                zerompk::from_msgpack(post_filter_bytes).unwrap_or_default();
-            if !filters.is_empty() {
-                results.retain(|row| super::binary_row_matches_filters(row, &filters));
-            }
-        }
-
-        // Apply post-join projection (binary).
-        if !projection.is_empty() {
-            for row in &mut results {
-                *row = super::binary_row_project(row, projection);
-            }
-        }
+        join.filter_and_project(&mut results);
 
         let payload = super::super::super::response_codec::encode_binary_rows(&results);
-        self.response_with_payload(task, payload)
+        self.response_with_payload(join.task, payload)
     }
 }

@@ -51,7 +51,7 @@ pub(super) fn convert_one(
             offset,
             distinct,
             window_functions,
-        } => super::scan::convert_scan(
+        } => super::scan::convert_scan(super::scan_params::ScanParams {
             collection,
             engine,
             filters,
@@ -62,7 +62,7 @@ pub(super) fn convert_one(
             distinct,
             window_functions,
             tenant_id,
-        ),
+        }),
 
         SqlPlan::PointGet {
             collection,
@@ -119,9 +119,17 @@ pub(super) fn convert_one(
             projection,
             filters,
             ..
-        } => super::scan::convert_join(
-            left, right, on, join_type, limit, projection, filters, tenant_id, ctx,
-        ),
+        } => super::scan::convert_join(super::scan_params::JoinPlanParams {
+            left,
+            right,
+            on,
+            join_type,
+            limit,
+            projection,
+            filters,
+            tenant_id,
+            ctx,
+        }),
 
         SqlPlan::Aggregate {
             input,
@@ -144,7 +152,7 @@ pub(super) fn convert_one(
             gap_fill,
             limit,
             tiered,
-        } => super::scan::convert_timeseries_scan(
+        } => super::scan::convert_timeseries_scan(super::scan_params::TimeseriesScanParams {
             collection,
             time_range,
             bucket_interval_ms,
@@ -157,7 +165,7 @@ pub(super) fn convert_one(
             tiered,
             tenant_id,
             ctx,
-        ),
+        }),
 
         SqlPlan::TimeseriesIngest { collection, rows } => {
             super::scan::convert_timeseries_ingest(collection, rows, tenant_id)
@@ -196,7 +204,7 @@ pub(super) fn convert_one(
             ef_search,
             vector_weight,
             fuzzy,
-        } => super::scan::convert_hybrid_search(
+        } => super::scan::convert_hybrid_search(super::scan_params::HybridSearchParams {
             collection,
             query_vector,
             query_text,
@@ -205,7 +213,7 @@ pub(super) fn convert_one(
             vector_weight,
             fuzzy,
             tenant_id,
-        ),
+        }),
 
         SqlPlan::SpatialScan {
             collection,
@@ -216,7 +224,7 @@ pub(super) fn convert_one(
             attribute_filters,
             limit,
             projection,
-        } => super::scan::convert_spatial_scan(
+        } => super::scan::convert_spatial_scan(super::scan_params::SpatialScanParams {
             collection,
             field,
             predicate,
@@ -226,7 +234,7 @@ pub(super) fn convert_one(
             limit,
             projection,
             tenant_id,
-        ),
+        }),
 
         SqlPlan::Union { inputs, distinct } => {
             super::set_ops::convert_union(inputs, *distinct, tenant_id, ctx)

@@ -4,6 +4,7 @@ pub mod dml;
 pub mod expr;
 pub mod filter;
 pub mod scan;
+pub mod scan_params;
 pub mod set_ops;
 pub mod value;
 

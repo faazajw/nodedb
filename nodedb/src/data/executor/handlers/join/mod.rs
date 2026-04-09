@@ -2,7 +2,10 @@
 
 pub mod hash;
 pub mod nested_loop;
+pub mod params;
 pub mod sort_merge;
+
+pub(crate) use params::{BroadcastJoinParams, HashJoinParams, InlineHashJoinParams, JoinParams};
 
 use nodedb_query::msgpack_scan;
 
@@ -239,7 +242,7 @@ pub(super) fn binary_row_project(
             Some(p) => p,
             None => break,
         };
-        if let Some(ref k) = key {
+        if let Some(k) = &key {
             let short = k.rsplit('.').next().unwrap_or(k);
             if let Some(projected) = projection
                 .iter()

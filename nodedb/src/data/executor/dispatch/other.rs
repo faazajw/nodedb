@@ -6,6 +6,9 @@ use crate::bridge::physical_plan::{
 };
 
 use crate::data::executor::core_loop::CoreLoop;
+use crate::data::executor::handlers::join::{
+    BroadcastJoinParams, HashJoinParams, InlineHashJoinParams, JoinParams,
+};
 use crate::data::executor::response_codec;
 use crate::data::executor::task::ExecutionTask;
 
@@ -49,21 +52,23 @@ impl CoreLoop {
                 inline_left,
                 inline_right,
                 ..
-            }) => self.execute_hash_join(
-                task,
+            }) => self.execute_hash_join(HashJoinParams {
+                join: JoinParams {
+                    task,
+                    on,
+                    join_type,
+                    limit: *limit,
+                    projection,
+                    post_filter_bytes: post_filters,
+                },
                 tid,
                 left_collection,
                 right_collection,
-                left_alias.as_deref(),
-                right_alias.as_deref(),
-                on,
-                join_type,
-                *limit,
-                projection,
-                post_filters,
-                inline_left.as_deref(),
-                inline_right.as_deref(),
-            ),
+                left_alias: left_alias.as_deref(),
+                right_alias: right_alias.as_deref(),
+                inline_left: inline_left.as_deref(),
+                inline_right: inline_right.as_deref(),
+            }),
 
             PhysicalPlan::Query(QueryOp::InlineHashJoin {
                 left_data,
@@ -74,17 +79,19 @@ impl CoreLoop {
                 limit,
                 projection,
                 post_filters,
-            }) => self.execute_inline_hash_join(
-                task,
+            }) => self.execute_inline_hash_join(InlineHashJoinParams {
+                join: JoinParams {
+                    task,
+                    on,
+                    join_type,
+                    limit: *limit,
+                    projection,
+                    post_filter_bytes: post_filters,
+                },
                 left_data,
                 right_data,
-                right_alias.as_deref(),
-                on,
-                join_type,
-                *limit,
-                projection,
-                post_filters,
-            ),
+                right_alias: right_alias.as_deref(),
+            }),
 
             PhysicalPlan::Meta(MetaOp::WalAppend { payload }) => {
                 self.execute_wal_append(task, payload)
@@ -189,20 +196,22 @@ impl CoreLoop {
                 projection,
                 post_filters,
                 ..
-            }) => self.execute_broadcast_join(
-                task,
+            }) => self.execute_broadcast_join(BroadcastJoinParams {
+                join: JoinParams {
+                    task,
+                    on,
+                    join_type,
+                    limit: *limit,
+                    projection,
+                    post_filter_bytes: post_filters,
+                },
                 tid,
                 large_collection,
                 small_collection,
-                large_alias.as_deref(),
-                small_alias.as_deref(),
+                large_alias: large_alias.as_deref(),
+                small_alias: small_alias.as_deref(),
                 broadcast_data,
-                on,
-                join_type,
-                *limit,
-                projection,
-                post_filters,
-            ),
+            }),
 
             PhysicalPlan::Query(QueryOp::ShuffleJoin {
                 left_collection,
@@ -213,21 +222,23 @@ impl CoreLoop {
                 ..
             }) => {
                 // ShuffleJoin executes as a local hash join on the target core.
-                self.execute_hash_join(
-                    task,
+                self.execute_hash_join(HashJoinParams {
+                    join: JoinParams {
+                        task,
+                        on,
+                        join_type,
+                        limit: *limit,
+                        projection: &[],
+                        post_filter_bytes: &[],
+                    },
                     tid,
                     left_collection,
                     right_collection,
-                    None,
-                    None,
-                    on,
-                    join_type,
-                    *limit,
-                    &[],
-                    &[],
-                    None,
-                    None,
-                )
+                    left_alias: None,
+                    right_alias: None,
+                    inline_left: None,
+                    inline_right: None,
+                })
             }
 
             PhysicalPlan::Meta(MetaOp::CreateSnapshot) => self.execute_create_snapshot(task),
