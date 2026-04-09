@@ -124,12 +124,15 @@ impl CoreLoop {
         self.checkpoint_coordinator.mark_dirty("sparse", 1);
 
         // Emit write event to Event Plane (after successful commit).
+        // For strict collections, convert Binary Tuple → msgpack so the
+        // Event Plane can deserialize the payload for trigger dispatch.
+        let event_value = self.resolve_event_payload(tid, collection, value);
         self.emit_write_event(
             task,
             collection,
             crate::event::WriteOp::Insert,
             document_id,
-            Some(value),
+            Some(event_value.as_deref().unwrap_or(value)),
             None,
         );
 
@@ -383,13 +386,16 @@ impl CoreLoop {
                             .put(tid, collection, document_id, &updated_bytes);
 
                         // Emit update event to Event Plane.
+                        // Convert Binary Tuple → msgpack for strict collections.
+                        let new_ev = self.resolve_event_payload(tid, collection, &updated_bytes);
+                        let old_ev = self.resolve_event_payload(tid, collection, &current_bytes);
                         self.emit_write_event(
                             task,
                             collection,
                             crate::event::WriteOp::Update,
                             document_id,
-                            Some(&updated_bytes),
-                            Some(&current_bytes),
+                            Some(new_ev.as_deref().unwrap_or(&updated_bytes)),
+                            Some(old_ev.as_deref().unwrap_or(&current_bytes)),
                         );
 
                         if returning {

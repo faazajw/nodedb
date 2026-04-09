@@ -3,6 +3,29 @@ use std::sync::Arc;
 use super::CoreLoop;
 
 impl CoreLoop {
+    /// Convert stored bytes to msgpack for Event Plane consumption.
+    ///
+    /// For strict collections, the stored format is Binary Tuple which the
+    /// Event Plane cannot decode (it lacks the schema). This method converts
+    /// Binary Tuple → msgpack so triggers can deserialize the payload.
+    /// Returns `None` for schemaless collections (already msgpack).
+    pub(in crate::data::executor) fn resolve_event_payload(
+        &self,
+        tid: u32,
+        collection: &str,
+        stored_bytes: &[u8],
+    ) -> Option<Vec<u8>> {
+        let config_key = format!("{tid}:{collection}");
+        let config = self.doc_configs.get(&config_key)?;
+        if let crate::bridge::physical_plan::StorageMode::Strict { ref schema } =
+            config.storage_mode
+        {
+            crate::data::executor::strict_format::binary_tuple_to_msgpack(stored_bytes, schema)
+        } else {
+            None
+        }
+    }
+
     /// Set the Event Plane producer (called after open, before event loop).
     pub fn set_event_producer(&mut self, producer: crate::event::bus::EventProducer) {
         self.event_producer = Some(producer);

@@ -133,12 +133,14 @@ impl CoreLoop {
                         value,
                     }) = task.plan()
                     {
+                        let tid = task.request.tenant_id.as_u32();
+                        let ev = self.resolve_event_payload(tid, collection, value);
                         self.emit_write_event(
                             task,
                             collection,
                             crate::event::WriteOp::Insert,
                             document_id,
-                            Some(value),
+                            Some(ev.as_deref().unwrap_or(value)),
                             None,
                         );
                     }
