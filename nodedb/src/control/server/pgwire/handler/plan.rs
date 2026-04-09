@@ -161,14 +161,16 @@ pub(super) fn describe_plan(plan: &PhysicalPlan) -> PlanKind {
 // Bring the variant into scope for brevity in match arms above.
 use PlanKind::DmlResult;
 
-/// Extract affected row count from a JSON payload.
+/// Extract affected row count from a JSON or MessagePack payload.
 ///
-/// Looks for `"affected"`, `"truncated"`, `"inserted"`, or `"accepted"` fields in the JSON.
+/// Looks for `"affected"`, `"truncated"`, `"inserted"`, or `"accepted"` fields.
 fn extract_affected_count(payload: &[u8]) -> Option<u64> {
     if payload.is_empty() {
         return None;
     }
-    let v: serde_json::Value = sonic_rs::from_slice(payload).ok()?;
+    let v: serde_json::Value = nodedb_types::json_from_msgpack(payload)
+        .ok()
+        .or_else(|| sonic_rs::from_slice(payload).ok())?;
     v.get("affected")
         .or_else(|| v.get("truncated"))
         .or_else(|| v.get("inserted"))
@@ -229,5 +231,16 @@ pub(super) fn payload_to_response(payload: &[u8], kind: PlanKind) -> Response {
                 Response::Query(QueryResponse::new(schema, stream::iter(vec![Ok(row)])))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_affected_count;
+
+    #[test]
+    fn extract_affected_count_reads_msgpack_payload() {
+        let payload = nodedb_types::json_to_msgpack(&serde_json::json!({ "inserted": 3 })).unwrap();
+        assert_eq!(extract_affected_count(&payload), Some(3));
     }
 }

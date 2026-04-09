@@ -32,11 +32,17 @@ pub(super) fn parse_create_trigger(sql: &str) -> PgWireResult<ParsedCreateTrigge
     // Parse prefix: CREATE [OR REPLACE] [SYNC|DEFERRED] TRIGGER
     let (or_replace, execution_mode, rest) = parse_prefix(&upper, trimmed)?;
 
-    let begin_pos = find_begin_pos(rest)
-        .ok_or_else(|| sqlstate_error("42601", "trigger body must start with BEGIN"))?;
-
-    let header = rest[..begin_pos].trim();
-    let body_sql = rest[begin_pos..].trim().to_string();
+    // Support both `BEGIN ... END` and `$$ BEGIN ... END; $$` body syntax.
+    // Dollar-quoting is needed when psql sends the SQL (psql splits on `;`).
+    let (header, body_sql) = if let Some((h, b)) = extract_dollar_quoted_body(rest) {
+        (h, b)
+    } else {
+        let begin_pos = find_begin_pos(rest)
+            .ok_or_else(|| sqlstate_error("42601", "trigger body must start with BEGIN or $$"))?;
+        let header = rest[..begin_pos].trim();
+        let body_sql = rest[begin_pos..].trim().to_string();
+        (header, body_sql)
+    };
 
     let tokens: Vec<&str> = header.split_whitespace().collect();
     if tokens.is_empty() {
@@ -299,6 +305,17 @@ fn parse_security(tokens: &[&str], i: &mut usize) -> PgWireResult<TriggerSecurit
             &format!("expected INVOKER or DEFINER, got '{mode}'"),
         )),
     }
+}
+
+/// Extract trigger body from `$$ ... $$` dollar-quoted syntax.
+/// Returns `(header, body_sql)` where body_sql includes `BEGIN ... END`.
+fn extract_dollar_quoted_body(s: &str) -> Option<(&str, String)> {
+    let first = s.find("$$")?;
+    let inner_start = first + 2;
+    let second = s[inner_start..].find("$$")?;
+    let header = s[..first].trim();
+    let body = s[inner_start..inner_start + second].trim().to_string();
+    Some((header, body))
 }
 
 fn find_begin_pos(s: &str) -> Option<usize> {

@@ -182,4 +182,29 @@ mod tests {
         };
         assert!(matches!(&then_block[0], Statement::If { .. }));
     }
+
+    #[test]
+    fn parse_new_field_assignment() {
+        let block = parse_block("BEGIN NEW.status := 'active'; END").unwrap();
+        assert_eq!(block.statements.len(), 1);
+        let Statement::Assign { target, expr } = &block.statements[0] else {
+            panic!("expected Assign");
+        };
+        assert_eq!(target, "NEW.status");
+        assert_eq!(expr.sql, "'active'");
+    }
+
+    #[test]
+    fn parse_multiple_trigger_dml_statements() {
+        let block = parse_block(
+            "BEGIN \
+             INSERT INTO after_log (id, src_id, action) VALUES (NEW.id || '_log', NEW.id, 'inserted'); \
+             INSERT INTO metrics (id) VALUES (NEW.id); \
+             END",
+        )
+        .unwrap();
+        assert_eq!(block.statements.len(), 2);
+        assert!(matches!(&block.statements[0], Statement::Dml { .. }));
+        assert!(matches!(&block.statements[1], Statement::Dml { .. }));
+    }
 }

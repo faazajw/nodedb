@@ -121,3 +121,72 @@ async fn security_definer_trigger() {
 
     server.exec("DROP TRIGGER admin_audit").await.unwrap();
 }
+
+/// Multi-statement scripts containing CREATE TRIGGER ... BEGIN ... END split correctly.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn trigger_batch_script_executes_after_trigger_body() {
+    let server = TestServer::start().await;
+
+    server
+        .exec(
+            "CREATE COLLECTION after_src;\n\
+             CREATE SYNC TRIGGER log_insert AFTER INSERT ON after_src FOR EACH ROW\n\
+             BEGIN\n\
+                 DECLARE noop INT := 0;\n\
+             END;\n\
+             INSERT INTO after_src (id, name, val) VALUES ('as1', 'Alpha', 10);\n\
+             INSERT INTO after_src (id, name, val) VALUES ('as2', 'Beta', 20);\n\
+             DROP TRIGGER log_insert;",
+        )
+        .await
+        .unwrap();
+
+    let rows = server
+        .query_text("SELECT id FROM after_src ORDER BY id")
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 2);
+    assert!(rows[0].contains("\"id\":\"as1\""), "got: {:?}", rows);
+    assert!(rows[1].contains("\"id\":\"as2\""), "got: {:?}", rows);
+
+    server
+        .expect_error("DROP TRIGGER log_insert", "does not exist")
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn before_trigger_assignment_body_parses() {
+    let server = TestServer::start().await;
+
+    server.exec("CREATE COLLECTION trigger_test").await.unwrap();
+
+    server
+        .exec(
+            "CREATE TRIGGER normalize_status BEFORE INSERT ON trigger_test \
+             FOR EACH ROW \
+             BEGIN \
+                 NEW.status := 'active'; \
+             END;",
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn after_trigger_insert_body_parses() {
+    let server = TestServer::start().await;
+
+    server.exec("CREATE COLLECTION after_src").await.unwrap();
+    server.exec("CREATE COLLECTION after_log").await.unwrap();
+
+    server
+        .exec(
+            "CREATE TRIGGER log_insert AFTER INSERT ON after_src \
+             FOR EACH ROW \
+             BEGIN \
+                 INSERT INTO after_log (id, src_id, action) VALUES (NEW.id || '_log', NEW.id, 'inserted'); \
+             END;",
+        )
+        .await
+        .unwrap();
+}
