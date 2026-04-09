@@ -356,20 +356,24 @@ impl CoreLoop {
         // prefixed as "collection.field". The join keys from the planner are
         // unqualified (e.g. "id"). Resolve qualified names by scanning the
         // first left doc for fields ending in ".{key}".
+        //
+        // Multi-way joins can contain multiple matching suffixes
+        // (`users.id`, `orders.id`, ...). The outer join key should bind to
+        // the most recently joined column, so prefer the last suffix match.
         let mut left_key_strs: Vec<String> = on.iter().map(|(l, _)| l.clone()).collect();
         if let Some((_, first_doc)) = left_docs.first() {
             for key in &mut left_key_strs {
                 // If the key doesn't exist directly, find a qualified version.
                 if msgpack_scan::extract_field(first_doc, 0, key).is_none() {
                     let suffix = format!(".{key}");
+                    let mut resolved = None;
                     // Scan the map for a key ending with ".{key}".
                     if let Some((count, mut pos)) = msgpack_scan::map_header(first_doc, 0) {
                         for _ in 0..count {
                             if let Some(field_name) = msgpack_scan::read_str(first_doc, pos)
                                 && field_name.ends_with(&suffix)
                             {
-                                *key = field_name.to_string();
-                                break;
+                                resolved = Some(field_name.to_string());
                             }
                             pos = match msgpack_scan::skip_value(first_doc, pos) {
                                 Some(p) => p,
@@ -380,6 +384,9 @@ impl CoreLoop {
                                 None => break,
                             };
                         }
+                    }
+                    if let Some(resolved) = resolved {
+                        *key = resolved;
                     }
                 }
             }
@@ -396,7 +403,8 @@ impl CoreLoop {
             probe_keys: &left_keys,
             join_type,
             limit,
-            probe_collection: "inline_left",
+            // Inline left rows are already merged and collection-qualified.
+            probe_collection: "",
             index_collection: "inline_right",
             emit_unmatched_right: true,
         });
