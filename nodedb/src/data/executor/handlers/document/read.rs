@@ -131,98 +131,6 @@ fn decode_scanned_document(
         .unwrap_or(serde_json::Value::Null)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{apply_projection, decode_scanned_document};
-    use crate::bridge::expr_eval::{ComputedColumn, SqlExpr};
-    use crate::data::executor::strict_format;
-    use nodedb_types::Value;
-    use nodedb_types::columnar::{ColumnDef, ColumnType, StrictSchema};
-
-    #[test]
-    fn apply_projection_keeps_base_fields_when_computed_columns_exist() {
-        let data = serde_json::json!({
-            "id": "u1",
-            "name": "Ada",
-            "age": 42
-        });
-        let computed = vec![ComputedColumn {
-            alias: "label".into(),
-            expr: SqlExpr::Column("name".into()),
-        }];
-        let projection = vec!["name".to_string(), "age".to_string()];
-
-        let projected = apply_projection(data, &computed, &projection);
-
-        assert_eq!(
-            projected,
-            serde_json::json!({
-                "name": "Ada",
-                "age": 42,
-                "label": "Ada"
-            })
-        );
-    }
-
-    #[test]
-    fn apply_projection_does_not_overwrite_existing_window_alias() {
-        let data = serde_json::json!({
-            "name": "Ada",
-            "age": 42,
-            "rn": 1
-        });
-        let computed = vec![ComputedColumn {
-            alias: "rn".into(),
-            expr: SqlExpr::Function {
-                name: "row_number".into(),
-                args: Vec::new(),
-            },
-        }];
-        let projection = vec!["name".to_string(), "age".to_string(), "rn".to_string()];
-
-        let projected = apply_projection(data, &computed, &projection);
-
-        assert_eq!(
-            projected,
-            serde_json::json!({
-                "name": "Ada",
-                "age": 42,
-                "rn": 1
-            })
-        );
-    }
-
-    #[test]
-    fn decode_scanned_document_uses_strict_schema_for_binary_tuple_rows() {
-        let schema = StrictSchema {
-            columns: vec![
-                ColumnDef::required("id", ColumnType::String).with_primary_key(),
-                ColumnDef::required("name", ColumnType::String),
-                ColumnDef::nullable("age", ColumnType::Int64),
-            ],
-            version: 1,
-        };
-        let mut map = std::collections::HashMap::new();
-        map.insert("id".into(), Value::String("u1".into()));
-        map.insert("name".into(), Value::String("Ada".into()));
-        map.insert("age".into(), Value::Integer(42));
-
-        let tuple = strict_format::value_to_binary_tuple(&Value::Object(map), &schema)
-            .expect("encode strict tuple");
-
-        let decoded = decode_scanned_document(&tuple, Some(&schema));
-
-        assert_eq!(
-            decoded,
-            serde_json::json!({
-                "id": "u1",
-                "name": "Ada",
-                "age": 42
-            })
-        );
-    }
-}
-
 impl CoreLoop {
     #[allow(clippy::too_many_arguments)]
     pub(in crate::data::executor) fn execute_document_scan(
@@ -620,5 +528,97 @@ impl CoreLoop {
                 detail: "streaming response incomplete".into(),
             },
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{apply_projection, decode_scanned_document};
+    use crate::bridge::expr_eval::{ComputedColumn, SqlExpr};
+    use crate::data::executor::strict_format;
+    use nodedb_types::Value;
+    use nodedb_types::columnar::{ColumnDef, ColumnType, StrictSchema};
+
+    #[test]
+    fn apply_projection_keeps_base_fields_when_computed_columns_exist() {
+        let data = serde_json::json!({
+            "id": "u1",
+            "name": "Ada",
+            "age": 42
+        });
+        let computed = vec![ComputedColumn {
+            alias: "label".into(),
+            expr: SqlExpr::Column("name".into()),
+        }];
+        let projection = vec!["name".to_string(), "age".to_string()];
+
+        let projected = apply_projection(data, &computed, &projection);
+
+        assert_eq!(
+            projected,
+            serde_json::json!({
+                "name": "Ada",
+                "age": 42,
+                "label": "Ada"
+            })
+        );
+    }
+
+    #[test]
+    fn apply_projection_does_not_overwrite_existing_window_alias() {
+        let data = serde_json::json!({
+            "name": "Ada",
+            "age": 42,
+            "rn": 1
+        });
+        let computed = vec![ComputedColumn {
+            alias: "rn".into(),
+            expr: SqlExpr::Function {
+                name: "row_number".into(),
+                args: Vec::new(),
+            },
+        }];
+        let projection = vec!["name".to_string(), "age".to_string(), "rn".to_string()];
+
+        let projected = apply_projection(data, &computed, &projection);
+
+        assert_eq!(
+            projected,
+            serde_json::json!({
+                "name": "Ada",
+                "age": 42,
+                "rn": 1
+            })
+        );
+    }
+
+    #[test]
+    fn decode_scanned_document_uses_strict_schema_for_binary_tuple_rows() {
+        let schema = StrictSchema {
+            columns: vec![
+                ColumnDef::required("id", ColumnType::String).with_primary_key(),
+                ColumnDef::required("name", ColumnType::String),
+                ColumnDef::nullable("age", ColumnType::Int64),
+            ],
+            version: 1,
+        };
+        let mut map = std::collections::HashMap::new();
+        map.insert("id".into(), Value::String("u1".into()));
+        map.insert("name".into(), Value::String("Ada".into()));
+        map.insert("age".into(), Value::Integer(42));
+
+        let tuple = strict_format::value_to_binary_tuple(&Value::Object(map), &schema)
+            .expect("encode strict tuple");
+
+        let decoded = decode_scanned_document(&tuple, Some(&schema));
+
+        assert_eq!(
+            decoded,
+            serde_json::json!({
+                "id": "u1",
+                "name": "Ada",
+                "age": 42
+            })
+        );
     }
 }

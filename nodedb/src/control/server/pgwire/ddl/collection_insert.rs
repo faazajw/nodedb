@@ -407,36 +407,6 @@ pub async fn insert_document(
     Some(Ok(vec![Response::Execution(Tag::new("INSERT"))]))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::extract_vector_fields;
-
-    #[test]
-    fn extract_vector_fields_keeps_named_numeric_arrays() {
-        let fields = std::collections::HashMap::from([
-            (
-                "embedding".to_string(),
-                nodedb_types::Value::Array(vec![
-                    nodedb_types::Value::Float(1.0),
-                    nodedb_types::Value::Integer(2),
-                    nodedb_types::Value::Float(3.5),
-                ]),
-            ),
-            (
-                "tags".to_string(),
-                nodedb_types::Value::Array(vec![nodedb_types::Value::String("rust".into())]),
-            ),
-        ]);
-
-        let vectors = extract_vector_fields(&fields);
-
-        assert_eq!(
-            vectors,
-            vec![("embedding".to_string(), vec![1.0, 2.0, 3.5])]
-        );
-    }
-}
-
 /// UPSERT INTO <collection> (col1, col2, ...) VALUES (val1, val2, ...)
 ///
 /// Same parsing as INSERT but dispatches the `Upsert` plan variant:
@@ -536,4 +506,34 @@ pub async fn upsert_document(
     }
 
     Some(Ok(vec![Response::Execution(Tag::new("UPSERT"))]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_vector_fields;
+
+    #[test]
+    fn extract_vector_fields_keeps_named_numeric_arrays() {
+        let fields = std::collections::HashMap::from([
+            (
+                "embedding".to_string(),
+                nodedb_types::Value::Array(vec![
+                    nodedb_types::Value::Float(1.0),
+                    nodedb_types::Value::Integer(2),
+                    nodedb_types::Value::Float(3.5),
+                ]),
+            ),
+            (
+                "tags".to_string(),
+                nodedb_types::Value::Array(vec![nodedb_types::Value::String("rust".into())]),
+            ),
+        ]);
+
+        let vectors = extract_vector_fields(&fields);
+
+        assert_eq!(
+            vectors,
+            vec![("embedding".to_string(), vec![1.0, 2.0, 3.5])]
+        );
+    }
 }

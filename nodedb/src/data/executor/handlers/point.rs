@@ -652,34 +652,33 @@ impl CoreLoop {
                 schemaless_keys.push((bare_key, "embedding".to_string()));
             }
 
-            if !schemaless_keys.is_empty() {
-                if let Ok(ndb_val) = nodedb_types::value_from_msgpack(value)
-                    && let nodedb_types::Value::Object(ref obj) = ndb_val
-                {
-                    for (params_key, field_name) in &schemaless_keys {
-                        if let Some(nodedb_types::Value::Array(arr)) = obj.get(field_name) {
-                            let floats: Vec<f32> = arr
-                                .iter()
-                                .filter_map(|v| match v {
-                                    nodedb_types::Value::Float(f) => Some(*f as f32),
-                                    nodedb_types::Value::Integer(i) => Some(*i as f32),
-                                    _ => None,
-                                })
-                                .collect();
-                            if !floats.is_empty() {
-                                let params = self
-                                    .vector_params
-                                    .get(params_key)
-                                    .cloned()
-                                    .unwrap_or_default();
-                                // Use field-qualified key so search can find it.
-                                let store_key = Self::vector_index_key(tid, collection, field_name);
-                                let coll =
-                                    self.vector_collections.entry(store_key).or_insert_with(|| {
-                                        nodedb_vector::VectorCollection::new(floats.len(), params)
-                                    });
-                                coll.insert_with_doc_id(floats, document_id.to_string());
-                            }
+            if !schemaless_keys.is_empty()
+                && let Ok(ndb_val) = nodedb_types::value_from_msgpack(value)
+                && let nodedb_types::Value::Object(ref obj) = ndb_val
+            {
+                for (params_key, field_name) in &schemaless_keys {
+                    if let Some(nodedb_types::Value::Array(arr)) = obj.get(field_name) {
+                        let floats: Vec<f32> = arr
+                            .iter()
+                            .filter_map(|v| match v {
+                                nodedb_types::Value::Float(f) => Some(*f as f32),
+                                nodedb_types::Value::Integer(i) => Some(*i as f32),
+                                _ => None,
+                            })
+                            .collect();
+                        if !floats.is_empty() {
+                            let params = self
+                                .vector_params
+                                .get(params_key)
+                                .cloned()
+                                .unwrap_or_default();
+                            // Use field-qualified key so search can find it.
+                            let store_key = Self::vector_index_key(tid, collection, field_name);
+                            let coll =
+                                self.vector_collections.entry(store_key).or_insert_with(|| {
+                                    nodedb_vector::VectorCollection::new(floats.len(), params)
+                                });
+                            coll.insert_with_doc_id(floats, document_id.to_string());
                         }
                     }
                 }

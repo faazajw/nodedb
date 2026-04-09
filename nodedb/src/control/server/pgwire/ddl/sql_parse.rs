@@ -116,6 +116,23 @@ pub(crate) fn extract_collection_after(sql: &str, marker: &str) -> Option<String
     if name.is_empty() { None } else { Some(name) }
 }
 
+/// Parse a timestamp from a SINCE clause.
+///
+/// Accepts ISO 8601 datetime strings or raw milliseconds.
+/// Returns an error with a descriptive message for invalid formats.
+pub(super) fn parse_since_timestamp(input: &str) -> crate::Result<u64> {
+    // Try ISO 8601 first.
+    if let Some(dt) = nodedb_types::NdbDateTime::parse(input) {
+        return Ok(dt.unix_millis() as u64);
+    }
+    // Fall back to raw u64 milliseconds.
+    input.parse::<u64>().map_err(|_| crate::Error::BadRequest {
+        detail: format!(
+            "invalid SINCE format: '{input}'. Expected ISO 8601 datetime or milliseconds"
+        ),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::parse_sql_value;
@@ -149,21 +166,4 @@ mod tests {
             ])
         );
     }
-}
-
-/// Parse a timestamp from a SINCE clause.
-///
-/// Accepts ISO 8601 datetime strings or raw milliseconds.
-/// Returns an error with a descriptive message for invalid formats.
-pub(super) fn parse_since_timestamp(input: &str) -> crate::Result<u64> {
-    // Try ISO 8601 first.
-    if let Some(dt) = nodedb_types::NdbDateTime::parse(input) {
-        return Ok(dt.unix_millis() as u64);
-    }
-    // Fall back to raw u64 milliseconds.
-    input.parse::<u64>().map_err(|_| crate::Error::BadRequest {
-        detail: format!(
-            "invalid SINCE format: '{input}'. Expected ISO 8601 datetime or milliseconds"
-        ),
-    })
 }

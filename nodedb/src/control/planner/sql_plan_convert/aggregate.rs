@@ -306,6 +306,42 @@ pub(super) fn extract_computed_columns(
     })
 }
 
+pub(super) fn serialize_window_functions(
+    specs: &[nodedb_sql::types::WindowSpec],
+) -> crate::Result<Vec<u8>> {
+    if specs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let bridge_specs: Vec<crate::bridge::window_func::WindowFuncSpec> = specs
+        .iter()
+        .map(|s| crate::bridge::window_func::WindowFuncSpec {
+            alias: s.alias.clone(),
+            func_name: s.function.clone(),
+            args: s.args.iter().map(sql_expr_to_bridge_expr).collect(),
+            partition_by: s
+                .partition_by
+                .iter()
+                .filter_map(|e| match e {
+                    SqlExpr::Column { name, .. } => Some(name.clone()),
+                    _ => None,
+                })
+                .collect(),
+            order_by: s
+                .order_by
+                .iter()
+                .filter_map(|k| match &k.expr {
+                    SqlExpr::Column { name, .. } => Some((name.clone(), k.ascending)),
+                    _ => None,
+                })
+                .collect(),
+            frame: crate::bridge::window_func::WindowFrame::default(),
+        })
+        .collect();
+    zerompk::to_msgpack_vec(&bridge_specs).map_err(|e| crate::Error::Internal {
+        detail: format!("serialize window functions: {e}"),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::{extract_computed_columns, extract_projection_names};
@@ -352,40 +388,4 @@ mod tests {
         assert_eq!(computed.len(), 1);
         assert_eq!(computed[0].alias, "age_copy");
     }
-}
-
-pub(super) fn serialize_window_functions(
-    specs: &[nodedb_sql::types::WindowSpec],
-) -> crate::Result<Vec<u8>> {
-    if specs.is_empty() {
-        return Ok(Vec::new());
-    }
-    let bridge_specs: Vec<crate::bridge::window_func::WindowFuncSpec> = specs
-        .iter()
-        .map(|s| crate::bridge::window_func::WindowFuncSpec {
-            alias: s.alias.clone(),
-            func_name: s.function.clone(),
-            args: s.args.iter().map(sql_expr_to_bridge_expr).collect(),
-            partition_by: s
-                .partition_by
-                .iter()
-                .filter_map(|e| match e {
-                    SqlExpr::Column { name, .. } => Some(name.clone()),
-                    _ => None,
-                })
-                .collect(),
-            order_by: s
-                .order_by
-                .iter()
-                .filter_map(|k| match &k.expr {
-                    SqlExpr::Column { name, .. } => Some((name.clone(), k.ascending)),
-                    _ => None,
-                })
-                .collect(),
-            frame: crate::bridge::window_func::WindowFrame::default(),
-        })
-        .collect();
-    zerompk::to_msgpack_vec(&bridge_specs).map_err(|e| crate::Error::Internal {
-        detail: format!("serialize window functions: {e}"),
-    })
 }
