@@ -575,7 +575,7 @@ fn merge_set_op_payloads(payloads: &[Vec<u8>], mode: SetMergeMode) -> Vec<u8> {
     // Scan payloads wrap logical SQL rows as {"id": "...", "data": {...}}.
     // Set operations should compare and return the projected row in `data`,
     // not the outer document wrapper.
-    fn logical_row_bytes<'a>(row: &'a [u8]) -> &'a [u8] {
+    fn logical_row_bytes(row: &[u8]) -> &[u8] {
         msgpack_scan::extract_field(row, 0, "data")
             .map(|(start, end)| &row[start..end])
             .unwrap_or(row)

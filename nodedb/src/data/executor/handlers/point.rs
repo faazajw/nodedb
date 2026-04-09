@@ -57,15 +57,13 @@ impl CoreLoop {
 
         // RLS post-fetch: evaluate filters against msgpack bytes.
         if !rls_filters.is_empty() {
-            if strict_schema.is_some() {
+            if let Some(ref schema) = strict_schema {
                 // Strict: decode Binary Tuple to msgpack for RLS evaluation.
-                if let Some(ref schema) = strict_schema
-                    && let Some(mp) =
-                        super::super::strict_format::binary_tuple_to_msgpack(&data, schema)
+                if let Some(mp) =
+                    super::super::strict_format::binary_tuple_to_msgpack(&data, schema)
+                    && !super::rls_eval::rls_check_msgpack_bytes(rls_filters, &mp)
                 {
-                    if !super::rls_eval::rls_check_msgpack_bytes(rls_filters, &mp) {
-                        return self.response_error(task, ErrorCode::NotFound);
-                    }
+                    return self.response_error(task, ErrorCode::NotFound);
                 }
             } else if !super::rls_eval::rls_check_msgpack_bytes(rls_filters, &data) {
                 return self.response_error(task, ErrorCode::NotFound);
@@ -333,15 +331,14 @@ impl CoreLoop {
                     }
 
                     // Recompute generated columns.
-                    if has_generated {
-                        if let Some(config) = self.doc_configs.get(&config_key)
-                            && let Err(e) = super::generated::evaluate_generated_columns(
-                                &mut doc,
-                                &config.enforcement.generated_columns,
-                            )
-                        {
-                            return self.response_error(task, e);
-                        }
+                    if has_generated
+                        && let Some(config) = self.doc_configs.get(&config_key)
+                        && let Err(e) = super::generated::evaluate_generated_columns(
+                            &mut doc,
+                            &config.enforcement.generated_columns,
+                        )
+                    {
+                        return self.response_error(task, e);
                     }
 
                     // Re-encode.

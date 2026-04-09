@@ -249,10 +249,10 @@ pub fn merge_fields(base: &[u8], updates: &[(&str, &[u8])]) -> Vec<u8> {
             Some(p) => p,
             None => break,
         };
-        if let Some(ref k) = key {
-            if update_names.contains(&k[..]) {
-                continue; // Will be written from updates.
-            }
+        if let Some(k) = &key
+            && update_names.contains(&k[..])
+        {
+            continue; // Will be written from updates.
         }
         // Copy key + value bytes.
         buf.extend_from_slice(&base[key_start..pos]);

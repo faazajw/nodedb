@@ -111,11 +111,11 @@ fn decode_scanned_document_msgpack(
     value: &[u8],
     strict_schema: Option<&nodedb_types::columnar::StrictSchema>,
 ) -> Vec<u8> {
-    if let Some(schema) = strict_schema {
-        if let Some(mp) = super::super::super::strict_format::binary_tuple_to_msgpack(value, schema)
-        {
-            return mp;
-        }
+    if let Some(schema) = strict_schema
+        && let Some(mp) =
+            super::super::super::strict_format::binary_tuple_to_msgpack(value, schema)
+    {
+        return mp;
     }
     // Already msgpack (or legacy JSON → convert).
     super::super::super::doc_format::json_to_msgpack(value)

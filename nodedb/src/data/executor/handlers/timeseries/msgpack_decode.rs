@@ -136,7 +136,7 @@ fn read_value(buf: &[u8], pos: &mut usize) -> Result<MsgpackValue, &'static str>
             read_str(buf, pos).map(MsgpackValue::Str)
         }
         // str8, str16, str32
-        0xD9 | 0xDA | 0xDB => {
+        0xD9..=0xDB => {
             *pos -= 1;
             read_str(buf, pos).map(MsgpackValue::Str)
         }

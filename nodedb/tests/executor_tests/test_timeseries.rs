@@ -249,7 +249,7 @@ fn time_bucket_with_named_value_column() {
     );
     assert!(!results.is_empty());
     for r in &results {
-        let avg = r["avg_elapsed_ms"].as_f64();
+        let avg = r["avg(elapsed_ms)"].as_f64();
         assert!(avg.is_some(), "avg should be present: {r}");
     }
 }
