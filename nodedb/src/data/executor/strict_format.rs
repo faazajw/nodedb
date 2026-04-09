@@ -63,8 +63,28 @@ pub(super) fn value_to_binary_tuple(
 }
 
 /// Decode a Binary Tuple to `nodedb_types::Value::Object` using the schema.
+///
+/// Returns `None` if the bytes are not a valid binary tuple (e.g., if they
+/// are already msgpack — detected by checking for msgpack map headers).
 pub(super) fn binary_tuple_to_value(tuple_bytes: &[u8], schema: &StrictSchema) -> Option<Value> {
+    // Reject bytes that look like msgpack maps (fixmap 0x80-0x8F, map16 0xDE, map32 0xDF).
+    // Binary tuples start with a u16 LE schema version — values 0x80+ in the first
+    // byte would mean schema version >= 128 which we don't use. This catches the
+    // common case where data is already stored as msgpack.
+    if let Some(&first) = tuple_bytes.first() {
+        if (0x80..=0x8F).contains(&first) || first == 0xDE || first == 0xDF {
+            return None;
+        }
+    }
+
     let decoder = nodedb_strict::TupleDecoder::new(schema);
+
+    // Validate schema version matches before decoding.
+    let version = decoder.schema_version(tuple_bytes).ok()?;
+    if version == 0 || version > schema.version {
+        return None;
+    }
+
     let values = decoder.extract_all(tuple_bytes).ok()?;
 
     let mut map = std::collections::HashMap::with_capacity(schema.columns.len());

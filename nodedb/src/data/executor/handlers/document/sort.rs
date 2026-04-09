@@ -228,18 +228,29 @@ fn compare_with_preextracted(
     std::cmp::Ordering::Equal
 }
 
-/// Apply a permutation to rows (and key_offsets) in-place using swaps.
+/// Apply a permutation to rows (and key_offsets) using the sorted index order.
+///
+/// `indices[i]` = the original row index that should appear at position `i`.
 fn apply_permutation(
     rows: &mut [(String, Vec<u8>)],
     _key_offsets: &mut [SortKeyOffsets],
-    mut indices: Vec<usize>,
+    indices: Vec<usize>,
 ) {
-    for i in 0..indices.len() {
-        while indices[i] != i {
-            let j = indices[i];
-            rows.swap(i, j);
-            indices.swap(i, j);
-        }
+    // Build reordered vector then copy back. The cycle-chase approach is
+    // tricky to get right with Vec<u8> (non-Copy), so we drain and rebuild.
+    let mut temp: Vec<(String, Vec<u8>)> = std::mem::take(&mut rows.to_vec())
+        .into_iter()
+        .map(|_| (String::new(), Vec::new()))
+        .collect();
+    // Scatter originals into temp by index order.
+    // Can't use temp directly — we need all originals available.
+    let originals: Vec<(String, Vec<u8>)> =
+        rows.iter().map(|(s, b)| (s.clone(), b.clone())).collect();
+    for (target_pos, &src_idx) in indices.iter().enumerate() {
+        temp[target_pos] = originals[src_idx].clone();
+    }
+    for (i, item) in temp.into_iter().enumerate() {
+        rows[i] = item;
     }
 }
 
@@ -321,5 +332,78 @@ impl PartialOrd for MergeEntry {
 impl Ord for MergeEntry {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         compare_docs_by_keys_binary(&self.row.1, &other.row.1, &self.sort_keys)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn encode(v: &serde_json::Value) -> Vec<u8> {
+        nodedb_types::json_msgpack::json_to_msgpack(v).expect("encode")
+    }
+
+    #[test]
+    fn sort_by_int_field_asc() {
+        let mut rows = vec![
+            (
+                "a".into(),
+                encode(&serde_json::json!({"id": "a", "val": 30})),
+            ),
+            (
+                "b".into(),
+                encode(&serde_json::json!({"id": "b", "val": 10})),
+            ),
+            (
+                "c".into(),
+                encode(&serde_json::json!({"id": "c", "val": 20})),
+            ),
+        ];
+        sort_rows(&mut rows, &[("val".into(), true)]);
+        let order: Vec<&str> = rows.iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(order, vec!["b", "c", "a"], "ASC by val: 10, 20, 30");
+    }
+
+    #[test]
+    fn sort_by_int_field_desc() {
+        let mut rows = vec![
+            (
+                "a".into(),
+                encode(&serde_json::json!({"id": "a", "val": 30})),
+            ),
+            (
+                "b".into(),
+                encode(&serde_json::json!({"id": "b", "val": 10})),
+            ),
+            (
+                "c".into(),
+                encode(&serde_json::json!({"id": "c", "val": 20})),
+            ),
+        ];
+        sort_rows(&mut rows, &[("val".into(), false)]);
+        assert_eq!(rows[0].0, "a", "DESC first should be a (val=30)");
+        assert_eq!(rows[1].0, "c", "DESC second should be c (val=20)");
+        assert_eq!(rows[2].0, "b", "DESC third should be b (val=10)");
+    }
+
+    #[test]
+    fn sort_by_string_field_asc() {
+        let mut rows = vec![
+            (
+                "1".into(),
+                encode(&serde_json::json!({"id": "1", "name": "Charlie"})),
+            ),
+            (
+                "2".into(),
+                encode(&serde_json::json!({"id": "2", "name": "Alice"})),
+            ),
+            (
+                "3".into(),
+                encode(&serde_json::json!({"id": "3", "name": "Bob"})),
+            ),
+        ];
+        sort_rows(&mut rows, &[("name".into(), true)]);
+        assert_eq!(rows[0].0, "2", "first should be Alice");
+        assert_eq!(rows[2].0, "1", "last should be Charlie");
     }
 }

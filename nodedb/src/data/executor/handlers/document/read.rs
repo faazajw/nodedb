@@ -269,6 +269,31 @@ impl CoreLoop {
                 if let Some(ref m) = self.metrics {
                     m.record_document_read();
                 }
+
+                // Strict collections may store binary tuples. Sort and projection
+                // operate on msgpack. Normalize binary tuples to msgpack before
+                // sorting. The decoder validates the schema version header and
+                // rejects bytes that are already msgpack (returns None → kept as-is).
+                let filtered = if !sort_keys.is_empty() || !projection.is_empty() {
+                    if let Some(ref schema) = strict_schema {
+                        filtered
+                            .into_iter()
+                            .map(|(id, bytes)| {
+                                match super::super::super::strict_format::binary_tuple_to_msgpack(
+                                    &bytes, schema,
+                                ) {
+                                    Some(mp) => (id, mp),
+                                    None => (id, bytes),
+                                }
+                            })
+                            .collect()
+                    } else {
+                        filtered
+                    }
+                } else {
+                    filtered
+                };
+
                 let sorted = if sort_keys.is_empty() {
                     filtered
                 } else if filtered.len() <= self.query_tuning.sort_run_size {
