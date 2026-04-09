@@ -12,6 +12,7 @@ pub mod group_key;
 pub mod index;
 pub mod reader;
 pub mod sidecar;
+pub mod writer;
 
 pub use aggregate::compute_aggregate_binary;
 pub use compare::{compare_field_bytes, hash_field_bytes};
@@ -25,4 +26,9 @@ pub use reader::{
 pub use sidecar::{
     SidecarEntry, SidecarFieldIndex, build_sidecar, field_index_from_sidecar, has_sidecar,
     msgpack_bytes, sidecar_lookup,
+};
+pub use writer::{
+    build_str_map, inject_str_field, merge_fields, write_array_header, write_bin, write_bool,
+    write_f64, write_i64, write_kv_bool, write_kv_f64, write_kv_i64, write_kv_null, write_kv_raw,
+    write_kv_str, write_map_header, write_null, write_str,
 };

@@ -46,7 +46,8 @@ pub use graph::Direction;
 pub use hnsw::{HnswCheckpoint, HnswNodeSnapshot, HnswParams};
 pub use id::{CollectionId, DocumentId, EdgeId, NodeId, ShapeId, TenantId};
 pub use json_msgpack::{
-    JsonValue, json_from_msgpack, json_to_msgpack, value_from_msgpack, value_to_msgpack,
+    JsonValue, json_from_msgpack, json_to_msgpack, msgpack_to_json_string, value_from_msgpack,
+    value_to_msgpack,
 };
 pub use kv::{KV_DEFAULT_INLINE_THRESHOLD, KvConfig, KvTtlPolicy, is_valid_kv_key_type};
 pub use lsn::Lsn;
