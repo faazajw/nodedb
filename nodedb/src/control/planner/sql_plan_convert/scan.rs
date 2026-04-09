@@ -316,9 +316,7 @@ pub(super) fn convert_text_search(
     }])
 }
 
-pub(super) fn convert_hybrid_search(
-    p: HybridSearchParams<'_>,
-) -> crate::Result<Vec<PhysicalTask>> {
+pub(super) fn convert_hybrid_search(p: HybridSearchParams<'_>) -> crate::Result<Vec<PhysicalTask>> {
     let HybridSearchParams {
         collection,
         query_vector,
@@ -348,9 +346,7 @@ pub(super) fn convert_hybrid_search(
     }])
 }
 
-pub(super) fn convert_spatial_scan(
-    p: SpatialScanParams<'_>,
-) -> crate::Result<Vec<PhysicalTask>> {
+pub(super) fn convert_spatial_scan(p: SpatialScanParams<'_>) -> crate::Result<Vec<PhysicalTask>> {
     let SpatialScanParams {
         collection,
         field,

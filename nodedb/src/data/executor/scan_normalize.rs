@@ -85,13 +85,11 @@ impl CoreLoop {
                     let col_data = mt.column(*col_idx);
                     // Check for "id" column to extract the id string.
                     if col_name == "id"
-                        && let crate::engine::timeseries::columnar_memtable::ColumnData::Symbol(
-                            ids,
-                        ) = col_data
+                        && let crate::engine::timeseries::columnar_memtable::ColumnData::Symbol(ids) =
+                            col_data
                     {
                         let sym_id = ids[idx];
-                        if let Some(s) =
-                            mt.symbol_dict(*col_idx).and_then(|dict| dict.get(sym_id))
+                        if let Some(s) = mt.symbol_dict(*col_idx).and_then(|dict| dict.get(sym_id))
                         {
                             id = s.to_string();
                         }
