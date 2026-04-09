@@ -1,6 +1,6 @@
 //! Set operations and miscellaneous plan conversions (UNION, INTERSECT, EXCEPT, CTE, etc.).
 
-use nodedb_sql::types::{SqlPlan, SqlValue};
+use nodedb_sql::types::{Projection, SqlPlan, SqlValue};
 
 use crate::bridge::envelope::PhysicalPlan;
 use crate::bridge::physical_plan::*;
@@ -119,15 +119,57 @@ pub(super) fn convert_insert_select(
     target: &str,
     source: &SqlPlan,
     tenant_id: TenantId,
-    ctx: &ConvertContext,
+    _ctx: &ConvertContext,
 ) -> crate::Result<Vec<PhysicalTask>> {
-    // Execute the source query, then insert results into target.
-    let source_tasks = convert_one(source, tenant_id, ctx)?;
-    // For now, return source tasks — the routing layer reads results
-    // and inserts them into the target collection.
-    // TODO: implement proper two-phase insert-select execution.
-    let _ = target;
-    Ok(source_tasks)
+    let SqlPlan::Scan {
+        collection,
+        filters,
+        projection,
+        sort_keys,
+        limit,
+        offset,
+        distinct,
+        window_functions,
+        ..
+    } = source
+    else {
+        return Err(crate::Error::PlanError {
+            detail: "INSERT ... SELECT currently requires a direct source scan".into(),
+        });
+    };
+
+    let projection_is_passthrough = projection.is_empty()
+        || projection.iter().all(|p| {
+            matches!(p, Projection::Star)
+                || matches!(p, Projection::QualifiedStar(name) if name == collection)
+        });
+
+    if !projection_is_passthrough
+        || !sort_keys.is_empty()
+        || *offset != 0
+        || *distinct
+        || !window_functions.is_empty()
+    {
+        return Err(crate::Error::PlanError {
+            detail: "INSERT ... SELECT currently supports only SELECT * with optional WHERE/LIMIT"
+                .into(),
+        });
+    }
+
+    let filter_bytes = super::filter::serialize_filters(filters)?;
+    let vshard = VShardId::from_collection(target);
+
+    Ok(vec![PhysicalTask {
+        tenant_id,
+        vshard_id: vshard,
+        plan: PhysicalPlan::Document(DocumentOp::InsertSelect {
+            target_collection: target.into(),
+            source_collection: collection.clone(),
+            source_filters: filter_bytes,
+            source_limit: limit.unwrap_or(10_000),
+        }),
+        post_set_op: PostSetOp::None,
+    }])
 }
 
 pub(super) fn convert_cte(
@@ -143,4 +185,79 @@ pub(super) fn convert_cte(
         resolved = inline_cte(&resolved, name, cte_plan);
     }
     convert_one(&resolved, tenant_id, ctx)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nodedb_sql::types::EngineType;
+
+    #[test]
+    fn convert_insert_select_builds_document_op() {
+        let source = SqlPlan::Scan {
+            collection: "batch_test".into(),
+            alias: None,
+            engine: EngineType::DocumentSchemaless,
+            filters: Vec::new(),
+            projection: Vec::new(),
+            sort_keys: Vec::new(),
+            limit: Some(50),
+            offset: 0,
+            distinct: false,
+            window_functions: Vec::new(),
+        };
+
+        let tasks = convert_insert_select(
+            "batch_copy",
+            &source,
+            TenantId::new(1),
+            &ConvertContext {
+                retention_registry: None,
+            },
+        )
+        .expect("convert insert-select");
+
+        assert_eq!(tasks.len(), 1);
+        match &tasks[0].plan {
+            PhysicalPlan::Document(DocumentOp::InsertSelect {
+                target_collection,
+                source_collection,
+                source_limit,
+                ..
+            }) => {
+                assert_eq!(target_collection, "batch_copy");
+                assert_eq!(source_collection, "batch_test");
+                assert_eq!(*source_limit, 50);
+            }
+            other => panic!("expected DocumentOp::InsertSelect, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn convert_insert_select_allows_star_projection() {
+        let source = SqlPlan::Scan {
+            collection: "batch_test".into(),
+            alias: None,
+            engine: EngineType::DocumentSchemaless,
+            filters: Vec::new(),
+            projection: vec![Projection::Star],
+            sort_keys: Vec::new(),
+            limit: None,
+            offset: 0,
+            distinct: false,
+            window_functions: Vec::new(),
+        };
+
+        let tasks = convert_insert_select(
+            "batch_copy",
+            &source,
+            TenantId::new(1),
+            &ConvertContext {
+                retention_registry: None,
+            },
+        )
+        .expect("convert insert-select with star");
+
+        assert_eq!(tasks.len(), 1);
+    }
 }

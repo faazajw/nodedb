@@ -77,23 +77,16 @@ impl CoreLoop {
             }
         };
 
-        // Insert each source document into target collection with auto-generated IDs.
+        // Preserve source IDs so INSERT ... SELECT copies the source rows instead
+        // of generating unrelated keys that break primary-key-based reads.
         let mut inserted = 0u64;
-        for (_source_id, value) in &source_docs {
-            let new_id = format!(
-                "{:016x}",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_nanos()
-                    .wrapping_add(inserted as u128)
-            );
+        for (source_id, value) in &source_docs {
             if self
                 .sparse
-                .put(tid, target_collection, &new_id, value)
+                .put(tid, target_collection, source_id, value)
                 .is_ok()
             {
-                self.doc_cache.put(tid, target_collection, &new_id, value);
+                self.doc_cache.put(tid, target_collection, source_id, value);
                 inserted += 1;
             }
         }
