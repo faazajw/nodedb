@@ -42,7 +42,7 @@ impl CoreLoop {
                     self.doc_cache.put(tid, collection, document_id, &data);
                     data
                 }
-                Ok(None) => return self.response_error(task, ErrorCode::NotFound),
+                Ok(None) => return self.response_with_payload(task, Vec::new()),
                 Err(e) => {
                     tracing::warn!(core = self.core_id, error = %e, "sparse get failed");
                     return self.response_error(
@@ -63,10 +63,10 @@ impl CoreLoop {
                     super::super::strict_format::binary_tuple_to_msgpack(&data, schema)
                     && !super::rls_eval::rls_check_msgpack_bytes(rls_filters, &mp)
                 {
-                    return self.response_error(task, ErrorCode::NotFound);
+                    return self.response_with_payload(task, Vec::new());
                 }
             } else if !super::rls_eval::rls_check_msgpack_bytes(rls_filters, &data) {
-                return self.response_error(task, ErrorCode::NotFound);
+                return self.response_with_payload(task, Vec::new());
             }
         }
 
@@ -418,7 +418,13 @@ impl CoreLoop {
                     ),
                 }
             }
-            Ok(None) => self.response_error(task, ErrorCode::NotFound),
+            Ok(None) => {
+                // Document not found — return 0 affected rows, not an error.
+                let mut payload = Vec::with_capacity(16);
+                nodedb_query::msgpack_scan::write_map_header(&mut payload, 1);
+                nodedb_query::msgpack_scan::write_kv_i64(&mut payload, "affected", 0);
+                self.response_with_payload(task, payload)
+            }
             Err(e) => self.response_error(
                 task,
                 ErrorCode::Internal {

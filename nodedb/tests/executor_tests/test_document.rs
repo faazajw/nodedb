@@ -1,6 +1,6 @@
 //! Integration tests for document operations (PointGet/Put/Delete, RangeScan, CRDT).
 
-use nodedb::bridge::envelope::{ErrorCode, PhysicalPlan, Status};
+use nodedb::bridge::envelope::{PhysicalPlan, Status};
 use nodedb::bridge::physical_plan::{CrdtOp, DocumentOp};
 
 use crate::helpers::*;
@@ -18,8 +18,9 @@ fn point_get_not_found() {
             rls_filters: Vec::new(),
         }),
     );
-    assert_eq!(resp.status, Status::Error);
-    assert_eq!(resp.error_code, Some(ErrorCode::NotFound));
+    assert_eq!(resp.status, Status::Ok);
+    assert!(resp.payload.is_empty());
+    assert_eq!(resp.error_code, None);
 }
 
 #[test]
@@ -87,7 +88,9 @@ fn point_delete_removes() {
             rls_filters: Vec::new(),
         }),
     );
-    assert_eq!(resp.error_code, Some(ErrorCode::NotFound));
+    assert_eq!(resp.status, Status::Ok);
+    assert!(resp.payload.is_empty());
+    assert_eq!(resp.error_code, None);
 }
 
 #[test]

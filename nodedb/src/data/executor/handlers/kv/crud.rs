@@ -26,7 +26,7 @@ impl CoreLoop {
                     rls_filters,
                     &value,
                 ) {
-                    return self.response_error(task, ErrorCode::NotFound);
+                    return self.response_with_payload(task, Vec::new());
                 }
                 if let Some(ref m) = self.metrics {
                     m.record_kv_get();
@@ -34,7 +34,7 @@ impl CoreLoop {
                 // Value is already standard msgpack — pass through directly.
                 self.response_with_payload(task, value)
             }
-            None => self.response_error(task, ErrorCode::NotFound),
+            None => self.response_with_payload(task, Vec::new()),
         }
     }
 
