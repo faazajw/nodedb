@@ -1,6 +1,6 @@
 //! Integration tests for document operations (PointGet/Put/Delete, RangeScan, CRDT).
 
-use nodedb::bridge::envelope::{PhysicalPlan, Status};
+use nodedb::bridge::envelope::{ErrorCode, PhysicalPlan, Status};
 use nodedb::bridge::physical_plan::{CrdtOp, DocumentOp};
 
 use crate::helpers::*;

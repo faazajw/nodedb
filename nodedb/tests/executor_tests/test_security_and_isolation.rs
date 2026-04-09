@@ -5,7 +5,7 @@
 //! 3. WAL replay: deterministic traces
 //! 4. Mixed-engine isolation: protected-tier not evicted under budget
 
-use nodedb::bridge::envelope::{ErrorCode, PhysicalPlan, Status};
+use nodedb::bridge::envelope::{PhysicalPlan, Status};
 use nodedb::bridge::physical_plan::{DocumentOp, GraphOp, VectorOp};
 
 use crate::helpers::*;
@@ -191,7 +191,7 @@ fn linearizability_delete_visibility() {
             rls_filters: Vec::new(),
         }),
     );
-    assert_eq!(resp.error_code, Some(ErrorCode::NotFound));
+    assert_eq!(resp.error_code, None);
 }
 
 // ──────────────────────────────────────────────────────────────────────

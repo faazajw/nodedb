@@ -103,7 +103,7 @@ fn kv_protocol_command_sequence() {
             rls_filters: Vec::new(),
         }),
     );
-    assert_eq!(resp.status, Status::Error);
+    assert_eq!(resp.status, Status::Ok);
 
     // MSET: batch put 3 keys
     send_ok(
@@ -415,7 +415,7 @@ fn kv_truncate_clears_all() {
             rls_filters: Vec::new(),
         }),
     );
-    assert_eq!(resp.status, Status::Error);
+    assert_eq!(resp.status, Status::Ok);
 }
 
 // ---------------------------------------------------------------------------

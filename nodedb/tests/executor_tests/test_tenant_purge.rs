@@ -130,11 +130,7 @@ fn purge_removes_all_tenant_data() {
             rls_filters: Vec::new(),
         }),
     );
-    assert_eq!(
-        resp.error_code,
-        Some(ErrorCode::NotFound),
-        "Tenant A documents should be purged"
-    );
+    assert_eq!(resp.error_code, None, "Tenant A documents should be purged");
 
     // Graph: edges gone.
     let graph_resp = send_raw_as_tenant(

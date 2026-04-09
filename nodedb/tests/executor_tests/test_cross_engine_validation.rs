@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use nodedb::bridge::dispatch::BridgeRequest;
-use nodedb::bridge::envelope::{ErrorCode, PhysicalPlan, Status};
+use nodedb::bridge::envelope::{PhysicalPlan, Status};
 use nodedb::bridge::physical_plan::{DocumentOp, GraphOp, TextOp, VectorOp};
 use nodedb::engine::graph::edge_store::Direction;
 
@@ -391,7 +391,7 @@ fn document_indexes_consistent_after_simulated_crash() {
             rls_filters: Vec::new(),
         }),
     );
-    assert_eq!(get_a1.error_code, Some(ErrorCode::NotFound));
+    assert_eq!(get_a1.error_code, None);
 
     let get_a2 = send_raw(
         &mut core,

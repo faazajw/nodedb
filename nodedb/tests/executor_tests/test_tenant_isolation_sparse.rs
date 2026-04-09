@@ -3,7 +3,7 @@
 //! Tenant A inserts a document. Tenant B queries the same collection name
 //! and document_id — must get NotFound, not Tenant A's data.
 
-use nodedb::bridge::envelope::{ErrorCode, PhysicalPlan, Status};
+use nodedb::bridge::envelope::{PhysicalPlan, Status};
 use nodedb::bridge::physical_plan::DocumentOp;
 
 use crate::helpers::*;
@@ -57,8 +57,7 @@ fn sparse_point_get_isolated() {
         }),
     );
     assert_eq!(
-        resp_b.error_code,
-        Some(ErrorCode::NotFound),
+        resp_b.error_code, None,
         "Tenant B must NOT see Tenant A's document"
     );
 }

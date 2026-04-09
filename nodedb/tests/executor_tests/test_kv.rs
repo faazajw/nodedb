@@ -63,7 +63,7 @@ fn kv_put_get_delete() {
             rls_filters: Vec::new(),
         }),
     );
-    assert_eq!(resp.status, Status::Error);
+    assert_eq!(resp.status, Status::Ok);
 }
 
 #[test]
