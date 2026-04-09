@@ -76,6 +76,7 @@ fn ts_scan(
             aggregates,
             gap_fill: String::new(),
             rls_filters: Vec::new(),
+            computed_columns: Vec::new(),
         }),
     );
     // Payload may be MessagePack (grouped aggregates) or JSON — decode both.
@@ -111,6 +112,7 @@ fn ts_scan_filtered(
             aggregates,
             gap_fill: String::new(),
             rls_filters: Vec::new(),
+            computed_columns: Vec::new(),
         }),
     );
     let json_str = nodedb::data::executor::response_codec::decode_payload_to_json(&raw);
@@ -685,6 +687,7 @@ fn large_group_by_returns_single_valid_json() {
             aggregates: vec![("count".into(), "*".into())],
             gap_fill: String::new(),
             rls_filters: Vec::new(),
+            computed_columns: Vec::new(),
         }),
     );
 

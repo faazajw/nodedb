@@ -48,6 +48,7 @@ fn timeseries_scan_isolated() {
             aggregates: vec![],
             gap_fill: String::new(),
             rls_filters: vec![],
+            computed_columns: vec![],
         }),
     );
     assert_eq!(resp_a.status, Status::Ok);
@@ -73,6 +74,7 @@ fn timeseries_scan_isolated() {
             aggregates: vec![],
             gap_fill: String::new(),
             rls_filters: vec![],
+            computed_columns: vec![],
         }),
     );
     assert_eq!(resp_b.status, Status::Ok);

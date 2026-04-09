@@ -105,6 +105,7 @@ impl TestStack {
                     aggregates: vec![("count".into(), "*".into())],
                     gap_fill: String::new(),
                     rls_filters: Vec::new(),
+                    computed_columns: Vec::new(),
                 }),
                 collection,
             )
@@ -480,6 +481,7 @@ fn startup_replay_recovers_all_wal_data() {
         aggregates: vec![("count".into(), "*".into())],
         gap_fill: String::new(),
         rls_filters: Vec::new(),
+        computed_columns: Vec::new(),
     });
 
     use nodedb::bridge::dispatch::BridgeRequest;

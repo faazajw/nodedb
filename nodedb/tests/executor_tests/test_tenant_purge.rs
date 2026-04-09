@@ -186,6 +186,7 @@ fn purge_removes_all_tenant_data() {
             aggregates: vec![],
             gap_fill: String::new(),
             rls_filters: vec![],
+            computed_columns: vec![],
         }),
     );
     assert_eq!(ts_resp.status, Status::Ok);
