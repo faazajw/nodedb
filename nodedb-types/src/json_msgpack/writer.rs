@@ -8,6 +8,17 @@ pub fn json_to_msgpack(value: &serde_json::Value) -> zerompk::Result<Vec<u8>> {
     zerompk::to_msgpack_vec(&JsonValue(value.clone()))
 }
 
+/// Serialize a `serde_json::Value` to MessagePack bytes, returning an empty
+/// msgpack map (`0x80`) on failure.
+///
+/// Suitable for filter evaluation where an empty map causes all field
+/// predicates to pass vacuously. Callers that need error propagation
+/// should use [`json_to_msgpack`] instead.
+#[inline]
+pub fn json_to_msgpack_or_empty(value: &serde_json::Value) -> Vec<u8> {
+    json_to_msgpack(value).unwrap_or_else(|_| vec![0x80])
+}
+
 /// Serialize a `nodedb_types::Value` to standard MessagePack bytes.
 ///
 /// Writes standard msgpack format (fixmap 0x80-0x8F, fixstr 0xA0-0xBF, etc.)

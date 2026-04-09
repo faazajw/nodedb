@@ -193,147 +193,6 @@ impl<'a> zerompk::FromMessagePack<'a> for ScanFilter {
 }
 
 impl ScanFilter {
-    /// Evaluate this filter against a JSON document.
-    ///
-    /// Uses `FilterOp` enum for O(1) dispatch instead of string comparison.
-    pub fn matches(&self, doc: &serde_json::Value) -> bool {
-        match self.op {
-            FilterOp::MatchAll | FilterOp::Exists | FilterOp::NotExists => return true,
-            FilterOp::Or => {
-                return self
-                    .clauses
-                    .iter()
-                    .any(|clause| clause.iter().all(|f| f.matches(doc)));
-            }
-            _ => {}
-        }
-
-        let field_val = match doc.get(&self.field) {
-            Some(v) => v,
-            None => return self.op == FilterOp::IsNull,
-        };
-
-        match self.op {
-            FilterOp::Eq => self.value.eq_json(field_val),
-            FilterOp::Ne => !self.value.eq_json(field_val),
-            FilterOp::Gt => self.value.cmp_json(field_val) == std::cmp::Ordering::Less,
-            FilterOp::Gte => {
-                let cmp = self.value.cmp_json(field_val);
-                cmp == std::cmp::Ordering::Less || cmp == std::cmp::Ordering::Equal
-            }
-            FilterOp::Lt => self.value.cmp_json(field_val) == std::cmp::Ordering::Greater,
-            FilterOp::Lte => {
-                let cmp = self.value.cmp_json(field_val);
-                cmp == std::cmp::Ordering::Greater || cmp == std::cmp::Ordering::Equal
-            }
-            FilterOp::Contains => {
-                if let (Some(s), Some(pattern)) = (field_val.as_str(), self.value.as_str()) {
-                    s.contains(pattern)
-                } else {
-                    false
-                }
-            }
-            FilterOp::Like => {
-                if let (Some(s), Some(pattern)) = (field_val.as_str(), self.value.as_str()) {
-                    like::sql_like_match(s, pattern, false)
-                } else {
-                    false
-                }
-            }
-            FilterOp::NotLike => {
-                if let (Some(s), Some(pattern)) = (field_val.as_str(), self.value.as_str()) {
-                    !like::sql_like_match(s, pattern, false)
-                } else {
-                    false
-                }
-            }
-            FilterOp::Ilike => {
-                if let (Some(s), Some(pattern)) = (field_val.as_str(), self.value.as_str()) {
-                    like::sql_like_match(s, pattern, true)
-                } else {
-                    false
-                }
-            }
-            FilterOp::NotIlike => {
-                if let (Some(s), Some(pattern)) = (field_val.as_str(), self.value.as_str()) {
-                    !like::sql_like_match(s, pattern, true)
-                } else {
-                    false
-                }
-            }
-            FilterOp::In => {
-                if let Some(mut iter) = self.value.as_array_iter() {
-                    iter.any(|v| v.eq_json(field_val))
-                } else {
-                    false
-                }
-            }
-            FilterOp::NotIn => {
-                if let Some(mut iter) = self.value.as_array_iter() {
-                    !iter.any(|v| v.eq_json(field_val))
-                } else {
-                    true
-                }
-            }
-            FilterOp::IsNull => field_val.is_null(),
-            FilterOp::IsNotNull => !field_val.is_null(),
-            FilterOp::ArrayContains => {
-                if let Some(arr) = field_val.as_array() {
-                    arr.iter().any(|v| self.value.eq_json(v))
-                } else {
-                    false
-                }
-            }
-            FilterOp::ArrayContainsAll => {
-                if let (Some(field_arr), Some(mut needles)) =
-                    (field_val.as_array(), self.value.as_array_iter())
-                {
-                    needles.all(|needle| field_arr.iter().any(|v| needle.eq_json(v)))
-                } else {
-                    false
-                }
-            }
-            FilterOp::ArrayOverlap => {
-                if let (Some(field_arr), Some(mut needles)) =
-                    (field_val.as_array(), self.value.as_array_iter())
-                {
-                    needles.any(|needle| field_arr.iter().any(|v| needle.eq_json(v)))
-                } else {
-                    false
-                }
-            }
-            // Column-vs-column comparisons: self.value is String(other_col_name).
-            FilterOp::GtColumn
-            | FilterOp::GteColumn
-            | FilterOp::LtColumn
-            | FilterOp::LteColumn
-            | FilterOp::EqColumn
-            | FilterOp::NeColumn => {
-                let other_col = match &self.value {
-                    nodedb_types::Value::String(s) => s.as_str(),
-                    _ => return false,
-                };
-                let other_val = match doc.get(other_col) {
-                    Some(v) => v,
-                    None => return false,
-                };
-                let left = nodedb_types::Value::from(field_val.clone());
-                let right = nodedb_types::Value::from(other_val.clone());
-                match self.op {
-                    FilterOp::GtColumn => left.cmp_coerced(&right) == std::cmp::Ordering::Greater,
-                    FilterOp::GteColumn => left.cmp_coerced(&right) != std::cmp::Ordering::Less,
-                    FilterOp::LtColumn => left.cmp_coerced(&right) == std::cmp::Ordering::Less,
-                    FilterOp::LteColumn => left.cmp_coerced(&right) != std::cmp::Ordering::Greater,
-                    FilterOp::EqColumn => left.eq_coerced(&right),
-                    FilterOp::NeColumn => !left.eq_coerced(&right),
-                    _ => false,
-                }
-            }
-            // MatchAll/Exists/NotExists/Or handled above.
-            _ => false,
-        }
-    }
-
     /// Evaluate this filter against a `nodedb_types::Value` document.
     ///
     /// Same semantics as `matches()` but operates on the native Value type
@@ -489,25 +348,27 @@ mod tests {
     #[test]
     fn filter_eq_coercion() {
         let doc = json!({"age": 25});
+        let msgpack = nodedb_types::json_msgpack::json_to_msgpack(&doc).unwrap();
         let filter = ScanFilter {
             field: "age".into(),
             op: "eq".into(),
             value: nodedb_types::Value::String("25".into()),
             clauses: vec![],
         };
-        assert!(filter.matches(&doc));
+        assert!(filter.matches_binary(&msgpack));
     }
 
     #[test]
     fn filter_gt_coercion() {
         let doc = json!({"score": "90"});
+        let msgpack = nodedb_types::json_msgpack::json_to_msgpack(&doc).unwrap();
         let filter = ScanFilter {
             field: "score".into(),
             op: "gt".into(),
             value: nodedb_types::Value::Integer(80),
             clauses: vec![],
         };
-        assert!(filter.matches(&doc));
+        assert!(filter.matches_binary(&msgpack));
     }
 
     #[test]

@@ -96,7 +96,8 @@ pub fn read_parquet_filtered(
             let mask: Vec<bool> = (0..num_rows)
                 .map(|row_idx| {
                     let doc = record_batch_row_to_json(&batch, row_idx, &filter_schema);
-                    filters_owned.iter().all(|f| f.matches(&doc))
+                    let msgpack = nodedb_types::json_msgpack::json_to_msgpack_or_empty(&doc);
+                    filters_owned.iter().all(|f| f.matches_binary(&msgpack))
                 })
                 .collect();
 

@@ -161,11 +161,9 @@ pub fn enforce_rls_on_delta(
         return Ok(()); // No write policies → allow.
     }
 
-    // Attempt to deserialize the delta as a document for predicate evaluation.
-    // CRDT deltas are binary Loro ops — we try to extract the document state
-    // from the delta bytes. If the delta can't be parsed as a JSON document
-    // (e.g., it's a pure CRDT op), we evaluate against what we can extract.
-    let doc_value = delta_to_document_value(&delta.delta);
+    // Convert delta to msgpack bytes for binary filter evaluation.
+    // If already msgpack, use as-is. Otherwise encode from JSON/CRDT.
+    let doc_bytes = delta_to_msgpack_bytes(&delta.delta);
 
     for policy in &write_policies {
         if policy.predicate.is_empty() {
@@ -178,7 +176,7 @@ pub fn enforce_rls_on_delta(
                 Err(_) => continue, // Skip unparseable policies.
             };
 
-        let passes = filters.iter().all(|f| f.matches(&doc_value));
+        let passes = filters.iter().all(|f| f.matches_binary(&doc_bytes));
         if !passes {
             return Err(SyncRejectionReason::RlsPolicyViolation {
                 policy_name: policy.name.clone(),
@@ -242,17 +240,26 @@ pub fn log_silent_rejection(
 /// This allows RLS predicates to evaluate against the document content
 /// when possible, while still allowing through deltas that are pure
 /// CRDT operations (which can't be evaluated against field-level predicates).
-fn delta_to_document_value(delta_bytes: &[u8]) -> serde_json::Value {
-    // Try MessagePack first (our internal format).
-    if let Ok(value) = nodedb_types::json_from_msgpack(delta_bytes) {
-        return value;
+/// Convert delta bytes to msgpack for binary filter evaluation.
+///
+/// If already valid msgpack map, returns as-is. Otherwise tries JSON parse
+/// and re-encodes to msgpack. Falls back to empty msgpack map.
+fn delta_to_msgpack_bytes(delta_bytes: &[u8]) -> Vec<u8> {
+    // If already a valid msgpack map, use directly.
+    if !delta_bytes.is_empty() {
+        let first = delta_bytes[0];
+        if (0x80..=0x8F).contains(&first) || first == 0xDE || first == 0xDF {
+            return delta_bytes.to_vec();
+        }
     }
-    // Try raw JSON.
-    if let Ok(value) = sonic_rs::from_slice::<serde_json::Value>(delta_bytes) {
-        return value;
+    // Try raw JSON → re-encode to msgpack.
+    if let Ok(json) = sonic_rs::from_slice::<serde_json::Value>(delta_bytes) {
+        if let Ok(mp) = nodedb_types::json_msgpack::json_to_msgpack(&json) {
+            return mp;
+        }
     }
-    // Opaque CRDT delta — return empty object (all field predicates pass vacuously).
-    serde_json::Value::Object(serde_json::Map::new())
+    // Opaque CRDT delta — return empty msgpack map (all field predicates pass vacuously).
+    vec![0x80] // fixmap with 0 entries
 }
 
 /// SHA-256 hex digest of arbitrary bytes (for forensic logging).
@@ -406,17 +413,16 @@ mod tests {
     }
 
     #[test]
-    fn delta_to_document_handles_opaque_bytes() {
-        // Truly invalid data that neither MessagePack nor JSON can parse → empty object.
-        let val = delta_to_document_value(&[0x80, 0x80, 0x80, 0x80, 0x80]);
-        assert!(val.is_object());
-        assert!(val.as_object().unwrap().is_empty());
+    fn delta_to_msgpack_handles_opaque_bytes() {
+        // Truly invalid data → empty msgpack map (0x80).
+        let mp = delta_to_msgpack_bytes(&[0xFF, 0xFF, 0xFF]);
+        assert_eq!(mp, vec![0x80]);
 
-        // Valid MessagePack → parsed.
+        // Valid MessagePack map → returned as-is.
         let data = serde_json::json!({"key": "value"});
         let msgpack = nodedb_types::json_to_msgpack(&data).unwrap();
-        let val = delta_to_document_value(&msgpack);
-        assert_eq!(val["key"], "value");
+        let mp = delta_to_msgpack_bytes(&msgpack);
+        assert_eq!(mp, msgpack);
     }
 
     #[test]

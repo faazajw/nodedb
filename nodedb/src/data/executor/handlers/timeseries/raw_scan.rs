@@ -78,9 +78,10 @@ impl CoreLoop {
                 }
                 let row = emit_memtable_row(mt, &columns, idx as usize);
                 if need_json_filter {
-                    // Fallback: build serde_json::Value for complex filter eval.
-                    let json_row = rmpv_to_json_value(&row);
-                    if !filter_predicates.iter().all(|f| f.matches(&json_row)) {
+                    // Encode rmpv row to msgpack bytes for binary filter eval.
+                    let mut buf = Vec::new();
+                    rmpv::encode::write_value(&mut buf, &row).ok();
+                    if !filter_predicates.iter().all(|f| f.matches_binary(&buf)) {
                         continue;
                     }
                 }
@@ -463,40 +464,5 @@ fn nodedb_value_to_rmpv(v: &nodedb_types::Value) -> rmpv::Value {
         nodedb_types::Value::Bool(b) => rmpv::Value::Boolean(*b),
         nodedb_types::Value::Null => rmpv::Value::Nil,
         _ => rmpv::Value::Nil,
-    }
-}
-
-/// Convert rmpv::Value row to serde_json::Value (fallback for complex filter eval).
-fn rmpv_to_json_value(row: &rmpv::Value) -> serde_json::Value {
-    match row {
-        rmpv::Value::Map(fields) => {
-            let mut map = serde_json::Map::new();
-            for (k, v) in fields {
-                let key = match k {
-                    rmpv::Value::String(s) => s.as_str().unwrap_or("").to_string(),
-                    _ => continue,
-                };
-                let val = match v {
-                    rmpv::Value::Integer(n) => {
-                        if let Some(i) = n.as_i64() {
-                            serde_json::Value::Number(i.into())
-                        } else {
-                            serde_json::Value::Null
-                        }
-                    }
-                    rmpv::Value::F64(f) => serde_json::Number::from_f64(*f)
-                        .map(serde_json::Value::Number)
-                        .unwrap_or(serde_json::Value::Null),
-                    rmpv::Value::String(s) => {
-                        serde_json::Value::String(s.as_str().unwrap_or("").to_string())
-                    }
-                    rmpv::Value::Nil => serde_json::Value::Null,
-                    _ => serde_json::Value::Null,
-                };
-                map.insert(key, val);
-            }
-            serde_json::Value::Object(map)
-        }
-        _ => serde_json::Value::Null,
     }
 }

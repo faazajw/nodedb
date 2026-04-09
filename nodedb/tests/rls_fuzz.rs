@@ -110,8 +110,9 @@ proptest! {
     ) {
         let deny_filters = substitute_to_scan_filters(&RlsPredicate::AlwaysFalse, &auth).unwrap();
         let doc = serde_json::json!({ doc_field: doc_val });
+        let msgpack = nodedb_types::json_msgpack::json_to_msgpack(&doc).unwrap();
         // Deny filter should NOT match any document.
-        let passes = deny_filters.iter().all(|f| f.matches(&doc));
+        let passes = deny_filters.iter().all(|f| f.matches_binary(&msgpack));
         prop_assert!(!passes, "deny filter should reject all documents");
     }
 

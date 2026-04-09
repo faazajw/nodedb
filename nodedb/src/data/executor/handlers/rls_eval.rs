@@ -30,7 +30,8 @@ pub fn rls_check_document(rls_filters: &[u8], doc: &serde_json::Value) -> bool {
         }
     };
 
-    filters.iter().all(|f| f.matches(doc))
+    let msgpack = nodedb_types::json_to_msgpack_or_empty(doc);
+    filters.iter().all(|f| f.matches_binary(&msgpack))
 }
 
 /// Evaluate RLS filters against raw MessagePack document bytes.

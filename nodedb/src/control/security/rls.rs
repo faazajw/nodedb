@@ -207,7 +207,8 @@ impl RlsPolicyStore {
                     };
 
                 // Evaluate each filter against the document.
-                let passes = filters.iter().all(|f| f.matches(document));
+                let doc_mp = nodedb_types::json_to_msgpack_or_empty(document);
+                let passes = filters.iter().all(|f| f.matches_binary(&doc_mp));
                 if !passes {
                     info!(
                         policy = %policy.name,
@@ -366,7 +367,8 @@ impl RlsPolicyStore {
                     }
                 };
 
-                let passes = filters.iter().all(|f| f.matches(document));
+                let doc_mp = nodedb_types::json_to_msgpack_or_empty(document);
+                let passes = filters.iter().all(|f| f.matches_binary(&doc_mp));
                 if !passes {
                     info!(
                         policy = %policy.name,
@@ -397,7 +399,8 @@ impl RlsPolicyStore {
                         }
                     };
 
-                let passes = filters.iter().all(|f| f.matches(document));
+                let doc_mp = nodedb_types::json_to_msgpack_or_empty(document);
+                let passes = filters.iter().all(|f| f.matches_binary(&doc_mp));
                 if !passes {
                     info!(
                         policy = %policy.name,

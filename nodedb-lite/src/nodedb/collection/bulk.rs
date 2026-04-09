@@ -35,7 +35,8 @@ impl<S: StorageEngine> NodeDbLite<S> {
             if let Some(loro_val) = crdt.read(collection, id) {
                 let doc = crate::nodedb::convert::loro_value_to_document(id, &loro_val);
                 let json = serde_json::to_value(&doc.fields).unwrap_or_default();
-                if filters.is_empty() || filters.iter().all(|f| f.matches(&json)) {
+                let msgpack = nodedb_types::json_msgpack::json_to_msgpack_or_empty(&json);
+                if filters.is_empty() || filters.iter().all(|f| f.matches_binary(&msgpack)) {
                     matching_ids.push(id.clone());
                 }
             }
@@ -84,7 +85,8 @@ impl<S: StorageEngine> NodeDbLite<S> {
             if let Some(loro_val) = crdt.read(collection, id) {
                 let doc = crate::nodedb::convert::loro_value_to_document(id, &loro_val);
                 let json = serde_json::to_value(&doc.fields).unwrap_or_default();
-                if filters.is_empty() || filters.iter().all(|f| f.matches(&json)) {
+                let msgpack = nodedb_types::json_msgpack::json_to_msgpack_or_empty(&json);
+                if filters.is_empty() || filters.iter().all(|f| f.matches_binary(&msgpack)) {
                     matching_ids.push(id.clone());
                 }
             }
