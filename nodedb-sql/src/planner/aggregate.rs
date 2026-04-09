@@ -140,83 +140,77 @@ fn resolve_group_by_expr<'a>(
     match expr {
         ast::Expr::Identifier(ident) => {
             let alias_name = normalize_ident(ident);
-            for item in select_items {
-                if let ast::SelectItem::ExprWithAlias { expr, alias } = item {
-                    if normalize_ident(alias) == alias_name {
-                        return Some(expr);
-                    }
+            select_items.iter().find_map(|item| {
+                if let ast::SelectItem::ExprWithAlias { expr, alias } = item
+                    && normalize_ident(alias) == alias_name
+                {
+                    Some(expr)
+                } else {
+                    None
                 }
-            }
-            None
+            })
         }
         ast::Expr::Value(v) => {
-            if let ast::Value::Number(n, _) = &v.value {
-                if let Ok(idx) = n.parse::<usize>() {
-                    if idx >= 1 && idx <= select_items.len() {
-                        let item = &select_items[idx - 1];
-                        match item {
-                            ast::SelectItem::UnnamedExpr(e) => return Some(e),
-                            ast::SelectItem::ExprWithAlias { expr, .. } => return Some(expr),
-                            _ => {}
-                        }
-                    }
+            if let ast::Value::Number(n, _) = &v.value
+                && let Ok(idx) = n.parse::<usize>()
+                && idx >= 1
+                && idx <= select_items.len()
+            {
+                match &select_items[idx - 1] {
+                    ast::SelectItem::UnnamedExpr(e) => Some(e),
+                    ast::SelectItem::ExprWithAlias { expr, .. } => Some(expr),
+                    _ => None,
                 }
+            } else {
+                None
             }
-            None
         }
         _ => None,
     }
 }
 
 /// Extract the bucket interval from a time_bucket() call.
+///
+/// Handles both argument orders:
+/// - `time_bucket('1 hour', timestamp)` — interval first
+/// - `time_bucket(timestamp, '1 hour')` — timestamp first
+/// - `time_bucket(3600, timestamp)` — integer seconds
 fn extract_bucket_interval(func: &ast::Function) -> Result<i64> {
     let args = match &func.args {
         ast::FunctionArguments::List(args) => &args.args,
         _ => return Ok(0),
     };
-    if args.is_empty() {
-        return Ok(0);
-    }
-    let interval_str = match &args[0] {
-        ast::FunctionArg::Unnamed(ast::FunctionArgExpr::Expr(ast::Expr::Value(v))) => {
+    // Try each argument position for the interval literal.
+    for arg in args {
+        if let ast::FunctionArg::Unnamed(ast::FunctionArgExpr::Expr(ast::Expr::Value(v))) = arg {
             match &v.value {
-                ast::Value::SingleQuotedString(s) => s.clone(),
-                _ => return Ok(0),
+                ast::Value::SingleQuotedString(s) => {
+                    let ms = parse_interval_to_ms(s);
+                    if ms > 0 {
+                        return Ok(ms);
+                    }
+                }
+                ast::Value::Number(n, _) => {
+                    if let Ok(secs) = n.parse::<i64>()
+                        && secs > 0
+                    {
+                        return Ok(secs * 1000);
+                    }
+                }
+                _ => {}
             }
         }
-        _ => return Ok(0),
-    };
-    Ok(parse_interval_to_ms(&interval_str))
+    }
+    Ok(0)
 }
 
 /// Parse an interval string to milliseconds.
 ///
-/// Accepted forms: `"1h"`, `"15m"`, `"30s"`, `"1d"`, `"1 hour"`, `"15 minutes"`,
-/// `"30 seconds"`, `"7 days"`. Plural and singular word forms both work.
+/// Delegates to the canonical `nodedb_types::kv_parsing::parse_interval_to_ms`.
 fn parse_interval_to_ms(s: &str) -> i64 {
-    let s = s.trim();
-    if s.is_empty() {
-        return 0;
-    }
-
-    // Split into numeric part and unit part (handles both "1h" and "1 hour").
-    let num_end = s
-        .find(|c: char| !c.is_ascii_digit() && c != '.')
-        .unwrap_or(s.len());
-    let num: i64 = s[..num_end].trim().parse().unwrap_or(0);
-    let unit = s[num_end..].trim();
-
-    match unit {
-        "s" | "sec" | "second" | "seconds" => num * 1_000,
-        "m" | "min" | "minute" | "minutes" => num * 60_000,
-        "h" | "hr" | "hour" | "hours" => num * 3_600_000,
-        "d" | "day" | "days" => num * 86_400_000,
-        "" => {
-            // Bare number — treat as seconds.
-            num * 1_000
-        }
-        _ => 0,
-    }
+    nodedb_types::kv_parsing::parse_interval_to_ms(s)
+        .map(|ms| ms as i64)
+        .unwrap_or(0)
 }
 
 /// Extract time range from filters (timestamp >= X AND timestamp <= Y).
