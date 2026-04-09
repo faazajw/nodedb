@@ -35,6 +35,8 @@ pub(super) fn convert_aggregate(
     {
         let mut left_collection = extract_collection_name(left);
         let mut right_collection = extract_collection_name(right);
+        let mut left_alias = extract_scan_alias(left);
+        let mut right_alias = extract_scan_alias(right);
 
         let group_strs = group_by_to_strings(group_by);
         let agg_pairs = aggregates.iter().map(agg_expr_to_pair).collect();
@@ -45,6 +47,7 @@ pub(super) fn convert_aggregate(
         let mut on_keys = on.to_vec();
         let effective_join_type = if join_type.as_str() == "right" {
             std::mem::swap(&mut left_collection, &mut right_collection);
+            std::mem::swap(&mut left_alias, &mut right_alias);
             on_keys = on_keys.into_iter().map(|(l, r)| (r, l)).collect();
             "left".to_string()
         } else {
@@ -59,6 +62,8 @@ pub(super) fn convert_aggregate(
             plan: PhysicalPlan::Query(QueryOp::HashJoin {
                 left_collection,
                 right_collection,
+                left_alias,
+                right_alias,
                 on: on_keys,
                 join_type: effective_join_type,
                 limit: *join_limit,
@@ -161,6 +166,16 @@ pub(super) fn extract_collection_name(plan: &SqlPlan) -> String {
     }
 }
 
+pub(super) fn extract_scan_alias(plan: &SqlPlan) -> Option<String> {
+    match plan {
+        SqlPlan::Scan { alias, .. } => alias.clone(),
+        SqlPlan::PointGet { alias, .. } => alias.clone(),
+        SqlPlan::Join { left, .. } => extract_scan_alias(left),
+        SqlPlan::Aggregate { input, .. } => extract_scan_alias(input),
+        _ => None,
+    }
+}
+
 /// Convert an `AggregateExpr` to the Data Plane aggregate spec.
 pub(super) fn agg_expr_to_spec(a: &AggregateExpr) -> AggregateSpec {
     let (field, expr) = a
@@ -239,6 +254,27 @@ pub(super) fn extract_projection_names(
             {
                 Some(alias.clone())
             }
+            _ => None,
+        })
+        .collect()
+}
+
+pub(super) fn extract_join_projection_specs(proj: &[Projection]) -> Vec<JoinProjection> {
+    proj.iter()
+        .filter_map(|p| match p {
+            Projection::Column(name) => Some(JoinProjection {
+                source: name.clone(),
+                output: name.clone(),
+            }),
+            Projection::Computed {
+                expr: SqlExpr::Column { table, name },
+                alias,
+            } => Some(JoinProjection {
+                source: table
+                    .as_deref()
+                    .map_or_else(|| name.clone(), |table| format!("{table}.{name}")),
+                output: alias.clone(),
+            }),
             _ => None,
         })
         .collect()

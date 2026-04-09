@@ -5,7 +5,10 @@
 
 use crate::helpers::{make_ctx, make_ctx_with_id, send_ok};
 use nodedb::bridge::envelope::PhysicalPlan;
-use nodedb::bridge::physical_plan::{DocumentOp, EnforcementOptions, KvOp, QueryOp, StorageMode};
+use nodedb::bridge::physical_plan::{
+    DocumentOp, EnforcementOptions, JoinProjection, KvOp, QueryOp, StorageMode,
+};
+use nodedb::bridge::scan_filter::{FilterOp, ScanFilter};
 use nodedb::data::executor::handlers::join;
 use nodedb::data::executor::response_codec;
 use nodedb_types::columnar::{ColumnDef, ColumnType, StrictSchema};
@@ -289,6 +292,8 @@ fn single_core_cross_type_hash_join() {
         PhysicalPlan::Query(QueryOp::HashJoin {
             left_collection: "docs".into(),
             right_collection: "prefs".into(),
+            left_alias: None,
+            right_alias: None,
             on: vec![("id".into(), "key".into())],
             join_type: "inner".into(),
             limit: 100,
@@ -368,6 +373,8 @@ fn single_core_left_join_with_nulls() {
         PhysicalPlan::Query(QueryOp::HashJoin {
             left_collection: "docs".into(),
             right_collection: "prefs".into(),
+            left_alias: None,
+            right_alias: None,
             on: vec![("id".into(), "key".into())],
             join_type: "left".into(),
             limit: 100,
@@ -392,6 +399,224 @@ fn single_core_left_join_with_nulls() {
         "expected 3 left join rows, got {}. json={json}",
         parsed.len()
     );
+}
+
+#[test]
+fn single_core_self_join_respects_aliases_in_filter_and_projection() {
+    let mut ctx = make_ctx();
+
+    for (id, name, dept) in [
+        ("1", "Alice", "eng"),
+        ("2", "Bob", "eng"),
+        ("3", "Cara", "pm"),
+    ] {
+        let doc = build_msgpack_map(&[("id", id), ("name", name), ("dept", dept)]);
+        send_ok(
+            &mut ctx.core,
+            &mut ctx.tx,
+            &mut ctx.rx,
+            PhysicalPlan::Document(DocumentOp::PointPut {
+                collection: "employees".into(),
+                document_id: id.into(),
+                value: doc,
+            }),
+        );
+    }
+
+    let post_filters = zerompk::to_msgpack_vec(&vec![ScanFilter {
+        field: "a.id".into(),
+        op: FilterOp::LtColumn,
+        value: nodedb_types::Value::String("b.id".into()),
+        clauses: Vec::new(),
+    }])
+    .unwrap();
+
+    let payload = send_ok(
+        &mut ctx.core,
+        &mut ctx.tx,
+        &mut ctx.rx,
+        PhysicalPlan::Query(QueryOp::HashJoin {
+            left_collection: "employees".into(),
+            right_collection: "employees".into(),
+            left_alias: Some("a".into()),
+            right_alias: Some("b".into()),
+            on: vec![("dept".into(), "dept".into())],
+            join_type: "inner".into(),
+            limit: 100,
+            post_group_by: Vec::new(),
+            post_aggregates: Vec::new(),
+            projection: vec![
+                JoinProjection {
+                    source: "a.name".into(),
+                    output: "emp1".into(),
+                },
+                JoinProjection {
+                    source: "b.name".into(),
+                    output: "emp2".into(),
+                },
+                JoinProjection {
+                    source: "a.dept".into(),
+                    output: "a.dept".into(),
+                },
+            ],
+            post_filters,
+            inline_left: None,
+            inline_right: None,
+        }),
+    );
+
+    let json = response_codec::decode_payload_to_json(&payload);
+    let parsed: Vec<serde_json::Value> =
+        serde_json::from_str(&json).unwrap_or_else(|e| panic!("invalid JSON: {e}\nraw: {json}"));
+
+    assert_eq!(parsed.len(), 1, "expected one eng pair, got {json}");
+    let row = parsed[0].as_object().unwrap();
+    assert_eq!(row.get("emp1").and_then(|v| v.as_str()), Some("Alice"));
+    assert_eq!(row.get("emp2").and_then(|v| v.as_str()), Some("Bob"));
+    assert_eq!(row.get("a.dept").and_then(|v| v.as_str()), Some("eng"));
+}
+
+#[test]
+fn single_core_self_join_star_keeps_both_sides() {
+    let mut ctx = make_ctx();
+
+    for (id, name, dept, level) in [("emp1", "Alice", "eng", 5), ("emp2", "Bob", "eng", 4)] {
+        let doc = nodedb_types::json_to_msgpack(&serde_json::json!({
+            "id": id,
+            "name": name,
+            "dept": dept,
+            "level": level
+        }))
+        .unwrap();
+        send_ok(
+            &mut ctx.core,
+            &mut ctx.tx,
+            &mut ctx.rx,
+            PhysicalPlan::Document(DocumentOp::PointPut {
+                collection: "employees".into(),
+                document_id: id.into(),
+                value: doc,
+            }),
+        );
+    }
+
+    let payload = send_ok(
+        &mut ctx.core,
+        &mut ctx.tx,
+        &mut ctx.rx,
+        PhysicalPlan::Query(QueryOp::HashJoin {
+            left_collection: "employees".into(),
+            right_collection: "employees".into(),
+            left_alias: Some("a".into()),
+            right_alias: Some("b".into()),
+            on: vec![("dept".into(), "dept".into())],
+            join_type: "inner".into(),
+            limit: 100,
+            post_group_by: Vec::new(),
+            post_aggregates: Vec::new(),
+            projection: Vec::new(),
+            post_filters: Vec::new(),
+            inline_left: None,
+            inline_right: None,
+        }),
+    );
+
+    let json = response_codec::decode_payload_to_json(&payload);
+    let parsed: Vec<serde_json::Value> =
+        serde_json::from_str(&json).unwrap_or_else(|e| panic!("invalid JSON: {e}\nraw: {json}"));
+
+    assert!(!parsed.is_empty(), "expected self join rows, got {json}");
+    let row = parsed[0].as_object().unwrap();
+    assert!(row.contains_key("a.id"), "missing a.id in {json}");
+    assert!(row.contains_key("a.name"), "missing a.name in {json}");
+    assert!(row.contains_key("a.dept"), "missing a.dept in {json}");
+    assert!(row.contains_key("a.level"), "missing a.level in {json}");
+    assert!(row.contains_key("b.id"), "missing b.id in {json}");
+    assert!(row.contains_key("b.name"), "missing b.name in {json}");
+    assert!(row.contains_key("b.dept"), "missing b.dept in {json}");
+    assert!(row.contains_key("b.level"), "missing b.level in {json}");
+}
+
+#[test]
+fn schemaless_self_join_matches_on_canonicalized_object_fields() {
+    let mut ctx = make_ctx();
+
+    for (id, user_id, item) in [
+        ("o1", "u1", "book"),
+        ("o3", "u1", "pen"),
+        ("o2", "u2", "pad"),
+    ] {
+        let mut obj = std::collections::HashMap::new();
+        obj.insert(
+            "user_id".to_string(),
+            nodedb_types::Value::String(user_id.into()),
+        );
+        obj.insert("item".to_string(), nodedb_types::Value::String(item.into()));
+        let tagged = zerompk::to_msgpack_vec(&nodedb_types::Value::Object(obj)).unwrap();
+
+        send_ok(
+            &mut ctx.core,
+            &mut ctx.tx,
+            &mut ctx.rx,
+            PhysicalPlan::Document(DocumentOp::PointPut {
+                collection: "orders".into(),
+                document_id: id.into(),
+                value: tagged,
+            }),
+        );
+    }
+
+    let post_filters = zerompk::to_msgpack_vec(&vec![ScanFilter {
+        field: "a.id".into(),
+        op: FilterOp::LtColumn,
+        value: nodedb_types::Value::String("b.id".into()),
+        clauses: Vec::new(),
+    }])
+    .unwrap();
+
+    let payload = send_ok(
+        &mut ctx.core,
+        &mut ctx.tx,
+        &mut ctx.rx,
+        PhysicalPlan::Query(QueryOp::HashJoin {
+            left_collection: "orders".into(),
+            right_collection: "orders".into(),
+            left_alias: Some("a".into()),
+            right_alias: Some("b".into()),
+            on: vec![("user_id".into(), "user_id".into())],
+            join_type: "inner".into(),
+            limit: 100,
+            post_group_by: Vec::new(),
+            post_aggregates: Vec::new(),
+            projection: vec![
+                JoinProjection {
+                    source: "a.id".into(),
+                    output: "order1".into(),
+                },
+                JoinProjection {
+                    source: "b.id".into(),
+                    output: "order2".into(),
+                },
+                JoinProjection {
+                    source: "a.user_id".into(),
+                    output: "a.user_id".into(),
+                },
+            ],
+            post_filters,
+            inline_left: None,
+            inline_right: None,
+        }),
+    );
+
+    let json = response_codec::decode_payload_to_json(&payload);
+    let parsed: Vec<serde_json::Value> =
+        serde_json::from_str(&json).unwrap_or_else(|e| panic!("invalid JSON: {e}\nraw: {json}"));
+
+    assert_eq!(parsed.len(), 1, "expected one user_id pair, got {json}");
+    let row = parsed[0].as_object().unwrap();
+    assert_eq!(row.get("order1").and_then(|v| v.as_str()), Some("o1"));
+    assert_eq!(row.get("order2").and_then(|v| v.as_str()), Some("o3"));
+    assert_eq!(row.get("a.user_id").and_then(|v| v.as_str()), Some("u1"));
 }
 
 // ── Multi-core broadcast join tests ──
@@ -474,6 +699,8 @@ fn multi_core_broadcast_inner_join() {
         PhysicalPlan::Query(QueryOp::BroadcastJoin {
             large_collection: "docs".into(),
             small_collection: "prefs".into(),
+            large_alias: None,
+            small_alias: None,
             broadcast_data: phase1_payload,
             on: vec![("id".into(), "key".into())],
             join_type: "inner".into(),
@@ -572,6 +799,8 @@ fn multi_core_broadcast_left_join() {
         PhysicalPlan::Query(QueryOp::BroadcastJoin {
             large_collection: "docs".into(),
             small_collection: "prefs".into(),
+            large_alias: None,
+            small_alias: None,
             broadcast_data: phase1_payload,
             on: vec![("id".into(), "key".into())],
             join_type: "left".into(),
@@ -698,6 +927,8 @@ fn multi_core_broadcast_merge_simulation() {
         PhysicalPlan::Query(QueryOp::BroadcastJoin {
             large_collection: "docs".into(),
             small_collection: "prefs".into(),
+            large_alias: None,
+            small_alias: None,
             broadcast_data: data,
             on: vec![("id".into(), "key".into())],
             join_type: "inner".into(),
@@ -808,6 +1039,8 @@ fn inline_hash_join_uses_latest_matching_left_key() {
         PhysicalPlan::Query(QueryOp::HashJoin {
             left_collection: "users".into(),
             right_collection: "orders".into(),
+            left_alias: None,
+            right_alias: None,
             on: vec![("id".into(), "user_id".into())],
             join_type: "inner".into(),
             limit: 100,
@@ -844,6 +1077,7 @@ fn inline_hash_join_uses_latest_matching_left_key() {
         PhysicalPlan::Query(QueryOp::InlineHashJoin {
             left_data,
             right_data,
+            right_alias: None,
             on: vec![("id".into(), "order_id".into())],
             join_type: "inner".into(),
             limit: 100,

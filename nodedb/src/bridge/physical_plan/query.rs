@@ -14,6 +14,12 @@ pub struct AggregateSpec {
     pub expr: Option<crate::bridge::expr_eval::SqlExpr>,
 }
 
+#[derive(Debug, Clone)]
+pub struct JoinProjection {
+    pub source: String,
+    pub output: String,
+}
+
 /// Query-level physical operations (joins, aggregates).
 #[derive(Debug, Clone)]
 pub enum QueryOp {
@@ -42,6 +48,8 @@ pub enum QueryOp {
     HashJoin {
         left_collection: String,
         right_collection: String,
+        left_alias: Option<String>,
+        right_alias: Option<String>,
         on: Vec<(String, String)>,
         join_type: String,
         limit: usize,
@@ -50,7 +58,7 @@ pub enum QueryOp {
         /// Post-join aggregates: (op, field) pairs (empty = no aggregation).
         post_aggregates: Vec<(String, String)>,
         /// Post-join projection: column names to keep (empty = all).
-        projection: Vec<String>,
+        projection: Vec<JoinProjection>,
         /// Post-join WHERE filter predicates (MessagePack).
         post_filters: Vec<u8>,
         /// Inline left sub-plan for multi-way joins. When set, the executor
@@ -70,10 +78,11 @@ pub enum QueryOp {
         left_data: Vec<u8>,
         /// Right side: raw broadcast scan data.
         right_data: Vec<u8>,
+        right_alias: Option<String>,
         on: Vec<(String, String)>,
         join_type: String,
         limit: usize,
-        projection: Vec<String>,
+        projection: Vec<JoinProjection>,
         post_filters: Vec<u8>,
     },
 
@@ -81,6 +90,8 @@ pub enum QueryOp {
     BroadcastJoin {
         large_collection: String,
         small_collection: String,
+        large_alias: Option<String>,
+        small_alias: Option<String>,
         broadcast_data: Vec<u8>,
         on: Vec<(String, String)>,
         join_type: String,
@@ -90,7 +101,7 @@ pub enum QueryOp {
         /// Post-join aggregates: (op, field) pairs (empty = no aggregation).
         post_aggregates: Vec<(String, String)>,
         /// Post-join projection: column names to keep (empty = all).
-        projection: Vec<String>,
+        projection: Vec<JoinProjection>,
         /// Post-join WHERE filter predicates (MessagePack).
         post_filters: Vec<u8>,
     },

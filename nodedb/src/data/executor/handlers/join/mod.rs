@@ -212,7 +212,10 @@ pub(super) fn binary_row_matches_filters(
 /// Projection names may be unqualified ("name") while keys are qualified
 /// ("users.name"). Returns a new msgpack map with only matching fields,
 /// using the unqualified name as the output key.
-pub(super) fn binary_row_project(row: &[u8], projection: &[String]) -> Vec<u8> {
+pub(super) fn binary_row_project(
+    row: &[u8],
+    projection: &[crate::bridge::physical_plan::JoinProjection],
+) -> Vec<u8> {
     let Some((count, pos)) = msgpack_scan::map_header(row, 0) else {
         return row.to_vec();
     };
@@ -238,9 +241,12 @@ pub(super) fn binary_row_project(row: &[u8], projection: &[String]) -> Vec<u8> {
         };
         if let Some(ref k) = key {
             let short = k.rsplit('.').next().unwrap_or(k);
-            if projection.iter().any(|p| p == short || p == k) {
+            if let Some(projected) = projection
+                .iter()
+                .find(|p| p.source == short || p.source == *k)
+            {
                 entries.push(Entry {
-                    output_key: short.to_string(),
+                    output_key: projected.output.clone(),
                     val_start,
                     val_end: scan_pos,
                 });
@@ -256,4 +262,102 @@ pub(super) fn binary_row_project(row: &[u8], projection: &[String]) -> Vec<u8> {
         buf.extend_from_slice(&row[e.val_start..e.val_end]);
     }
     buf
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{binary_row_matches_filters, binary_row_project, merge_join_docs_binary};
+    use crate::bridge::scan_filter::{FilterOp, ScanFilter};
+
+    fn msgpack_row(fields: &[(&str, serde_json::Value)]) -> Vec<u8> {
+        let mut map = serde_json::Map::new();
+        for (k, v) in fields {
+            map.insert((*k).to_string(), v.clone());
+        }
+        nodedb_types::json_to_msgpack(&serde_json::Value::Object(map)).unwrap()
+    }
+
+    #[test]
+    fn self_join_aliases_survive_column_filter_comparison() {
+        let left = msgpack_row(&[
+            ("id", serde_json::json!(1)),
+            ("name", serde_json::json!("Alice")),
+            ("dept", serde_json::json!("eng")),
+        ]);
+        let right = msgpack_row(&[
+            ("id", serde_json::json!(2)),
+            ("name", serde_json::json!("Bob")),
+            ("dept", serde_json::json!("eng")),
+        ]);
+
+        let merged = merge_join_docs_binary(&left, Some(&right), "a", "b");
+        let filters = vec![ScanFilter {
+            field: "a.id".into(),
+            op: FilterOp::LtColumn,
+            value: nodedb_types::Value::String("b.id".into()),
+            clauses: Vec::new(),
+        }];
+
+        assert!(binary_row_matches_filters(&merged, &filters));
+    }
+
+    #[test]
+    fn qualified_projection_keeps_distinct_join_columns() {
+        let left = msgpack_row(&[("name", serde_json::json!("Alice"))]);
+        let right = msgpack_row(&[("name", serde_json::json!("Bob"))]);
+        let merged = merge_join_docs_binary(&left, Some(&right), "a", "b");
+
+        let projected = binary_row_project(
+            &merged,
+            &[
+                crate::bridge::physical_plan::JoinProjection {
+                    source: "a.name".into(),
+                    output: "a.name".into(),
+                },
+                crate::bridge::physical_plan::JoinProjection {
+                    source: "b.name".into(),
+                    output: "b.name".into(),
+                },
+            ],
+        );
+        let json = nodedb_types::json_from_msgpack(&projected).unwrap();
+        let obj = json.as_object().unwrap();
+
+        assert_eq!(obj.get("a.name").and_then(|v| v.as_str()), Some("Alice"));
+        assert_eq!(obj.get("b.name").and_then(|v| v.as_str()), Some("Bob"));
+    }
+
+    #[test]
+    fn aliased_projection_renames_join_columns() {
+        let left = msgpack_row(&[
+            ("name", serde_json::json!("Alice")),
+            ("dept", serde_json::json!("eng")),
+        ]);
+        let right = msgpack_row(&[("name", serde_json::json!("Bob"))]);
+        let merged = merge_join_docs_binary(&left, Some(&right), "a", "b");
+
+        let projected = binary_row_project(
+            &merged,
+            &[
+                crate::bridge::physical_plan::JoinProjection {
+                    source: "a.name".into(),
+                    output: "emp1".into(),
+                },
+                crate::bridge::physical_plan::JoinProjection {
+                    source: "b.name".into(),
+                    output: "emp2".into(),
+                },
+                crate::bridge::physical_plan::JoinProjection {
+                    source: "a.dept".into(),
+                    output: "a.dept".into(),
+                },
+            ],
+        );
+
+        let json = nodedb_types::json_from_msgpack(&projected).unwrap();
+        let obj = json.as_object().unwrap();
+        assert_eq!(obj.get("emp1").and_then(|v| v.as_str()), Some("Alice"));
+        assert_eq!(obj.get("emp2").and_then(|v| v.as_str()), Some("Bob"));
+        assert_eq!(obj.get("a.dept").and_then(|v| v.as_str()), Some("eng"));
+    }
 }

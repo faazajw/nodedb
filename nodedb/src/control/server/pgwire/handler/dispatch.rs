@@ -32,6 +32,8 @@ impl NodeDbPgHandler {
             crate::bridge::physical_plan::QueryOp::HashJoin {
                 ref left_collection,
                 ref right_collection,
+                ref left_alias,
+                ref right_alias,
                 ref on,
                 ref join_type,
                 limit,
@@ -87,6 +89,7 @@ impl NodeDbPgHandler {
                     crate::bridge::physical_plan::QueryOp::InlineHashJoin {
                         left_data,
                         right_data,
+                        right_alias: right_alias.clone(),
                         on: on_keys,
                         join_type: join_type.clone(),
                         limit,
@@ -160,6 +163,8 @@ impl NodeDbPgHandler {
                 crate::bridge::physical_plan::QueryOp::BroadcastJoin {
                     large_collection: left_collection.clone(),
                     small_collection: right_collection.clone(),
+                    large_alias: left_alias.clone(),
+                    small_alias: right_alias.clone(),
                     broadcast_data,
                     on: on_keys,
                     join_type: join_type.clone(),

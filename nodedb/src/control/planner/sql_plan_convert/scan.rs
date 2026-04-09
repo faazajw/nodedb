@@ -9,7 +9,10 @@ use crate::bridge::physical_plan::*;
 use crate::types::{TenantId, VShardId};
 
 use super::super::physical::{PhysicalTask, PostSetOp};
-use super::aggregate::{agg_expr_to_pair, extract_collection_name, extract_projection_names};
+use super::aggregate::{
+    agg_expr_to_pair, extract_collection_name, extract_join_projection_specs,
+    extract_projection_names, extract_scan_alias,
+};
 use super::convert::{ConvertContext, convert_one};
 use super::expr::convert_sort_keys;
 use super::filter::serialize_filters;
@@ -127,7 +130,9 @@ pub(super) fn convert_join(
 ) -> crate::Result<Vec<PhysicalTask>> {
     let mut left_collection = extract_collection_name(left);
     let mut right_collection = extract_collection_name(right);
-    let proj_names = extract_projection_names(projection, &[]);
+    let mut left_alias = extract_scan_alias(left);
+    let mut right_alias = extract_scan_alias(right);
+    let join_projection = extract_join_projection_specs(projection);
     let filter_bytes = serialize_filters(filters)?;
 
     // Check if the left side is a nested join (multi-way join).
@@ -145,6 +150,7 @@ pub(super) fn convert_join(
     let mut on_keys = on.to_vec();
     let effective_join_type = if join_type.as_str() == "right" {
         std::mem::swap(&mut left_collection, &mut right_collection);
+        std::mem::swap(&mut left_alias, &mut right_alias);
         on_keys = on_keys.into_iter().map(|(l, r)| (r, l)).collect();
         "left".to_string()
     } else {
@@ -159,12 +165,14 @@ pub(super) fn convert_join(
         plan: PhysicalPlan::Query(QueryOp::HashJoin {
             left_collection,
             right_collection,
+            left_alias,
+            right_alias,
             on: on_keys,
             join_type: effective_join_type,
             limit: *limit,
             post_group_by: Vec::new(),
             post_aggregates: Vec::new(),
-            projection: proj_names,
+            projection: join_projection,
             post_filters: filter_bytes,
             inline_left,
             inline_right,

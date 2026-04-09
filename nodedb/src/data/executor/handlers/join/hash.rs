@@ -219,10 +219,12 @@ impl CoreLoop {
         tid: u32,
         left_collection: &str,
         right_collection: &str,
+        left_alias: Option<&str>,
+        right_alias: Option<&str>,
         on: &[(String, String)],
         join_type: &str,
         limit: usize,
-        projection: &[String],
+        projection: &[crate::bridge::physical_plan::JoinProjection],
         post_filter_bytes: &[u8],
         inline_left: Option<&crate::bridge::envelope::PhysicalPlan>,
     ) -> Response {
@@ -230,6 +232,8 @@ impl CoreLoop {
             core = self.core_id,
             %left_collection,
             %right_collection,
+            left_alias = left_alias.unwrap_or(""),
+            right_alias = right_alias.unwrap_or(""),
             keys = on.len(),
             %join_type,
             inline = inline_left.is_some(),
@@ -273,6 +277,9 @@ impl CoreLoop {
             }
         };
 
+        let left_prefix = left_alias.unwrap_or(left_collection);
+        let right_prefix = right_alias.unwrap_or(right_collection);
+
         let right_keys: Vec<&str> = on.iter().map(|(_, r)| r.as_str()).collect();
         let left_keys: Vec<&str> = on.iter().map(|(l, _)| l.as_str()).collect();
 
@@ -288,8 +295,8 @@ impl CoreLoop {
             probe_keys: &left_keys,
             join_type,
             limit,
-            probe_collection: left_collection,
-            index_collection: right_collection,
+            probe_collection: left_prefix,
+            index_collection: right_prefix,
             emit_unmatched_right: true,
         });
 
@@ -303,7 +310,7 @@ impl CoreLoop {
         }
 
         // Apply post-join projection (binary — no JSON roundtrip).
-        if !projection.is_empty() && !projection.iter().any(|p| p == "*") {
+        if !projection.is_empty() {
             for row in &mut results {
                 *row = super::binary_row_project(row, projection);
             }
@@ -321,10 +328,11 @@ impl CoreLoop {
         task: &ExecutionTask,
         left_data: &[u8],
         right_data: &[u8],
+        right_alias: Option<&str>,
         on: &[(String, String)],
         join_type: &str,
         limit: usize,
-        projection: &[String],
+        projection: &[crate::bridge::physical_plan::JoinProjection],
         post_filter_bytes: &[u8],
     ) -> Response {
         debug!(
@@ -405,7 +413,7 @@ impl CoreLoop {
             limit,
             // Inline left rows are already merged and collection-qualified.
             probe_collection: "",
-            index_collection: "inline_right",
+            index_collection: right_alias.unwrap_or("inline_right"),
             emit_unmatched_right: true,
         });
 
@@ -417,7 +425,7 @@ impl CoreLoop {
             }
         }
 
-        if !projection.is_empty() && !projection.iter().any(|p| p == "*") {
+        if !projection.is_empty() {
             for row in &mut results {
                 *row = super::binary_row_project(row, projection);
             }
@@ -438,22 +446,29 @@ impl CoreLoop {
         tid: u32,
         large_collection: &str,
         small_collection: &str,
+        large_alias: Option<&str>,
+        small_alias: Option<&str>,
         broadcast_data: &[u8],
         on: &[(String, String)],
         join_type: &str,
         limit: usize,
-        projection: &[String],
+        projection: &[crate::bridge::physical_plan::JoinProjection],
         post_filter_bytes: &[u8],
     ) -> Response {
         debug!(
             core = self.core_id,
             %large_collection,
             %small_collection,
+            large_alias = large_alias.unwrap_or(""),
+            small_alias = small_alias.unwrap_or(""),
             broadcast_bytes = broadcast_data.len(),
             keys = on.len(),
             %join_type,
             "broadcast join"
         );
+
+        let large_prefix = large_alias.unwrap_or(large_collection);
+        let small_prefix = small_alias.unwrap_or(small_collection);
 
         // Deserialize broadcast (small) side.
         // Format: raw msgpack from broadcast_raw — concatenated arrays of
@@ -500,8 +515,8 @@ impl CoreLoop {
             probe_keys: &large_keys,
             join_type,
             limit,
-            probe_collection: large_collection,
-            index_collection: small_collection,
+            probe_collection: large_prefix,
+            index_collection: small_prefix,
             emit_unmatched_right: false,
         });
 
@@ -515,7 +530,7 @@ impl CoreLoop {
         }
 
         // Apply post-join projection (binary).
-        if !projection.is_empty() && !projection.iter().any(|p| p == "*") {
+        if !projection.is_empty() {
             for row in &mut results {
                 *row = super::binary_row_project(row, projection);
             }
