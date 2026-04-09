@@ -51,18 +51,24 @@ pub async fn dispatch_triggers(
         .as_ref()
         .and_then(|v| deserialize_event_payload(v))
         .map(|map| {
-            map.into_iter()
+            let mut fields: std::collections::HashMap<String, nodedb_types::Value> = map
+                .into_iter()
                 .map(|(k, v)| (k, nodedb_types::Value::from(v)))
-                .collect()
+                .collect();
+            inject_row_identity(&mut fields, event.row_id.as_str());
+            fields
         });
     let old_fields: Option<std::collections::HashMap<String, nodedb_types::Value>> = event
         .old_value
         .as_ref()
         .and_then(|v| deserialize_event_payload(v))
         .map(|map| {
-            map.into_iter()
+            let mut fields: std::collections::HashMap<String, nodedb_types::Value> = map
+                .into_iter()
                 .map(|(k, v)| (k, nodedb_types::Value::from(v)))
-                .collect()
+                .collect();
+            inject_row_identity(&mut fields, event.row_id.as_str());
+            fields
         });
 
     // Build a system identity for trigger execution (SECURITY DEFINER model).
@@ -425,6 +431,8 @@ fn trigger_identity(tenant_id: TenantId) -> AuthenticatedIdentity {
         is_superuser: true,
     }
 }
+
+use crate::control::trigger::row_identity::inject_row_identity;
 
 #[cfg(test)]
 mod tests {

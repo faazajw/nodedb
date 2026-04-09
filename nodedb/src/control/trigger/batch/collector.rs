@@ -103,7 +103,7 @@ impl TriggerBatchRow {
             .get_or_init(|| {
                 self.new_raw
                     .as_ref()
-                    .and_then(|bytes| decode_msgpack_to_value_map(bytes))
+                    .and_then(|bytes| decode_msgpack_to_value_map(bytes, &self.row_id))
             })
             .as_ref()
     }
@@ -114,7 +114,7 @@ impl TriggerBatchRow {
             .get_or_init(|| {
                 self.old_raw
                     .as_ref()
-                    .and_then(|bytes| decode_msgpack_to_value_map(bytes))
+                    .and_then(|bytes| decode_msgpack_to_value_map(bytes, &self.row_id))
             })
             .as_ref()
     }
@@ -146,7 +146,7 @@ impl TriggerBatchRow {
 ///
 /// Skips the `serde_json::Value` intermediate entirely. Uses `rmpv` for
 /// dynamic msgpack parsing, then converts each value to `nodedb_types::Value`.
-fn decode_msgpack_to_value_map(bytes: &[u8]) -> Option<HashMap<String, Value>> {
+fn decode_msgpack_to_value_map(bytes: &[u8], row_id: &str) -> Option<HashMap<String, Value>> {
     // Try msgpack first.
     if let Ok(rmpv::Value::Map(pairs)) = rmpv::decode::read_value(&mut &bytes[..]) {
         let mut map = HashMap::with_capacity(pairs.len());
@@ -157,14 +157,20 @@ fn decode_msgpack_to_value_map(bytes: &[u8]) -> Option<HashMap<String, Value>> {
                 map.insert(key_str.to_string(), rmpv_to_value(v));
             }
         }
+        inject_row_identity(&mut map, row_id);
         return Some(map);
     }
     // JSON fallback (legacy data).
     if let Ok(serde_json::Value::Object(map)) = sonic_rs::from_slice::<serde_json::Value>(bytes) {
-        return Some(map.into_iter().map(|(k, v)| (k, Value::from(v))).collect());
+        let mut fields: HashMap<String, Value> =
+            map.into_iter().map(|(k, v)| (k, Value::from(v))).collect();
+        inject_row_identity(&mut fields, row_id);
+        return Some(fields);
     }
     None
 }
+
+use super::super::row_identity::inject_row_identity;
 
 /// Convert an rmpv Value directly to nodedb_types::Value (no serde_json intermediate).
 fn rmpv_to_value(val: &rmpv::Value) -> Value {
