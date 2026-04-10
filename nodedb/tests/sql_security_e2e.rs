@@ -124,10 +124,7 @@ async fn create_and_show_rls_policy() {
 async fn typeguard_created_at_and_updated_at() {
     let server = TestServer::start().await;
 
-    server
-        .exec("CREATE COLLECTION tracked_docs")
-        .await
-        .unwrap();
+    server.exec("CREATE COLLECTION tracked_docs").await.unwrap();
 
     server
         .exec(

@@ -204,7 +204,7 @@ INSERT INTO users (id, name, email, role) VALUES ('u2', 'Bob', 'bob@example.com'
 
 -- Object literal syntax also works
 INSERT INTO users { name: 'Alice', email: 'alice@example.com', age: 30 };
-NSERT INTO users { name: 'Bob', email: 'bob@example.com', role: 'admin' };
+INSERT INTO users { name: 'Bob', email: 'bob@example.com', role: 'admin' };
 
 -- Query
 SELECT * FROM users WHERE name = 'Alice';
