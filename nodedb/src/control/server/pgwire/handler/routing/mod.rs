@@ -1,6 +1,9 @@
 //! Query routing: consistency selection, leader detection, SQL forwarding,
 //! and the execute_planned_sql entry point for DML/query dispatch.
 
+mod check_enforcement;
+mod set_ops;
+
 use pgwire::api::results::{Response, Tag};
 use pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
 
@@ -30,9 +33,6 @@ impl NodeDbPgHandler {
     }
 
     /// Execute planned SQL with bound parameters (prepared statement path).
-    ///
-    /// Parameters are bound at the AST level before planning — no SQL text
-    /// substitution. Empty params slice falls back to standard planning.
     pub(super) async fn execute_planned_sql_with_params(
         &self,
         identity: &AuthenticatedIdentity,
@@ -71,18 +71,17 @@ impl NodeDbPgHandler {
         let clean_sql =
             crate::control::server::session_auth::extract_and_apply_on_deny(sql, &mut auth_ctx);
 
-        // Strip RETURNING clause before DataFusion planning (DataFusion doesn't
-        // support RETURNING for DML). The flag is passed per-query through the
-        // planning call chain — no shared mutable state.
+        // Strip RETURNING clause before DataFusion planning.
         let (clean_sql, has_returning) = super::returning::strip_returning(&clean_sql);
 
-        // Check plan cache before full planning. Cache key includes schema_version
-        // for automatic invalidation on DDL. RLS policies and permissions are still
-        // validated per-query after cache lookup — caching does not bypass security.
+        // Enforce general CHECK constraints for INSERT/UPDATE before planning.
+        self.enforce_check_constraints_if_needed(&clean_sql, tenant_id)
+            .await?;
+
+        // Check plan cache before full planning.
         let schema_ver = self.state.schema_version.current();
         let cached_tasks = self.sessions.get_cached_plan(addr, &clean_sql, schema_ver);
 
-        // Skip plan cache for parameterized queries (params change per execution).
         let tasks = if !params.is_empty() {
             let perm_cache = self.state.permission_cache.read().await;
             let sec = crate::control::planner::context::PlanSecurityContext {
@@ -129,7 +128,6 @@ impl NodeDbPgHandler {
                     )))
                 })?;
 
-            // Cache the result for future identical queries.
             self.sessions
                 .put_cached_plan(addr, &clean_sql, planned.clone(), schema_ver);
 
@@ -148,7 +146,6 @@ impl NodeDbPgHandler {
 
         let needs_set_op = tasks.iter().any(|t| t.post_set_op != PostSetOp::None);
         let mut dedup_payloads: Vec<Vec<u8>> = Vec::new();
-        let mut dedup_plan_kind = None;
         let mut dedup_set_op = PostSetOp::None;
         let mut responses = Vec::with_capacity(tasks.len());
         for mut task in tasks {
@@ -206,14 +203,14 @@ impl NodeDbPgHandler {
                     doc_id,
                 )
                 .await;
-                if row.is_empty() { None } else { Some(row) }
+                if !row.is_empty() { Some(row) } else { None }
             } else {
                 None
             };
 
             if let Some(ref info) = dml_info {
                 use crate::control::trigger::dml_hook::PreDispatchResult;
-                let result = crate::control::trigger::dml_hook::fire_pre_dispatch_triggers(
+                match crate::control::trigger::dml_hook::fire_pre_dispatch_triggers(
                     &self.state,
                     identity,
                     tenant_id,
@@ -229,20 +226,16 @@ impl NodeDbPgHandler {
                         code.to_owned(),
                         message,
                     )))
-                })?;
-
-                match result {
+                })? {
                     PreDispatchResult::Handled => {
-                        // INSTEAD OF trigger handled the write — skip dispatch.
                         responses.push(Response::Execution(Tag::new("OK")));
                         continue;
                     }
                     PreDispatchResult::Proceed {
-                        mutated_fields: Some(ref fields),
+                        mutated_fields: Some(fields),
                     } => {
-                        // BEFORE trigger mutated the row — patch the task.
                         crate::control::trigger::dml_hook::patch_task_with_mutated_fields(
-                            &mut task, fields,
+                            &mut task, &fields,
                         );
                     }
                     PreDispatchResult::Proceed {
@@ -285,7 +278,7 @@ impl NodeDbPgHandler {
                 ))));
             }
 
-            // --- TRUNCATE RESTART IDENTITY: reset sequences after successful truncate ---
+            // --- TRUNCATE RESTART IDENTITY ---
             if let Some(collection) = &truncate_restart_collection {
                 self.state
                     .sequence_registry
@@ -312,7 +305,6 @@ impl NodeDbPgHandler {
                     )))
                 })?;
 
-                // Track DML for auto-ANALYZE threshold.
                 self.state
                     .dml_counter
                     .record_dml(tenant_id.as_u32(), &info.collection);
@@ -329,7 +321,6 @@ impl NodeDbPgHandler {
 
             if needs_set_op && resp_post_set_op != PostSetOp::None {
                 dedup_payloads.push(resp.payload.to_vec());
-                dedup_plan_kind = Some(plan_kind);
                 if dedup_set_op == PostSetOp::None {
                     dedup_set_op = resp_post_set_op;
                 }
@@ -340,17 +331,7 @@ impl NodeDbPgHandler {
 
         // Set operations: merge sub-query payloads.
         if needs_set_op && !dedup_payloads.is_empty() {
-            let kind = dedup_plan_kind.unwrap_or(PlanKind::MultiRow);
-            let merged = match dedup_set_op {
-                PostSetOp::Intersect | PostSetOp::IntersectAll => {
-                    merge_set_op_payloads(&dedup_payloads, SetMergeMode::Intersect)
-                }
-                PostSetOp::Except | PostSetOp::ExceptAll => {
-                    merge_set_op_payloads(&dedup_payloads, SetMergeMode::Except)
-                }
-                _ => dedup_union_payloads(&dedup_payloads),
-            };
-            responses.push(payload_to_response(&merged, kind));
+            responses.push(set_ops::apply_set_ops(&dedup_payloads, dedup_set_op));
         }
 
         Ok(responses)
@@ -481,360 +462,5 @@ impl NodeDbPgHandler {
                 format!("unexpected response from leader: {other:?}"),
             )))),
         }
-    }
-}
-
-/// Merge multiple Data Plane response payloads and deduplicate rows (UNION DISTINCT).
-///
-/// Each payload is a msgpack-encoded array of rows. Deduplication is performed
-/// at the binary level: each row's raw msgpack bytes serve as the canonical key,
-/// eliminating the decode → JSON string → re-encode round-trip.
-///
-/// Output: a single msgpack array containing all unique rows in encounter order.
-fn dedup_union_payloads(payloads: &[Vec<u8>]) -> Vec<u8> {
-    use nodedb_query::msgpack_scan;
-
-    let mut seen: std::collections::HashSet<Vec<u8>> = std::collections::HashSet::new();
-    // Collect raw byte slices of unique rows before writing output.
-    let mut unique_row_bytes: Vec<Vec<u8>> = Vec::new();
-
-    for payload in payloads {
-        if payload.is_empty() {
-            continue;
-        }
-
-        let bytes = payload.as_slice();
-        let first = bytes[0];
-
-        // Decode msgpack array header to get element count and header length.
-        let (count, hdr_len) = if (0x90..=0x9f).contains(&first) {
-            ((first & 0x0f) as usize, 1)
-        } else if first == 0xdc && bytes.len() >= 3 {
-            (u16::from_be_bytes([bytes[1], bytes[2]]) as usize, 3)
-        } else if first == 0xdd && bytes.len() >= 5 {
-            (
-                u32::from_be_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]) as usize,
-                5,
-            )
-        } else {
-            // Not a msgpack array — treat the whole payload as one row.
-            tracing::warn!(
-                payload_len = bytes.len(),
-                "dedup_union_payloads: payload is not a msgpack array; treating as single row"
-            );
-            let key = bytes.to_vec();
-            if seen.insert(key.clone()) {
-                unique_row_bytes.push(key);
-            }
-            continue;
-        };
-
-        let mut pos = hdr_len;
-        for _ in 0..count {
-            if pos >= bytes.len() {
-                break;
-            }
-            let elem_start = pos;
-            match msgpack_scan::skip_value(bytes, pos) {
-                Some(next_pos) => {
-                    let row_bytes = bytes[elem_start..next_pos].to_vec();
-                    if seen.insert(row_bytes.clone()) {
-                        unique_row_bytes.push(row_bytes);
-                    }
-                    pos = next_pos;
-                }
-                None => {
-                    tracing::warn!(
-                        pos,
-                        payload_len = bytes.len(),
-                        "dedup_union_payloads: could not skip msgpack element; stopping early"
-                    );
-                    break;
-                }
-            }
-        }
-    }
-
-    // Write output: msgpack array header + concatenated unique row bytes.
-    let row_count = unique_row_bytes.len();
-    let total_data: usize = unique_row_bytes.iter().map(|r| r.len()).sum();
-    let mut out = Vec::with_capacity(total_data + 5);
-
-    // Write array header.
-    if row_count < 16 {
-        out.push(0x90 | row_count as u8);
-    } else if row_count <= u16::MAX as usize {
-        out.push(0xdc);
-        out.extend_from_slice(&(row_count as u16).to_be_bytes());
-    } else {
-        out.push(0xdd);
-        out.extend_from_slice(&(row_count as u32).to_be_bytes());
-    }
-
-    for row in unique_row_bytes {
-        out.extend_from_slice(&row);
-    }
-
-    out
-}
-
-enum SetMergeMode {
-    Intersect,
-    Except,
-}
-
-/// Merge payloads for INTERSECT or EXCEPT set operations.
-///
-/// For INTERSECT: keep rows that appear in ALL payloads.
-/// For EXCEPT: keep rows from first payload that don't appear in any subsequent payload.
-fn merge_set_op_payloads(payloads: &[Vec<u8>], mode: SetMergeMode) -> Vec<u8> {
-    use nodedb_query::msgpack_scan;
-
-    if payloads.is_empty() {
-        return vec![0x90]; // empty msgpack array
-    }
-
-    // Extract rows as byte slices from each payload.
-    fn extract_rows(payload: &[u8]) -> Vec<Vec<u8>> {
-        if payload.is_empty() {
-            return Vec::new();
-        }
-        let first = payload[0];
-        let (count, hdr_len) = if (0x90..=0x9f).contains(&first) {
-            ((first & 0x0f) as usize, 1)
-        } else if first == 0xdc && payload.len() >= 3 {
-            (u16::from_be_bytes([payload[1], payload[2]]) as usize, 3)
-        } else if first == 0xdd && payload.len() >= 5 {
-            (
-                u32::from_be_bytes([payload[1], payload[2], payload[3], payload[4]]) as usize,
-                5,
-            )
-        } else {
-            return vec![payload.to_vec()];
-        };
-
-        let mut rows = Vec::with_capacity(count);
-        let mut pos = hdr_len;
-        for _ in 0..count {
-            if pos >= payload.len() {
-                break;
-            }
-            let start = pos;
-            match msgpack_scan::skip_value(payload, pos) {
-                Some(next) => {
-                    rows.push(payload[start..next].to_vec());
-                    pos = next;
-                }
-                None => break,
-            }
-        }
-        rows
-    }
-
-    fn write_array_header(out: &mut Vec<u8>, count: usize) {
-        if count < 16 {
-            out.push(0x90 | count as u8);
-        } else if count <= u16::MAX as usize {
-            out.push(0xdc);
-            out.extend_from_slice(&(count as u16).to_be_bytes());
-        } else {
-            out.push(0xdd);
-            out.extend_from_slice(&(count as u32).to_be_bytes());
-        }
-    }
-
-    // Scan payloads wrap logical SQL rows as {"id": "...", "data": {...}}.
-    // Set operations should compare and return the projected row in `data`,
-    // not the outer document wrapper.
-    fn logical_row_bytes(row: &[u8]) -> &[u8] {
-        msgpack_scan::extract_field(row, 0, "data")
-            .map(|(start, end)| &row[start..end])
-            .unwrap_or(row)
-    }
-
-    fn write_values_only_key(value: &[u8], out: &mut Vec<u8>) -> Option<()> {
-        if let Some((count, mut pos)) = msgpack_scan::map_header(value, 0) {
-            write_array_header(out, count);
-            for _ in 0..count {
-                pos = msgpack_scan::skip_value(value, pos)?;
-                let val_start = pos;
-                pos = msgpack_scan::skip_value(value, pos)?;
-                write_values_only_key(&value[val_start..pos], out)?;
-            }
-            return Some(());
-        }
-
-        if let Some((count, mut pos)) = msgpack_scan::array_header(value, 0) {
-            write_array_header(out, count);
-            for _ in 0..count {
-                let elem_start = pos;
-                pos = msgpack_scan::skip_value(value, pos)?;
-                write_values_only_key(&value[elem_start..pos], out)?;
-            }
-            return Some(());
-        }
-
-        out.extend_from_slice(value);
-        Some(())
-    }
-
-    fn extract_value_parts(row: &[u8]) -> Vec<Vec<u8>> {
-        let logical = logical_row_bytes(row);
-
-        if let Some((count, mut pos)) = msgpack_scan::map_header(logical, 0) {
-            let mut parts = Vec::with_capacity(count);
-            for _ in 0..count {
-                pos = match msgpack_scan::skip_value(logical, pos) {
-                    Some(next) => next,
-                    None => return vec![logical.to_vec()],
-                };
-                let val_start = pos;
-                pos = match msgpack_scan::skip_value(logical, pos) {
-                    Some(next) => next,
-                    None => return vec![logical.to_vec()],
-                };
-                let mut normalized = Vec::with_capacity(pos - val_start);
-                if write_values_only_key(&logical[val_start..pos], &mut normalized).is_none() {
-                    return vec![logical.to_vec()];
-                }
-                parts.push(normalized);
-            }
-            return parts;
-        }
-
-        if let Some((count, mut pos)) = msgpack_scan::array_header(logical, 0) {
-            let mut parts = Vec::with_capacity(count);
-            for _ in 0..count {
-                let elem_start = pos;
-                pos = match msgpack_scan::skip_value(logical, pos) {
-                    Some(next) => next,
-                    None => return vec![logical.to_vec()],
-                };
-                let mut normalized = Vec::with_capacity(pos - elem_start);
-                if write_values_only_key(&logical[elem_start..pos], &mut normalized).is_none() {
-                    return vec![logical.to_vec()];
-                }
-                parts.push(normalized);
-            }
-            return parts;
-        }
-
-        vec![logical.to_vec()]
-    }
-
-    // Extract only values (no keys) from the logical row for comparison.
-    // This makes INTERSECT/EXCEPT compare on projected column positions rather
-    // than wrapper keys or collection-specific field names.
-    fn extract_values_key(row: &[u8]) -> Vec<u8> {
-        let parts = extract_value_parts(row);
-        let mut vals = Vec::new();
-        write_array_header(&mut vals, parts.len());
-        for part in parts {
-            vals.extend_from_slice(&part);
-        }
-        vals
-    }
-
-    fn rows_match(left: &[u8], right: &[u8]) -> bool {
-        let left_parts = extract_value_parts(left);
-        let right_parts = extract_value_parts(right);
-        let shared_len = left_parts.len().min(right_parts.len());
-
-        if shared_len == 0 {
-            return left_parts.is_empty() && right_parts.is_empty();
-        }
-
-        left_parts[..shared_len] == right_parts[..shared_len]
-            && (left_parts.len() == shared_len || right_parts.len() == shared_len)
-    }
-
-    let first_rows = extract_rows(&payloads[0]);
-    let mut result_rows: Vec<Vec<u8>> = match mode {
-        SetMergeMode::Intersect => {
-            // Keep rows from first that appear in ALL other payloads (by logical values).
-            let other_rows: Vec<Vec<Vec<u8>>> =
-                payloads[1..].iter().map(|p| extract_rows(p)).collect();
-            first_rows
-                .into_iter()
-                .filter(|row| {
-                    other_rows
-                        .iter()
-                        .all(|rows| rows.iter().any(|other| rows_match(row, other)))
-                })
-                .map(|row| logical_row_bytes(&row).to_vec())
-                .collect()
-        }
-        SetMergeMode::Except => {
-            // Keep rows from first that don't appear in ANY other payload (by logical values).
-            let other_rows: Vec<Vec<u8>> =
-                payloads[1..].iter().flat_map(|p| extract_rows(p)).collect();
-            first_rows
-                .into_iter()
-                .filter(|row| !other_rows.iter().any(|other| rows_match(row, other)))
-                .map(|row| logical_row_bytes(&row).to_vec())
-                .collect()
-        }
-    };
-
-    // Deduplicate result by values (not full row bytes, since keys differ).
-    let mut seen = std::collections::HashSet::new();
-    result_rows.retain(|r| seen.insert(extract_values_key(r)));
-
-    // Write msgpack array.
-    let row_count = result_rows.len();
-    let total: usize = result_rows.iter().map(|r| r.len()).sum();
-    let mut out = Vec::with_capacity(total + 5);
-    if row_count < 16 {
-        out.push(0x90 | row_count as u8);
-    } else if row_count <= u16::MAX as usize {
-        out.push(0xdc);
-        out.extend_from_slice(&(row_count as u16).to_be_bytes());
-    } else {
-        out.push(0xdd);
-        out.extend_from_slice(&(row_count as u32).to_be_bytes());
-    }
-    for row in result_rows {
-        out.extend_from_slice(&row);
-    }
-    out
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{SetMergeMode, merge_set_op_payloads};
-
-    fn encode_array(rows: &[serde_json::Value]) -> Vec<u8> {
-        nodedb_types::json_to_msgpack(&serde_json::Value::Array(rows.to_vec())).unwrap()
-    }
-
-    #[test]
-    fn intersect_compares_wrapped_rows_by_logical_data_values() {
-        let left = encode_array(&[
-            serde_json::json!({"id":"u1","data":{"id":"u1","name":"Alice"}}),
-            serde_json::json!({"id":"u2","data":{"id":"u2","name":"Bob"}}),
-        ]);
-        let right = encode_array(&[
-            serde_json::json!({"id":"doc-1","data":{"user_id":"u1"}}),
-            serde_json::json!({"id":"doc-2","data":{"user_id":"u3"}}),
-        ]);
-
-        let merged = merge_set_op_payloads(&[left, right], SetMergeMode::Intersect);
-        let json = crate::data::executor::response_codec::decode_payload_to_json(&merged);
-
-        assert_eq!(json, r#"[{"id":"u1","name":"Alice"}]"#);
-    }
-
-    #[test]
-    fn except_returns_unwrapped_logical_rows() {
-        let left = encode_array(&[
-            serde_json::json!({"id":"u1","data":{"id":"u1"}}),
-            serde_json::json!({"id":"u2","data":{"id":"u2"}}),
-        ]);
-        let right = encode_array(&[serde_json::json!({"id":"doc-1","data":{"user_id":"u1"}})]);
-
-        let merged = merge_set_op_payloads(&[left, right], SetMergeMode::Except);
-        let json = crate::data::executor::response_codec::decode_payload_to_json(&merged);
-
-        assert_eq!(json, r#"[{"id":"u2"}]"#);
     }
 }
