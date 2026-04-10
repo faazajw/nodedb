@@ -94,7 +94,7 @@ pub fn check_type_guards(
                 Some(nodedb_types::Value::Null)
             );
         if let Some(ref check_str) = guard.check_expr
-            && !(field_absent && !guard.required)
+            && (!field_absent || guard.required)
         {
             let (check_expr, _deps) = nodedb_query::expr_parse::parse_generated_expr(check_str)
                 .map_err(|e| ErrorCode::TypeGuardViolation {
