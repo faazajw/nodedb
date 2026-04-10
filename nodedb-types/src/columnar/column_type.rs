@@ -35,18 +35,39 @@ pub enum ColumnType {
     /// Arbitrary nested data stored as inline MessagePack.
     /// Variable-length. Accepts any Value type.
     Json,
+    /// ULID: 16-byte Crockford Base32-encoded sortable ID.
+    Ulid,
+    /// Duration: signed microsecond precision (i64 internally).
+    Duration,
+    /// Ordered array of values. Variable-length, inline MessagePack.
+    Array,
+    /// Ordered set (auto-deduplicated). Variable-length, inline MessagePack.
+    Set,
+    /// Compiled regex pattern. Stored as string internally.
+    Regex,
+    /// Bounded range of values. Variable-length, inline MessagePack.
+    Range,
+    /// Typed reference to another record (`table:id`). Variable-length, inline MessagePack.
+    Record,
 }
 
 impl ColumnType {
     /// Whether this type has a fixed byte size in Binary Tuple layout.
     pub fn fixed_size(&self) -> Option<usize> {
         match self {
-            Self::Int64 | Self::Float64 | Self::Timestamp => Some(8),
+            Self::Int64 | Self::Float64 | Self::Timestamp | Self::Duration => Some(8),
             Self::Bool => Some(1),
-            Self::Decimal => Some(16),
-            Self::Uuid => Some(16),
+            Self::Decimal | Self::Uuid | Self::Ulid => Some(16),
             Self::Vector(dim) => Some(*dim as usize * 4),
-            Self::String | Self::Bytes | Self::Geometry | Self::Json => None,
+            Self::String
+            | Self::Bytes
+            | Self::Geometry
+            | Self::Json
+            | Self::Array
+            | Self::Set
+            | Self::Regex
+            | Self::Range
+            | Self::Record => None,
         }
     }
 
@@ -79,6 +100,16 @@ impl ColumnType {
                 | (Self::Geometry, Value::Geometry(_) | Value::String(_))
                 | (Self::Vector(_), Value::Array(_) | Value::Bytes(_))
                 | (Self::Uuid, Value::Uuid(_) | Value::String(_))
+                | (Self::Ulid, Value::Ulid(_) | Value::String(_))
+                | (
+                    Self::Duration,
+                    Value::Duration(_) | Value::Integer(_) | Value::String(_)
+                )
+                | (Self::Array, Value::Array(_))
+                | (Self::Set, Value::Set(_) | Value::Array(_))
+                | (Self::Regex, Value::Regex(_) | Value::String(_))
+                | (Self::Range, Value::Range { .. })
+                | (Self::Record, Value::Record { .. } | Value::String(_))
                 | (Self::Json, _)
                 | (_, Value::Null)
         )
@@ -99,6 +130,13 @@ impl fmt::Display for ColumnType {
             Self::Vector(dim) => write!(f, "VECTOR({dim})"),
             Self::Uuid => f.write_str("UUID"),
             Self::Json => f.write_str("JSON"),
+            Self::Ulid => f.write_str("ULID"),
+            Self::Duration => f.write_str("DURATION"),
+            Self::Array => f.write_str("ARRAY"),
+            Self::Set => f.write_str("SET"),
+            Self::Regex => f.write_str("REGEX"),
+            Self::Range => f.write_str("RANGE"),
+            Self::Record => f.write_str("RECORD"),
         }
     }
 }
@@ -140,6 +178,13 @@ impl FromStr for ColumnType {
             "GEOMETRY" => Ok(Self::Geometry),
             "UUID" => Ok(Self::Uuid),
             "JSON" | "JSONB" => Ok(Self::Json),
+            "ULID" => Ok(Self::Ulid),
+            "DURATION" => Ok(Self::Duration),
+            "ARRAY" => Ok(Self::Array),
+            "SET" => Ok(Self::Set),
+            "REGEX" => Ok(Self::Regex),
+            "RANGE" => Ok(Self::Range),
+            "RECORD" => Ok(Self::Record),
             "DATETIME" => Err(ColumnTypeParseError::UseTimestamp),
             other => Err(ColumnTypeParseError::Unknown(other.to_string())),
         }

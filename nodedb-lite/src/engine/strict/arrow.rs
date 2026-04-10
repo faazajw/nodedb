@@ -19,6 +19,12 @@ pub fn column_type_to_arrow(ct: &ColumnType) -> arrow::datatypes::DataType {
         }
         ColumnType::Decimal => arrow::datatypes::DataType::Utf8, // Lossless string representation
         ColumnType::Uuid => arrow::datatypes::DataType::Utf8,
+        ColumnType::Ulid => arrow::datatypes::DataType::Utf8,
+        ColumnType::Duration => arrow::datatypes::DataType::Int64,
+        ColumnType::Regex => arrow::datatypes::DataType::Utf8,
+        ColumnType::Array | ColumnType::Set | ColumnType::Range | ColumnType::Record => {
+            arrow::datatypes::DataType::Binary
+        }
         ColumnType::Vector(_) => arrow::datatypes::DataType::Binary, // Packed f32 bytes
     }
 }

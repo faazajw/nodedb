@@ -135,7 +135,24 @@ impl ColumnData {
                 dim: *dim,
                 valid,
             },
-            ColumnType::Json => Self::Bytes {
+            ColumnType::Json
+            | ColumnType::Array
+            | ColumnType::Set
+            | ColumnType::Range
+            | ColumnType::Record => Self::Bytes {
+                data: Vec::new(),
+                offsets: vec![0],
+                valid,
+            },
+            ColumnType::Ulid => Self::Uuid {
+                values: Vec::new(),
+                valid,
+            },
+            ColumnType::Duration => Self::Timestamp {
+                values: Vec::new(),
+                valid,
+            },
+            ColumnType::Regex => Self::String {
                 data: Vec::new(),
                 offsets: vec![0],
                 valid,

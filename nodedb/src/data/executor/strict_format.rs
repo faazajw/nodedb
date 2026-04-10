@@ -149,8 +149,8 @@ fn coerce_value(val: &Value, col_type: &ColumnType, col_name: &str) -> Result<Va
                 .map_err(|_| format!("column '{col_name}': cannot parse '{s}' as FLOAT")),
             _ => Err(format!("column '{col_name}': expected FLOAT, got {val:?}")),
         },
-        ColumnType::String | ColumnType::Uuid => match val {
-            Value::String(_) | Value::Uuid(_) | Value::Ulid(_) => Ok(val.clone()),
+        ColumnType::String | ColumnType::Uuid | ColumnType::Ulid | ColumnType::Regex => match val {
+            Value::String(_) | Value::Uuid(_) | Value::Ulid(_) | Value::Regex(_) => Ok(val.clone()),
             Value::Integer(n) => Ok(Value::String(n.to_string())),
             Value::Float(f) => Ok(Value::String(f.to_string())),
             Value::Bool(b) => Ok(Value::String(b.to_string())),
@@ -216,13 +216,28 @@ fn coerce_value(val: &Value, col_type: &ColumnType, col_name: &str) -> Result<Va
             )),
         },
         ColumnType::Geometry => Ok(Value::String(format!("{val:?}"))),
-        ColumnType::Json => {
-            // JSON column: val is raw MessagePack bytes — deserialize to Value.
+        ColumnType::Duration => match val {
+            Value::Duration(_) => Ok(val.clone()),
+            Value::Integer(n) => Ok(Value::Integer(*n)),
+            Value::String(s) => s
+                .parse::<i64>()
+                .map(Value::Integer)
+                .map_err(|_| format!("column '{col_name}': cannot parse '{s}' as DURATION")),
+            _ => Err(format!(
+                "column '{col_name}': expected DURATION, got {val:?}"
+            )),
+        },
+        ColumnType::Json
+        | ColumnType::Array
+        | ColumnType::Set
+        | ColumnType::Range
+        | ColumnType::Record => {
+            // Variable-length inline MessagePack column: val is raw bytes — deserialize to Value.
             if let Value::Bytes(b) = val {
                 Ok(match nodedb_types::value_from_msgpack(b) {
                     Ok(v) => v,
                     Err(e) => {
-                        tracing::warn!(len = b.len(), error = %e, "corrupted JSON msgpack in strict column");
+                        tracing::warn!(len = b.len(), error = %e, "corrupted msgpack in strict column");
                         Value::Null
                     }
                 })

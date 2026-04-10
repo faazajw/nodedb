@@ -108,7 +108,13 @@ fn convert_column_type(ct: &nodedb_types::columnar::ColumnType) -> SqlDataType {
         ColumnType::Bool => SqlDataType::Bool,
         ColumnType::Bytes | ColumnType::Geometry | ColumnType::Json => SqlDataType::Bytes,
         ColumnType::Timestamp => SqlDataType::Timestamp,
-        ColumnType::Decimal | ColumnType::Uuid => SqlDataType::String,
+        ColumnType::Decimal | ColumnType::Uuid | ColumnType::Ulid | ColumnType::Regex => {
+            SqlDataType::String
+        }
+        ColumnType::Duration => SqlDataType::Int64,
+        ColumnType::Array | ColumnType::Set | ColumnType::Range | ColumnType::Record => {
+            SqlDataType::Bytes
+        }
         ColumnType::Vector(dim) => SqlDataType::Vector(*dim as usize),
     }
 }

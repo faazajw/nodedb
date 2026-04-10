@@ -48,11 +48,18 @@ pub fn extract_column_to_arrow(
         ColumnType::Bool => extract_bool(decoder, tuples, col_idx, n),
         ColumnType::Timestamp => extract_timestamp(decoder, tuples, col_idx, n),
         ColumnType::String => extract_string(decoder, tuples, col_idx, n),
-        ColumnType::Bytes | ColumnType::Geometry | ColumnType::Json => {
-            extract_binary(decoder, tuples, col_idx, n)
-        }
+        ColumnType::Bytes
+        | ColumnType::Geometry
+        | ColumnType::Json
+        | ColumnType::Array
+        | ColumnType::Set
+        | ColumnType::Range
+        | ColumnType::Record => extract_binary(decoder, tuples, col_idx, n),
         ColumnType::Decimal => extract_decimal_as_string(decoder, tuples, col_idx, n),
         ColumnType::Uuid => extract_uuid(decoder, tuples, col_idx, n),
+        ColumnType::Ulid => extract_uuid(decoder, tuples, col_idx, n), // same 16-byte layout
+        ColumnType::Duration => extract_int64(decoder, tuples, col_idx, n), // i64 microseconds
+        ColumnType::Regex => extract_string(decoder, tuples, col_idx, n), // stored as string
         ColumnType::Vector(dim) => extract_vector(decoder, tuples, col_idx, n, *dim as usize),
     }
 }

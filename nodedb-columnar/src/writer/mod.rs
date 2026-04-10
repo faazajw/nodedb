@@ -146,16 +146,22 @@ fn select_codec(col_type: &ColumnType) -> ColumnCodec {
         ColumnType::Int64 => ColumnTypeHint::Int64,
         ColumnType::Float64 => ColumnTypeHint::Float64,
         ColumnType::Timestamp => ColumnTypeHint::Timestamp,
-        ColumnType::String | ColumnType::Geometry => ColumnTypeHint::String,
+        ColumnType::String | ColumnType::Geometry | ColumnType::Regex => ColumnTypeHint::String,
         ColumnType::Bool
         | ColumnType::Bytes
         | ColumnType::Decimal
         | ColumnType::Uuid
-        | ColumnType::Json => {
+        | ColumnType::Ulid
+        | ColumnType::Json
+        | ColumnType::Array
+        | ColumnType::Set
+        | ColumnType::Range
+        | ColumnType::Record => {
             return ColumnCodec::Lz4;
         }
+        ColumnType::Duration => ColumnTypeHint::Int64, // i64 microseconds
         ColumnType::Vector(_) => {
-            return ColumnCodec::Lz4; // Packed f32 — raw + LZ4.
+            return ColumnCodec::Lz4;
         }
     };
     nodedb_codec::detect_codec(ColumnCodec::Auto, hint)
