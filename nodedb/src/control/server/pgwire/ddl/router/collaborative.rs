@@ -43,6 +43,12 @@ pub(super) async fn dispatch(
             state, identity, sql,
         ));
     }
+    // SHOW CONSTRAINTS ON <collection>
+    if upper.starts_with("SHOW CONSTRAINTS ON ") {
+        return Some(super::super::constraint::show_constraints(
+            state, identity, sql,
+        ));
+    }
     if upper.starts_with("DROP CONSTRAINT ") {
         return Some(super::super::constraint::drop_constraint(
             state, identity, parts,

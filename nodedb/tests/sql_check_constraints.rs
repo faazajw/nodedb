@@ -251,6 +251,102 @@ async fn duplicate_constraint_name_rejected() {
     assert!(err.unwrap_err().contains("already exists"));
 }
 
+// ── SHOW CONSTRAINTS ──
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn show_constraints_unified_view() {
+    let server = TestServer::start().await;
+
+    server.exec("CREATE COLLECTION constrained").await.unwrap();
+
+    // Add a state transition constraint.
+    server
+        .exec(
+            "ALTER COLLECTION constrained ADD CONSTRAINT status_flow \
+             ON COLUMN status TRANSITIONS ('draft' -> 'active', 'active' -> 'closed')",
+        )
+        .await
+        .unwrap();
+
+    // Add a general CHECK constraint.
+    server
+        .exec(
+            "ALTER COLLECTION constrained ADD CONSTRAINT positive_val \
+             CHECK (NEW.val > 0)",
+        )
+        .await
+        .unwrap();
+
+    // SHOW CONSTRAINTS should return both.
+    let rows = server
+        .query_text("SHOW CONSTRAINTS ON constrained")
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 2, "should have 2 constraints: {rows:?}");
+
+    // First column is the constraint name — verify both are present.
+    let names: Vec<&str> = rows.iter().map(|r| r.as_str()).collect();
+    assert!(
+        names.contains(&"status_flow"),
+        "should contain status_flow: {names:?}"
+    );
+    assert!(
+        names.contains(&"positive_val"),
+        "should contain positive_val: {names:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn show_constraints_empty_collection() {
+    let server = TestServer::start().await;
+
+    server
+        .exec("CREATE COLLECTION no_constraints")
+        .await
+        .unwrap();
+
+    let rows = server
+        .query_text("SHOW CONSTRAINTS ON no_constraints")
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 0, "no constraints expected: {rows:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn show_constraints_after_drop() {
+    let server = TestServer::start().await;
+
+    server
+        .exec("CREATE COLLECTION drop_test_coll")
+        .await
+        .unwrap();
+
+    server
+        .exec(
+            "ALTER COLLECTION drop_test_coll ADD CONSTRAINT chk1 \
+             CHECK (NEW.x > 0)",
+        )
+        .await
+        .unwrap();
+
+    let rows = server
+        .query_text("SHOW CONSTRAINTS ON drop_test_coll")
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+
+    server
+        .exec("DROP CONSTRAINT chk1 ON drop_test_coll")
+        .await
+        .unwrap();
+
+    let rows = server
+        .query_text("SHOW CONSTRAINTS ON drop_test_coll")
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 0, "constraint should be gone after DROP");
+}
+
 // ── CHECK with subquery (cross-collection) ──
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
