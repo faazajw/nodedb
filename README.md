@@ -110,7 +110,7 @@ All seven engines as an embedded library. Linux, macOS, Windows, Android, iOS, a
 - **Lite + Origin** -- offline-first with CRDT sync. Writes happen locally, deltas merge to Origin when online. Multiple devices converge regardless of order.
 - **Same API** -- the `NodeDb` trait is identical across Lite and Origin. Switch between embedded and server without changing application code.
 
-See [NodeDB-Lite docs](docs/lite.md) for platform details and sync configuration.
+See [NodeDB-Lite](https://github.com/NodeDB-Lab/nodedb-lite) for platform details and sync configuration.
 
 ## Key Features
 
@@ -126,8 +126,9 @@ See [NodeDB-Lite docs](docs/lite.md) for platform details and sync configuration
 
 ## Tools
 
-- **[`ndb`](docs/cli.md)** -- Native CLI with TUI, syntax highlighting, and tab completion. Alternative to `psql`.
-- **NodeDB Admin** -- Web-based GUI for managing collections, browsing data, and monitoring. _(coming soon)_
+- **[`ndb`](https://github.com/NodeDB-Lab/nodedb-cli)** -- Native CLI with TUI, syntax highlighting, and tab completion. Alternative to `psql`.
+- **[NodeDB Studio](https://github.com/NodeDB-Lab/nodedb-studio)** -- GUI client for managing collections, browsing data, and monitoring. _(coming soon)_
+- **[nodedb-bench](https://github.com/NodeDB-Lab/nodedb-bench)** -- Performance benchmarks against competing databases.
 
 ## Documentation
 
@@ -136,7 +137,7 @@ See [NodeDB-Lite docs](docs/lite.md) for platform details and sync configuration
 - [Engine Guides](docs/README.md) -- Deep dives into each engine
 - [Security](docs/security/README.md) -- Auth, RBAC, RLS, audit, multi-tenancy
 - [Real-Time](docs/real-time.md) -- CDC, pub/sub, LIVE SELECT
-- [NodeDB-Lite](docs/lite.md) -- Embedded edge database
+- [NodeDB-Lite](https://github.com/NodeDB-Lab/nodedb-lite) -- Embedded edge database
 - [AI Patterns](docs/ai/README.md) -- RAG, GraphRAG, agent memory, feature store
 
 ## Building from Source
