@@ -362,8 +362,61 @@ async fn convert_to_strict_with_explicit_cols() {
     let result = server
         .exec("CONVERT COLLECTION conv_explicit TO strict (id TEXT, val INT)")
         .await;
-    if let Err(ref e) = result {
-        let _ = std::fs::write("/tmp/convert_err.log", e);
-    }
     assert!(result.is_ok(), "explicit convert should work");
+}
+
+// ── DEFAULT gen_uuid_v7() / now() on strict schema ──
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn strict_default_gen_uuid_v7() {
+    let server = TestServer::start().await;
+
+    server
+        .exec(
+            "CREATE COLLECTION strict_uuid TYPE DOCUMENT STRICT (\
+                 id TEXT PRIMARY KEY DEFAULT gen_uuid_v7(),\
+                 name TEXT\
+             )",
+        )
+        .await
+        .unwrap();
+
+    // Insert without id — DEFAULT gen_uuid_v7() should fill it.
+    let result = server
+        .exec("INSERT INTO strict_uuid (name) VALUES ('Alice')")
+        .await;
+    result.unwrap();
+
+    let rows = server
+        .query_text("SELECT * FROM strict_uuid")
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1, "should have 1 row: {rows:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn strict_default_now() {
+    let server = TestServer::start().await;
+
+    server
+        .exec(
+            "CREATE COLLECTION strict_ts TYPE DOCUMENT STRICT (\
+                 id TEXT PRIMARY KEY,\
+                 created_at TEXT DEFAULT now()\
+             )",
+        )
+        .await
+        .unwrap();
+
+    // Insert without created_at — DEFAULT now() should fill it.
+    server
+        .exec("INSERT INTO strict_ts (id) VALUES ('t1')")
+        .await
+        .unwrap();
+
+    let rows = server
+        .query_text("SELECT * FROM strict_ts WHERE id = 't1'")
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1, "should have 1 row: {rows:?}");
 }

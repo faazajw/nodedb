@@ -221,16 +221,31 @@ pub(super) fn rows_to_msgpack_array(
 ///   - `NANOID(N)` → URL-friendly N-char ID
 ///   - Integer/float literals → numeric values
 ///   - Quoted strings → string values
-fn evaluate_default_expr(expr: &str) -> Option<nodedb_types::Value> {
+pub(super) fn evaluate_default_expr(expr: &str) -> Option<nodedb_types::Value> {
     let upper = expr.trim().to_uppercase();
     match upper.as_str() {
-        "UUID_V7" | "UUIDV7" => Some(nodedb_types::Value::String(nodedb_types::id_gen::uuid_v7())),
-        "UUID_V4" | "UUIDV4" | "UUID" => {
+        // Bare keywords and function call forms.
+        "UUID_V7" | "UUIDV7" | "GEN_UUID_V7()" | "UUID_V7()" => {
+            Some(nodedb_types::Value::String(nodedb_types::id_gen::uuid_v7()))
+        }
+        "UUID_V4" | "UUIDV4" | "UUID" | "GEN_UUID_V4()" | "UUID_V4()" => {
             Some(nodedb_types::Value::String(nodedb_types::id_gen::uuid_v4()))
         }
-        "ULID" => Some(nodedb_types::Value::String(nodedb_types::id_gen::ulid())),
-        "CUID2" => Some(nodedb_types::Value::String(nodedb_types::id_gen::cuid2())),
-        "NANOID" => Some(nodedb_types::Value::String(nodedb_types::id_gen::nanoid())),
+        "ULID" | "GEN_ULID()" | "ULID()" => {
+            Some(nodedb_types::Value::String(nodedb_types::id_gen::ulid()))
+        }
+        "CUID2" | "CUID2()" => Some(nodedb_types::Value::String(nodedb_types::id_gen::cuid2())),
+        "NANOID" | "NANOID()" => Some(nodedb_types::Value::String(nodedb_types::id_gen::nanoid())),
+        "NOW()" => {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default();
+            Some(nodedb_types::Value::String(
+                chrono::DateTime::from_timestamp_millis(now.as_millis() as i64)
+                    .map(|dt| dt.to_rfc3339())
+                    .unwrap_or_else(|| now.as_millis().to_string()),
+            ))
+        }
         _ => {
             // NANOID(N) — custom length
             if upper.starts_with("NANOID(") && upper.ends_with(')') {

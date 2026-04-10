@@ -25,7 +25,27 @@ pub(super) fn convert_insert(
     let mut tasks = Vec::new();
     let mut columnar_rows: Vec<&Vec<(String, SqlValue)>> = Vec::new();
 
-    for row in rows {
+    // Pre-expand rows with defaults for document engines.
+    // Columnar engines apply defaults in rows_to_msgpack_array instead.
+    let expanded_rows: Vec<Vec<(String, SqlValue)>> = rows
+        .iter()
+        .map(|row| {
+            if column_defaults.is_empty() {
+                return row.clone();
+            }
+            let mut expanded = row.clone();
+            for (col_name, default_expr) in column_defaults {
+                if !expanded.iter().any(|(k, _)| k == col_name)
+                    && let Some(val) = super::value::evaluate_default_expr(default_expr)
+                {
+                    expanded.push((col_name.clone(), nodedb_value_to_sql(val)));
+                }
+            }
+            expanded
+        })
+        .collect();
+
+    for (i, row) in expanded_rows.iter().enumerate() {
         let doc_id = row
             .iter()
             .find(|(k, _)| k == "id" || k == "document_id" || k == "key")
@@ -48,7 +68,8 @@ pub(super) fn convert_insert(
                 });
             }
             EngineType::Columnar | EngineType::Spatial => {
-                columnar_rows.push(row);
+                // Use original (unexpanded) rows — defaults applied in rows_to_msgpack_array.
+                columnar_rows.push(&rows[i]);
             }
             EngineType::DocumentSchemaless | EngineType::DocumentStrict => {
                 let value_bytes = row_to_msgpack(row)?;
@@ -294,5 +315,17 @@ pub(super) fn convert_delete(
             }),
             post_set_op: PostSetOp::None,
         }])
+    }
+}
+
+/// Convert a `nodedb_types::Value` (from default evaluation) to `SqlValue` for row insertion.
+fn nodedb_value_to_sql(val: nodedb_types::Value) -> SqlValue {
+    match val {
+        nodedb_types::Value::Integer(n) => SqlValue::Int(n),
+        nodedb_types::Value::Float(f) => SqlValue::Float(f),
+        nodedb_types::Value::String(s) => SqlValue::String(s),
+        nodedb_types::Value::Bool(b) => SqlValue::Bool(b),
+        nodedb_types::Value::Null => SqlValue::Null,
+        _ => SqlValue::String(format!("{val:?}")),
     }
 }
