@@ -153,15 +153,18 @@ pub async fn weighted_pick(
             value: audit_value,
             ttl_ms: 0,
         });
-        // Fire-and-forget: audit write failure doesn't block the pick result.
-        let _ = crate::control::server::dispatch_utils::dispatch_to_data_plane(
+        // Audit write failure doesn't block the pick result, but log the error.
+        if let Err(e) = crate::control::server::dispatch_utils::dispatch_to_data_plane(
             state,
             tenant_id,
             VShardId::from_collection("_system_random_audit"),
             audit_plan,
             0,
         )
-        .await;
+        .await
+        {
+            tracing::warn!(error = %e, "WEIGHTED_PICK: audit write failed");
+        }
     }
 
     // Step 5: Build response rows.
@@ -195,62 +198,44 @@ async fn scan_all_entries(
     vshard: VShardId,
     collection: &str,
 ) -> PgWireResult<Vec<(Vec<u8>, Vec<u8>)>> {
-    let mut all_entries = Vec::new();
-    let mut cursor = Vec::new();
-    let batch_size = 1000usize;
+    let plan = PhysicalPlan::Kv(KvOp::Scan {
+        collection: collection.to_string(),
+        cursor: Vec::new(),
+        count: 100_000,
+        filters: Vec::new(),
+        match_pattern: None,
+    });
 
-    loop {
-        let plan = PhysicalPlan::Kv(KvOp::Scan {
-            collection: collection.to_string(),
-            cursor: cursor.clone(),
-            count: batch_size,
-            filters: Vec::new(),
-            match_pattern: None,
-        });
+    let resp = crate::control::server::dispatch_utils::dispatch_to_data_plane(
+        state, tenant_id, vshard, plan, 0,
+    )
+    .await
+    .map_err(|e| sqlstate_error("XX000", &e.to_string()))?;
 
-        let resp = crate::control::server::dispatch_utils::dispatch_to_data_plane(
-            state, tenant_id, vshard, plan, 0,
-        )
-        .await
-        .map_err(|e| sqlstate_error("XX000", &e.to_string()))?;
+    if resp.status != Status::Ok {
+        return Ok(Vec::new());
+    }
 
-        if resp.status != Status::Ok {
-            break;
-        }
+    // KV scan returns a flat msgpack array of entry maps.
+    let payload_text = crate::data::executor::response_codec::decode_payload_to_json(&resp.payload);
+    let json: serde_json::Value = sonic_rs::from_str(&payload_text).unwrap_or_default();
 
-        let payload_text =
-            crate::data::executor::response_codec::decode_payload_to_json(&resp.payload);
-        let json: serde_json::Value = sonic_rs::from_str(&payload_text).unwrap_or_default();
+    let entries = match json {
+        serde_json::Value::Array(arr) => arr,
+        _ => return Ok(Vec::new()),
+    };
 
-        let entries = json.get("entries").and_then(|e| e.as_array());
-        let next_cursor = json.get("cursor").and_then(|c| c.as_str()).unwrap_or("0");
+    let mut all_entries = Vec::with_capacity(entries.len());
+    for entry in &entries {
+        let key_b64 = entry.get("key").and_then(|k| k.as_str()).unwrap_or("");
+        let val_b64 = entry.get("value").and_then(|v| v.as_str()).unwrap_or("");
 
-        if let Some(entries) = entries {
-            for entry in entries {
-                let key_b64 = entry.get("key").and_then(|k| k.as_str()).unwrap_or("");
-                let val_b64 = entry.get("value").and_then(|v| v.as_str()).unwrap_or("");
+        let key_bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, key_b64)
+            .unwrap_or_default();
+        let val_bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, val_b64)
+            .unwrap_or_default();
 
-                let key_bytes =
-                    base64::Engine::decode(&base64::engine::general_purpose::STANDARD, key_b64)
-                        .unwrap_or_default();
-                let val_bytes =
-                    base64::Engine::decode(&base64::engine::general_purpose::STANDARD, val_b64)
-                        .unwrap_or_default();
-
-                all_entries.push((key_bytes, val_bytes));
-            }
-
-            if entries.is_empty() || next_cursor == "0" {
-                break;
-            }
-
-            // Decode the next cursor for pagination.
-            cursor =
-                base64::Engine::decode(&base64::engine::general_purpose::STANDARD, next_cursor)
-                    .unwrap_or_default();
-        } else {
-            break;
-        }
+        all_entries.push((key_bytes, val_bytes));
     }
 
     Ok(all_entries)

@@ -6,8 +6,6 @@ use pgwire::error::PgWireResult;
 use crate::control::security::identity::AuthenticatedIdentity;
 use crate::control::state::SharedState;
 
-use nodedb_sql::parser::object_literal::parse_object_literal;
-
 use super::super::sql_parse::{parse_sql_value, split_values};
 use crate::control::server::pgwire::types::sqlstate_error;
 
@@ -80,51 +78,29 @@ pub(super) fn parse_write_statement(
     }
 
     // Determine which form this statement uses: { } object literal or (cols) VALUES (vals).
+    // If { }, rewrite to VALUES SQL via nodedb-sql's preprocess, then parse that.
     let after_coll_name = after_into[coll_name_str.len()..].trim_start();
 
     if after_coll_name.starts_with('{') {
-        return parse_object_literal_form(&coll_name, after_coll_name, &upper, coll_type);
+        if let Some(preprocessed) = nodedb_sql::parser::preprocess::preprocess(sql) {
+            let rewritten = preprocessed.sql;
+            let rewritten_upper = rewritten.to_uppercase();
+            // The preprocessed SQL is always INSERT INTO regardless of original keyword.
+            return parse_values_form(
+                &rewritten,
+                &rewritten_upper,
+                "INSERT INTO ",
+                &coll_name,
+                coll_type,
+            );
+        }
+        return Some(Err(sqlstate_error(
+            "42601",
+            "failed to parse object literal in INSERT/UPSERT statement",
+        )));
     }
 
     parse_values_form(sql, &upper, keyword, &coll_name, coll_type)
-}
-
-/// Parse the `{ key: val, ... }` object literal form.
-fn parse_object_literal_form(
-    coll_name: &str,
-    after_coll_name: &str,
-    upper: &str,
-    coll_type: Option<nodedb_types::CollectionType>,
-) -> Option<PgWireResult<ParsedInsert>> {
-    // Strip trailing semicolon before parsing.
-    let obj_str = after_coll_name.trim_end_matches(';').trim_end();
-
-    let fields = match parse_object_literal(obj_str) {
-        None => {
-            return Some(Err(sqlstate_error(
-                "42601",
-                "expected object literal starting with '{'",
-            )));
-        }
-        Some(Err(msg)) => {
-            return Some(Err(sqlstate_error(
-                "42601",
-                &format!("object literal parse error: {msg}"),
-            )));
-        }
-        Some(Ok(f)) => f,
-    };
-
-    let doc_id = extract_doc_id(&fields);
-    let has_returning = upper.contains("RETURNING");
-
-    Some(Ok(ParsedInsert {
-        coll_name: coll_name.to_string(),
-        doc_id,
-        fields,
-        has_returning,
-        collection_type: coll_type,
-    }))
 }
 
 /// Parse the `(cols) VALUES (vals)` form.
@@ -211,16 +187,6 @@ fn parse_values_form(
         has_returning,
         collection_type: coll_type,
     }))
-}
-
-/// Extract document ID from parsed fields, generating one if absent.
-fn extract_doc_id(fields: &std::collections::HashMap<String, nodedb_types::Value>) -> String {
-    for key in ["id", "document_id", "key"] {
-        if let Some(nodedb_types::Value::String(s)) = fields.get(key) {
-            return s.clone();
-        }
-    }
-    nodedb_types::id_gen::uuid_v7()
 }
 
 /// Format a RETURNING response from parsed fields.
