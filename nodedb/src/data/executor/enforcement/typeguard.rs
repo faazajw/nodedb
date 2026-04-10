@@ -85,9 +85,40 @@ pub fn check_type_guards(
             // If the field is absent and not required, it's valid — skip type check.
         }
 
-        // TODO: CHECK expression evaluation — requires SqlExpr parser integration.
-        // For now, type + required enforcement is active. CHECK will be wired in next.
-        let _ = &guard.check_expr;
+        // CHECK expression evaluation.
+        // Skip if the guarded field is absent and not required — absent optional fields
+        // don't need CHECK validation (the field simply isn't there).
+        let field_absent = resolve_field(doc, &guard.field).is_none()
+            || matches!(
+                resolve_field(doc, &guard.field),
+                Some(nodedb_types::Value::Null)
+            );
+        if let Some(ref check_str) = guard.check_expr
+            && !(field_absent && !guard.required)
+        {
+            let (check_expr, _deps) = nodedb_query::expr_parse::parse_generated_expr(check_str)
+                .map_err(|e| ErrorCode::TypeGuardViolation {
+                    collection: collection.to_string(),
+                    detail: format!(
+                        "field '{}': invalid CHECK expression '{}': {e}",
+                        guard.field, check_str
+                    ),
+                })?;
+            let result = check_expr.eval(doc);
+            match result {
+                nodedb_types::Value::Bool(true) => {} // CHECK passed
+                nodedb_types::Value::Null => {}       // NULL passes CHECK (SQL semantics)
+                _ => {
+                    return Err(ErrorCode::TypeGuardViolation {
+                        collection: collection.to_string(),
+                        detail: format!(
+                            "CHECK failed on '{}': {} (got {:?})",
+                            guard.field, check_str, result
+                        ),
+                    });
+                }
+            }
+        }
     }
 
     Ok(())
