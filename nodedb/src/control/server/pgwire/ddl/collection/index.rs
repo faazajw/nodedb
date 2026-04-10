@@ -28,36 +28,72 @@ pub fn create_index(
     let is_unique = upper.contains("UNIQUE INDEX");
     let idx_offset = if is_unique { 3 } else { 2 }; // skip "CREATE UNIQUE INDEX" vs "CREATE INDEX"
 
-    if parts.len() < idx_offset + 3 {
+    if parts.len() < idx_offset + 2 {
         return Err(sqlstate_error(
             "42601",
-            "syntax: CREATE [UNIQUE] INDEX <name> ON <collection> (<field>) [WHERE ...]",
+            "CREATE INDEX requires at least: ON <collection> (<field>)",
         ));
     }
 
-    let index_name = parts[idx_offset];
-    if !parts[idx_offset + 1].eq_ignore_ascii_case("ON") {
-        return Err(sqlstate_error("42601", "expected ON after index name"));
+    // Detect whether index name is present or omitted.
+    // If parts[idx_offset] is "ON", the name was omitted.
+    let (index_name_owned, on_offset) = if parts[idx_offset].eq_ignore_ascii_case("ON") {
+        // No name — will auto-generate after parsing field.
+        (String::new(), idx_offset)
+    } else {
+        // Named: parts[idx_offset] is the name, parts[idx_offset+1] should be ON.
+        if parts.len() < idx_offset + 3 {
+            return Err(sqlstate_error(
+                "42601",
+                &format!(
+                    "CREATE INDEX {}: expected ON <collection> (<field>) after index name",
+                    parts[idx_offset]
+                ),
+            ));
+        }
+        if !parts[idx_offset + 1].eq_ignore_ascii_case("ON") {
+            return Err(sqlstate_error("42601", "expected ON after index name"));
+        }
+        (parts[idx_offset].to_lowercase(), idx_offset + 1)
+    };
+
+    if parts.len() <= on_offset + 1 {
+        return Err(sqlstate_error("42601", "expected collection name after ON"));
     }
 
-    // Handle both "collection (field)" and "collection(field)" formats.
+    // Handle both "collection (field)", "collection(field)", and "collection FIELDS field".
     let (collection, field) = {
-        let raw = parts[idx_offset + 2];
+        let raw = parts[on_offset + 1];
         if let Some(paren_pos) = raw.find('(') {
-            // Combined: "indexed_col(role)"
             let coll = &raw[..paren_pos];
             let fld = raw[paren_pos..].trim_matches(|c| c == '(' || c == ')');
             (coll.to_string(), fld.to_string())
-        } else if parts.len() > idx_offset + 3 {
-            // Separate: "indexed_col" "(role)"
-            let fld = parts[idx_offset + 3].trim_matches(|c| c == '(' || c == ')');
-            (raw.to_string(), fld.to_string())
+        } else if parts.len() > on_offset + 2 {
+            let next = parts[on_offset + 2];
+            if next.eq_ignore_ascii_case("FIELDS") && parts.len() > on_offset + 3 {
+                // FIELDS keyword form: ON collection FIELDS field
+                (raw.to_string(), parts[on_offset + 3].to_string())
+            } else {
+                // Parenthesized form: ON collection (field)
+                let fld = next.trim_matches(|c| c == '(' || c == ')');
+                (raw.to_string(), fld.to_string())
+            }
         } else {
             return Err(sqlstate_error(
                 "42601",
-                "syntax: CREATE [UNIQUE] INDEX <name> ON <collection> (<field>) [WHERE ...]",
+                &format!(
+                    "missing field specification for index on '{}': use (<field>) or FIELDS <field>",
+                    raw
+                ),
             ));
         }
+    };
+
+    // Auto-generate name if omitted.
+    let index_name = if index_name_owned.is_empty() {
+        format!("idx_{}_{}", collection, field)
+    } else {
+        index_name_owned
     };
 
     // Parse optional WHERE condition for conditional indexes.
@@ -111,7 +147,7 @@ pub fn create_index(
         .set_owner(
             "index",
             tenant_id,
-            index_name,
+            &index_name,
             &index_owner,
             catalog.as_ref(),
         )
