@@ -180,7 +180,7 @@ fn kv_scan_returns_entries() {
     );
 
     let json = payload_value(&payload);
-    let entries = json["entries"].as_array().unwrap();
+    let entries = json.as_array().unwrap();
     assert_eq!(entries.len(), 5);
 }
 
@@ -218,7 +218,7 @@ fn kv_scan_with_match_pattern() {
     );
 
     let json = payload_value(&payload);
-    let entries = json["entries"].as_array().unwrap();
+    let entries = json.as_array().unwrap();
     // "user:0", "user:1", "user:2" — 3 entries (second batch overwrites first).
     assert_eq!(entries.len(), 3);
 }

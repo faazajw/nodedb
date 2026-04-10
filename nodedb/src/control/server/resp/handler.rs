@@ -298,19 +298,19 @@ async fn handle_scan(cmd: &RespCommand, session: &RespSession, state: &SharedSta
 
     match dispatch_kv(state, session, plan).await {
         Ok(resp) if resp.status == Status::Ok => {
-            let json: serde_json::Value = sonic_rs::from_slice(&resp.payload).unwrap_or_default();
+            // KV scan returns a flat msgpack array of entry maps.
+            let json: serde_json::Value = match sonic_rs::from_slice(&resp.payload) {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(error = %e, "RESP SCAN: failed to decode KV scan payload");
+                    return RespValue::err(format!("ERR scan decode failed: {e}"));
+                }
+            };
 
-            let next_cursor = json
-                .get("cursor")
-                .and_then(|v| v.as_str())
-                .unwrap_or("0")
-                .to_string();
-
-            let entries = json
-                .get("entries")
-                .and_then(|v| v.as_array())
-                .cloned()
-                .unwrap_or_default();
+            let entries = match json {
+                serde_json::Value::Array(arr) => arr,
+                _ => Vec::new(),
+            };
 
             let keys: Vec<RespValue> = entries
                 .iter()
@@ -323,10 +323,8 @@ async fn handle_scan(cmd: &RespCommand, session: &RespSession, state: &SharedSta
                 })
                 .collect();
 
-            RespValue::array(vec![
-                RespValue::bulk_str(&next_cursor),
-                RespValue::array(keys),
-            ])
+            // Cursor "0" signals scan complete (no pagination in this path).
+            RespValue::array(vec![RespValue::bulk_str("0"), RespValue::array(keys)])
         }
         Ok(_) => RespValue::array(vec![RespValue::bulk_str("0"), RespValue::array(vec![])]),
         Err(e) => RespValue::err(format!("ERR {e}")),
@@ -346,12 +344,17 @@ async fn handle_keys(cmd: &RespCommand, session: &RespSession, state: &SharedSta
 
     match dispatch_kv(state, session, plan).await {
         Ok(resp) if resp.status == Status::Ok => {
-            let json: serde_json::Value = sonic_rs::from_slice(&resp.payload).unwrap_or_default();
-            let entries = json
-                .get("entries")
-                .and_then(|v| v.as_array())
-                .cloned()
-                .unwrap_or_default();
+            let json: serde_json::Value = match sonic_rs::from_slice(&resp.payload) {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(error = %e, "RESP KEYS: failed to decode KV scan payload");
+                    return RespValue::err(format!("ERR keys decode failed: {e}"));
+                }
+            };
+            let entries = match json {
+                serde_json::Value::Array(arr) => arr,
+                _ => Vec::new(),
+            };
 
             let keys: Vec<RespValue> = entries
                 .iter()
@@ -386,8 +389,17 @@ async fn handle_dbsize(session: &RespSession, state: &SharedState) -> RespValue 
 
     match dispatch_kv(state, session, plan).await {
         Ok(resp) if resp.status == Status::Ok => {
-            let json: serde_json::Value = sonic_rs::from_slice(&resp.payload).unwrap_or_default();
-            let count = json.get("count").and_then(|v| v.as_i64()).unwrap_or(0);
+            let json: serde_json::Value = match sonic_rs::from_slice(&resp.payload) {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(error = %e, "RESP DBSIZE: failed to decode KV scan payload");
+                    return RespValue::err(format!("ERR dbsize decode failed: {e}"));
+                }
+            };
+            let count = match &json {
+                serde_json::Value::Array(arr) => arr.len() as i64,
+                _ => 0,
+            };
             RespValue::integer(count)
         }
         _ => RespValue::integer(0),

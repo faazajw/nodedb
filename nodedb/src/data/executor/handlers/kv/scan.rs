@@ -24,7 +24,7 @@ impl CoreLoop {
 
         // Try to extract a single equality filter for index pushdown.
         let (filter_field, filter_value) = extract_eq_filter(filters);
-        let (entries, next_cursor) = self.kv_engine.scan(
+        let (entries, _next_cursor) = self.kv_engine.scan(
             tid,
             collection,
             cursor,
@@ -64,22 +64,13 @@ impl CoreLoop {
             result_entries.push(entry_mp);
         }
 
-        // Build response as raw msgpack map: {"entries": [...], "next_cursor"?: "..."}
-        let field_count = if next_cursor.is_empty() { 1 } else { 2 };
+        // Build response as flat msgpack array — same format as document/columnar scan.
+        // RESP SCAN handles cursor pagination at its own handler layer.
         let mut payload =
             Vec::with_capacity(result_entries.iter().map(|e| e.len()).sum::<usize>() + 64);
-        nodedb_query::msgpack_scan::write_map_header(&mut payload, field_count);
-        // "entries" array
-        nodedb_query::msgpack_scan::write_str(&mut payload, "entries");
         nodedb_query::msgpack_scan::write_array_header(&mut payload, result_entries.len());
         for entry in &result_entries {
             payload.extend_from_slice(entry);
-        }
-        // Optional "next_cursor"
-        if !next_cursor.is_empty() {
-            use base64::Engine;
-            let cursor_b64 = base64::engine::general_purpose::STANDARD.encode(&next_cursor);
-            nodedb_query::msgpack_scan::write_kv_str(&mut payload, "next_cursor", &cursor_b64);
         }
         if let Some(ref m) = self.metrics {
             m.record_kv_scan();

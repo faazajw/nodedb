@@ -477,7 +477,7 @@ fn kv_index_write_amp_ratio_matches() {
         }),
     );
     let json: serde_json::Value = payload_value(&payload);
-    let count = json["entries"].as_array().unwrap().len();
+    let count = json.as_array().unwrap().len();
     assert_eq!(count, 100);
 }
 
