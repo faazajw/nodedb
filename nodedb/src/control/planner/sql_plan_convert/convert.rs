@@ -79,6 +79,13 @@ pub(super) fn convert_one(
             column_defaults,
         } => super::dml::convert_insert(collection, engine, rows, column_defaults, tenant_id),
 
+        SqlPlan::Upsert {
+            collection,
+            engine,
+            rows,
+            column_defaults,
+        } => super::dml::convert_upsert(collection, engine, rows, column_defaults, tenant_id),
+
         SqlPlan::KvInsert {
             collection,
             entries,
@@ -276,8 +283,10 @@ pub(super) fn convert_one(
             super::set_ops::convert_cte(definitions, outer, tenant_id, ctx)
         }
 
-        _ => Err(crate::Error::PlanError {
-            detail: format!("unsupported SqlPlan variant: {plan:?}"),
-        }),
+        SqlPlan::MultiVectorSearch { .. } | SqlPlan::RangeScan { .. } => {
+            Err(crate::Error::PlanError {
+                detail: format!("unsupported SqlPlan variant: {plan:?}"),
+            })
+        }
     }
 }

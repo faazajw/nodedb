@@ -38,9 +38,16 @@ pub(super) fn convert_insert(
                     detail: "KV INSERT must use SqlPlan::KvInsert path".into(),
                 });
             }
+            EngineType::Timeseries => {
+                // Timeseries INSERT should have been routed to TimeseriesIngest
+                // by nodedb-sql. If it reaches here, it's a planner bug.
+                return Err(crate::Error::PlanError {
+                    detail: format!(
+                        "INSERT into '{collection}': timeseries collections use TimeseriesIngest, not Insert"
+                    ),
+                });
+            }
             EngineType::Columnar | EngineType::Spatial => {
-                // Columnar/Spatial INSERT: batch into a single ColumnarOp::Insert.
-                // Accumulate rows and emit after the loop.
                 columnar_rows.push(row);
             }
             EngineType::DocumentSchemaless | EngineType::DocumentStrict => {
@@ -54,13 +61,6 @@ pub(super) fn convert_insert(
                         value: value_bytes,
                     }),
                     post_set_op: PostSetOp::None,
-                });
-            }
-            other => {
-                return Err(crate::Error::PlanError {
-                    detail: format!(
-                        "INSERT into '{collection}': unexpected engine type {other:?}, expected Document/Columnar/Spatial"
-                    ),
                 });
             }
         }
@@ -79,6 +79,55 @@ pub(super) fn convert_insert(
             }),
             post_set_op: PostSetOp::None,
         });
+    }
+
+    Ok(tasks)
+}
+
+pub(super) fn convert_upsert(
+    collection: &str,
+    engine: &EngineType,
+    rows: &[Vec<(String, SqlValue)>],
+    _column_defaults: &[(String, String)],
+    tenant_id: TenantId,
+) -> crate::Result<Vec<PhysicalTask>> {
+    let vshard = VShardId::from_collection(collection);
+    let mut tasks = Vec::new();
+
+    for row in rows {
+        let doc_id = row
+            .iter()
+            .find(|(k, _)| k == "id" || k == "document_id" || k == "key")
+            .map(|(_, v)| sql_value_to_string(v))
+            .unwrap_or_default();
+
+        match engine {
+            EngineType::DocumentSchemaless | EngineType::DocumentStrict => {
+                let value_bytes = row_to_msgpack(row)?;
+                tasks.push(PhysicalTask {
+                    tenant_id,
+                    vshard_id: vshard,
+                    plan: PhysicalPlan::Document(DocumentOp::Upsert {
+                        collection: collection.into(),
+                        document_id: doc_id,
+                        value: value_bytes,
+                    }),
+                    post_set_op: PostSetOp::None,
+                });
+            }
+            // Columnar, Timeseries, Spatial, KeyValue should never reach here —
+            // nodedb-sql rejects upsert on these engine types at plan time.
+            EngineType::Columnar
+            | EngineType::Timeseries
+            | EngineType::Spatial
+            | EngineType::KeyValue => {
+                return Err(crate::Error::PlanError {
+                    detail: format!(
+                        "UPSERT into '{collection}': engine type {engine:?} does not support upsert"
+                    ),
+                });
+            }
+        }
     }
 
     Ok(tasks)

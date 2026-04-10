@@ -59,7 +59,14 @@ pub(super) fn convert_scan(p: ScanParams<'_>) -> crate::Result<Vec<PhysicalTask>
                 rls_filters: Vec::new(),
             })
         }
-        EngineType::Columnar | EngineType::Spatial => PhysicalPlan::Columnar(ColumnarOp::Scan {
+        EngineType::Columnar => PhysicalPlan::Columnar(ColumnarOp::Scan {
+            collection: collection.into(),
+            projection: proj_names,
+            limit: limit.unwrap_or(10000),
+            filters: filter_bytes,
+            rls_filters: Vec::new(),
+        }),
+        EngineType::Spatial => PhysicalPlan::Columnar(ColumnarOp::Scan {
             collection: collection.into(),
             projection: proj_names,
             limit: limit.unwrap_or(10000),
@@ -73,17 +80,19 @@ pub(super) fn convert_scan(p: ScanParams<'_>) -> crate::Result<Vec<PhysicalTask>
             filters: filter_bytes,
             match_pattern: None,
         }),
-        _ => PhysicalPlan::Document(DocumentOp::Scan {
-            collection: collection.into(),
-            limit: limit.unwrap_or(10000),
-            offset: *offset,
-            sort_keys: sort,
-            filters: filter_bytes,
-            distinct: *distinct,
-            projection: proj_names,
-            computed_columns: computed_bytes,
-            window_functions: window_bytes,
-        }),
+        EngineType::DocumentSchemaless | EngineType::DocumentStrict => {
+            PhysicalPlan::Document(DocumentOp::Scan {
+                collection: collection.into(),
+                limit: limit.unwrap_or(10000),
+                offset: *offset,
+                sort_keys: sort,
+                filters: filter_bytes,
+                distinct: *distinct,
+                projection: proj_names,
+                computed_columns: computed_bytes,
+                window_functions: window_bytes,
+            })
+        }
     };
     Ok(vec![PhysicalTask {
         tenant_id,
@@ -106,11 +115,29 @@ pub(super) fn convert_point_get(
             key: sql_value_to_bytes(key_value),
             rls_filters: Vec::new(),
         }),
-        _ => PhysicalPlan::Document(DocumentOp::PointGet {
-            collection: collection.into(),
-            document_id: sql_value_to_string(key_value),
-            rls_filters: Vec::new(),
-        }),
+        EngineType::DocumentSchemaless | EngineType::DocumentStrict => {
+            PhysicalPlan::Document(DocumentOp::PointGet {
+                collection: collection.into(),
+                document_id: sql_value_to_string(key_value),
+                rls_filters: Vec::new(),
+            })
+        }
+        // Columnar point get: route through ColumnarOp::Scan with a limit-1 filter.
+        EngineType::Columnar | EngineType::Spatial => {
+            PhysicalPlan::Document(DocumentOp::PointGet {
+                collection: collection.into(),
+                document_id: sql_value_to_string(key_value),
+                rls_filters: Vec::new(),
+            })
+        }
+        // Timeseries should never reach here — nodedb-sql rejects point gets.
+        EngineType::Timeseries => {
+            return Err(crate::Error::PlanError {
+                detail: format!(
+                    "point get on '{collection}': timeseries does not support point lookups"
+                ),
+            });
+        }
     };
     Ok(vec![PhysicalTask {
         tenant_id,
