@@ -1,4 +1,4 @@
-//! Integration tests for typeguard DEFAULT and VALUE expressions.
+//! Integration tests for typeguard DEFAULT/VALUE expressions and VALIDATE TYPEGUARD.
 //!
 //! Verifies that:
 //! - DEFAULT injects a value when the field is absent
@@ -181,4 +181,98 @@ async fn typeguard_default_integer() {
         .await
         .unwrap();
     assert_eq!(rows.len(), 1);
+}
+
+// ── VALIDATE TYPEGUARD ──
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn validate_typeguard_no_violations() {
+    let server = TestServer::start().await;
+
+    server.exec("CREATE COLLECTION val_clean").await.unwrap();
+
+    // Insert valid data first.
+    server
+        .exec("INSERT INTO val_clean { id: 'v1', name: 'Alice', age: 25 }")
+        .await
+        .unwrap();
+
+    // Add type guard after data.
+    server
+        .exec(
+            "CREATE TYPEGUARD ON val_clean (\
+                 name STRING,\
+                 age INT\
+             )",
+        )
+        .await
+        .unwrap();
+
+    // Validate — all docs should pass.
+    let rows = server
+        .query_text("VALIDATE TYPEGUARD ON val_clean")
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 0, "no violations expected: {rows:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn validate_typeguard_finds_violations() {
+    let server = TestServer::start().await;
+
+    server.exec("CREATE COLLECTION val_dirty").await.unwrap();
+
+    // Insert data that will violate a future type guard.
+    server
+        .exec("INSERT INTO val_dirty { id: 'd1', name: 'Alice', score: 42 }")
+        .await
+        .unwrap();
+    server
+        .exec("INSERT INTO val_dirty { id: 'd2', name: 123, score: 99 }")
+        .await
+        .unwrap();
+
+    // Add type guard — name must be STRING.
+    server
+        .exec(
+            "CREATE TYPEGUARD ON val_dirty (\
+                 name STRING\
+             )",
+        )
+        .await
+        .unwrap();
+
+    // Validate — d2 has name=123 (INT, not STRING).
+    let rows = server
+        .query_text("VALIDATE TYPEGUARD ON val_dirty")
+        .await
+        .unwrap();
+    assert!(
+        !rows.is_empty(),
+        "should find at least one violation: {rows:?}"
+    );
+    // First column is document_id — should be d2.
+    assert!(
+        rows.iter().any(|r| r.contains("d2")),
+        "violation should reference d2: {rows:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn validate_typeguard_no_guards() {
+    let server = TestServer::start().await;
+
+    server.exec("CREATE COLLECTION val_noguard").await.unwrap();
+
+    server
+        .exec("INSERT INTO val_noguard { id: 'n1', x: 1 }")
+        .await
+        .unwrap();
+
+    // No typeguard — should return empty result.
+    let rows = server
+        .query_text("VALIDATE TYPEGUARD ON val_noguard")
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 0);
 }

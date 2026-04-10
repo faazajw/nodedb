@@ -28,6 +28,9 @@ pub(super) async fn dispatch(
             state, identity, sql,
         ));
     }
+    if upper.starts_with("VALIDATE TYPEGUARD ON ") {
+        return Some(super::super::typeguard::validate_typeguard(state, identity, sql).await);
+    }
     if upper.starts_with("SHOW TYPEGUARD ON ") {
         return Some(super::super::typeguard::show_typeguard(
             state, identity, sql,
