@@ -542,9 +542,15 @@ impl CoreLoop {
 
             PhysicalPlan::Kv(kv_op) => self.execute_kv(task, tid, kv_op),
 
-            // All other plan variants are handled by their dedicated dispatchers.
-            // This arm should be unreachable at runtime.
-            _ => unreachable!("dispatch_other received unexpected plan variant"),
+            // These variants are dispatched by their dedicated dispatchers in mod.rs.
+            // They should never reach dispatch_other.
+            PhysicalPlan::Document(_)
+            | PhysicalPlan::Vector(_)
+            | PhysicalPlan::Crdt(_)
+            | PhysicalPlan::Graph(_)
+            | PhysicalPlan::Text(_) => {
+                unreachable!("dispatch_other received plan variant that has its own dispatcher")
+            }
         }
     }
 }

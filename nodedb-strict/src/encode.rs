@@ -247,8 +247,19 @@ fn encode_variable(var_data: &mut Vec<u8>, col_type: &ColumnType, value: &Value)
         (ColumnType::Geometry, Value::String(s)) => {
             var_data.extend_from_slice(s.as_bytes());
         }
+        (ColumnType::Json, Value::String(s)) => {
+            // String input for JSON column: parse as JSON, then serialize as MessagePack.
+            // This handles VALUES ('{"key":"val"}') where the SQL planner passes a string literal.
+            let parsed = sonic_rs::from_str::<serde_json::Value>(s)
+                .ok()
+                .map(|jv| nodedb_types::Value::from(jv));
+            let to_encode = parsed.as_ref().unwrap_or(value);
+            if let Ok(bytes) = nodedb_types::value_to_msgpack(to_encode) {
+                var_data.extend_from_slice(&bytes);
+            }
+        }
         (ColumnType::Json, value) => {
-            // Serialize any Value as MessagePack.
+            // Non-string input (Object, Array, etc.): serialize directly as MessagePack.
             if let Ok(bytes) = nodedb_types::value_to_msgpack(value) {
                 var_data.extend_from_slice(&bytes);
             }

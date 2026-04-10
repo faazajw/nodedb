@@ -114,6 +114,9 @@ impl<S: StorageEngine> LiteQueryEngine<S> {
                 ..
             } => self.execute_delete(collection, target_keys),
             SqlPlan::Truncate { collection, .. } => self.execute_truncate(collection),
+            SqlPlan::Upsert {
+                collection, rows, ..
+            } => self.execute_upsert(collection, rows),
             _ => Err(LiteError::Query(format!("unsupported plan: {plan:?}"))),
         }
     }
@@ -183,6 +186,15 @@ impl<S: StorageEngine> LiteQueryEngine<S> {
             }
             _ => Ok(QueryResult::empty()),
         }
+    }
+
+    fn execute_upsert(
+        &self,
+        collection: &str,
+        rows: &[Vec<(String, nodedb_sql::SqlValue)>],
+    ) -> Result<QueryResult, LiteError> {
+        // In Lite, CRDT storage is naturally upsert — same as insert.
+        self.execute_insert(collection, rows)
     }
 
     fn execute_insert(
