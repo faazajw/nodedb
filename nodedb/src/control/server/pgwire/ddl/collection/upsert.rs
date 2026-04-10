@@ -3,15 +3,12 @@
 use pgwire::api::results::{Response, Tag};
 use pgwire::error::PgWireResult;
 
-use crate::bridge::physical_plan::DocumentOp;
 use crate::control::security::identity::AuthenticatedIdentity;
 use crate::control::state::SharedState;
 
 use super::insert_parse::{
-    build_kv_plan, dispatch_plan, fire_before_triggers, fire_instead_triggers,
-    fire_sync_after_triggers, parse_write_statement,
+    fire_before_triggers, fire_instead_triggers, fire_sync_after_triggers, parse_write_statement,
 };
-use crate::control::server::pgwire::types::sqlstate_error;
 
 /// UPSERT INTO <collection> (col1, col2, ...) VALUES (val1, val2, ...)
 ///
@@ -28,7 +25,6 @@ pub async fn upsert_document(
     };
 
     let tenant_id = identity.tenant_id;
-    let vshard_id = crate::types::VShardId::from_collection(&parsed.coll_name);
 
     // Fire INSTEAD OF INSERT triggers (upsert treated as INSERT for triggers).
     if let Some(result) = fire_instead_triggers(
@@ -78,33 +74,12 @@ pub async fn upsert_document(
         }
     }
 
-    // Rebuild value bytes if BEFORE trigger mutated NEW fields.
-    let value_bytes = if fields != parsed.fields {
-        nodedb_types::value_to_msgpack(&nodedb_types::Value::Object(fields.clone()))
-            .unwrap_or(parsed.value_bytes)
-    } else {
-        parsed.value_bytes
-    };
-
-    // Build the write plan driven by collection type.
-    // KV PUT is naturally an upsert (overwrites). Columnar upsert is unsupported.
-    let plan = match &parsed.collection_type {
-        Some(ct) if ct.is_kv() => build_kv_plan(&parsed.coll_name, &parsed.doc_id, &fields),
-        Some(ct) if ct.is_columnar() => {
-            return Some(Err(sqlstate_error(
-                "0A000",
-                "UPSERT is not supported for columnar collections",
-            )));
-        }
-        _ => crate::bridge::envelope::PhysicalPlan::Document(DocumentOp::Upsert {
-            collection: parsed.coll_name.clone(),
-            document_id: parsed.doc_id.clone(),
-            value: value_bytes,
-        }),
-    };
-
-    if let Some(err) = dispatch_plan(state, tenant_id, vshard_id, plan).await {
-        return Some(err);
+    // Build SQL and route through nodedb-sql → EngineRules → sql_plan_convert.
+    let upsert_sql = super::insert_parse::fields_to_upsert_sql(&parsed.coll_name, &fields);
+    if let Err(e) =
+        super::insert_parse::plan_and_dispatch(state, identity, tenant_id, &upsert_sql).await
+    {
+        return Some(Err(e));
     }
 
     // Fire SYNC AFTER INSERT triggers.

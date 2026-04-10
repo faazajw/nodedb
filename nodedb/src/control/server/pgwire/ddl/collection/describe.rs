@@ -89,7 +89,7 @@ pub fn describe_collection(
 
     // Show storage mode info.
     if coll.collection_type.is_strict()
-        || coll.collection_type.is_columnar()
+        || coll.collection_type.is_columnar_family()
         || coll.collection_type.is_kv()
     {
         encoder

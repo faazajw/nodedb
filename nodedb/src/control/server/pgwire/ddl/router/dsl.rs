@@ -116,7 +116,7 @@ pub(super) async fn dispatch(
         return Some(super::super::bulk::copy_from(state, identity, parts).await);
     }
 
-    // INSERT INTO x { } — object literal syntax; intercept before DataFusion.
+    // INSERT INTO x { } — object literal syntax; intercept for trigger/sequence handling.
     if upper.starts_with("INSERT INTO ") {
         let after_into = &sql["INSERT INTO ".len()..].trim_start();
         let coll_end = after_into

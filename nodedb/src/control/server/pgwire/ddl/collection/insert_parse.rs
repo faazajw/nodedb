@@ -3,7 +3,6 @@
 use pgwire::api::results::{Response, Tag};
 use pgwire::error::PgWireResult;
 
-use crate::bridge::physical_plan::KvOp;
 use crate::control::security::identity::AuthenticatedIdentity;
 use crate::control::state::SharedState;
 
@@ -17,7 +16,6 @@ pub(super) struct ParsedInsert {
     pub coll_name: String,
     pub doc_id: String,
     pub fields: std::collections::HashMap<String, nodedb_types::Value>,
-    pub value_bytes: Vec<u8>,
     pub has_returning: bool,
     /// Collection type looked up from the catalog. Drives the write plan.
     pub collection_type: Option<nodedb_types::CollectionType>,
@@ -48,7 +46,7 @@ pub(super) fn extract_vector_fields(
 /// Parse an INSERT/UPSERT SQL statement into structured fields.
 ///
 /// `keyword` is the SQL prefix to match (e.g., "INSERT INTO " or "UPSERT INTO ").
-/// Returns `None` if the collection has a typed schema (let DataFusion handle it).
+/// Returns `None` if the collection has a typed schema (let the SQL path handle it).
 pub(super) fn parse_write_statement(
     state: &SharedState,
     identity: &AuthenticatedIdentity,
@@ -61,10 +59,10 @@ pub(super) fn parse_write_statement(
     let coll_name_str = after_into.split_whitespace().next()?;
     let coll_name = coll_name_str.to_lowercase();
 
-    // Check if collection is schemaless. Let DataFusion handle typed INSERT
-    // with VALUES syntax, but always handle here for:
-    // - UPSERT (DataFusion doesn't understand UPSERT)
-    // - { } object literal syntax (DataFusion doesn't understand { })
+    // Check if collection is schemaless. Let the SQL path handle typed INSERT
+    // with VALUES syntax, but always handle here for pre-write concerns:
+    // - UPSERT (triggers + nodedb-sql handles the routing)
+    // - { } object literal syntax (triggers + nodedb-sql handles the routing)
     let tenant_id = identity.tenant_id;
     let is_upsert = keyword.starts_with("UPSERT");
     let after_coll_trimmed = after_into[coll_name_str.len()..].trim_start();
@@ -73,7 +71,7 @@ pub(super) fn parse_write_statement(
     if let Some(catalog) = state.credentials.catalog()
         && let Ok(Some(coll)) = catalog.get_collection(tenant_id.as_u32(), &coll_name)
     {
-        // Skip non-schemaless collections for standard VALUES INSERT (let DataFusion handle).
+        // Skip non-schemaless collections for standard VALUES INSERT (let SQL path handle).
         // But always handle here for: UPSERT, { } object literal (any collection type).
         if !is_upsert && !is_object_literal && !coll.collection_type.is_schemaless() {
             return None;
@@ -118,15 +116,12 @@ fn parse_object_literal_form(
     };
 
     let doc_id = extract_doc_id(&fields);
-    let value_bytes = nodedb_types::value_to_msgpack(&nodedb_types::Value::Object(fields.clone()))
-        .unwrap_or_default();
     let has_returning = upper.contains("RETURNING");
 
     Some(Ok(ParsedInsert {
         coll_name: coll_name.to_string(),
         doc_id,
         fields,
-        value_bytes,
         has_returning,
         collection_type: coll_type,
     }))
@@ -207,15 +202,12 @@ fn parse_values_form(
         doc_id = nodedb_types::id_gen::uuid_v7();
     }
 
-    let value_bytes = nodedb_types::value_to_msgpack(&nodedb_types::Value::Object(fields.clone()))
-        .unwrap_or_default();
     let has_returning = upper.contains("RETURNING");
 
     Some(Ok(ParsedInsert {
         coll_name: coll_name.to_string(),
         doc_id,
         fields,
-        value_bytes,
         has_returning,
         collection_type: coll_type,
     }))
@@ -229,27 +221,6 @@ fn extract_doc_id(fields: &std::collections::HashMap<String, nodedb_types::Value
         }
     }
     nodedb_types::id_gen::uuid_v7()
-}
-
-/// Build a KV PUT plan from parsed insert fields.
-pub(super) fn build_kv_plan(
-    collection: &str,
-    doc_id: &str,
-    fields: &std::collections::HashMap<String, nodedb_types::Value>,
-) -> crate::bridge::envelope::PhysicalPlan {
-    let key = doc_id.as_bytes().to_vec();
-    let mut value_fields = fields.clone();
-    for k in ["key", "id", "document_id"] {
-        value_fields.remove(k);
-    }
-    let value = nodedb_types::value_to_msgpack(&nodedb_types::Value::Object(value_fields))
-        .unwrap_or_default();
-    crate::bridge::envelope::PhysicalPlan::Kv(KvOp::Put {
-        collection: collection.to_string(),
-        key,
-        value,
-        ttl_ms: 0,
-    })
 }
 
 /// Format a RETURNING response from parsed fields.
@@ -299,6 +270,107 @@ pub(super) async fn dispatch_plan(
         return Some(Err(sqlstate_error("XX000", &e.to_string())));
     }
     None
+}
+
+/// Build a SQL INSERT statement from field map.
+///
+/// Produces `INSERT INTO coll (col1, col2) VALUES ('val1', 'val2')`.
+pub(super) fn fields_to_insert_sql(
+    collection: &str,
+    fields: &std::collections::HashMap<String, nodedb_types::Value>,
+) -> String {
+    let mut cols = Vec::with_capacity(fields.len());
+    let mut vals = Vec::with_capacity(fields.len());
+
+    let mut entries: Vec<_> = fields.iter().collect();
+    entries.sort_by_key(|(k, _)| k.as_str());
+
+    for (key, value) in entries {
+        cols.push(key.as_str());
+        vals.push(value_to_sql_literal(value));
+    }
+
+    format!(
+        "INSERT INTO {} ({}) VALUES ({})",
+        collection,
+        cols.join(", "),
+        vals.join(", ")
+    )
+}
+
+/// Build a SQL UPSERT statement from field map.
+pub(super) fn fields_to_upsert_sql(
+    collection: &str,
+    fields: &std::collections::HashMap<String, nodedb_types::Value>,
+) -> String {
+    let mut cols = Vec::with_capacity(fields.len());
+    let mut vals = Vec::with_capacity(fields.len());
+
+    let mut entries: Vec<_> = fields.iter().collect();
+    entries.sort_by_key(|(k, _)| k.as_str());
+
+    for (key, value) in entries {
+        cols.push(key.as_str());
+        vals.push(value_to_sql_literal(value));
+    }
+
+    format!(
+        "UPSERT INTO {} ({}) VALUES ({})",
+        collection,
+        cols.join(", "),
+        vals.join(", ")
+    )
+}
+
+/// Delegate to the shared implementation in nodedb-sql.
+fn value_to_sql_literal(value: &nodedb_types::Value) -> String {
+    nodedb_sql::parser::preprocess::value_to_sql_literal(value)
+}
+
+/// Plan SQL through nodedb-sql and dispatch the resulting physical plans.
+///
+/// This is the shared path: SQL → nodedb-sql → EngineRules → SqlPlan → PhysicalPlan → dispatch.
+/// Returns `Ok(())` on success, or a pgwire error on failure.
+pub(super) async fn plan_and_dispatch(
+    state: &SharedState,
+    _identity: &crate::control::security::identity::AuthenticatedIdentity,
+    tenant_id: nodedb_types::TenantId,
+    sql: &str,
+) -> PgWireResult<()> {
+    let query_ctx =
+        crate::control::planner::context::QueryContext::for_state(state, tenant_id.as_u32());
+    let tasks = query_ctx
+        .plan_sql(sql, tenant_id)
+        .await
+        .map_err(|e| sqlstate_error_raw("XX000", &e.to_string()))?;
+    for task in tasks {
+        crate::control::server::dispatch_utils::wal_append_if_write(
+            &state.wal,
+            tenant_id,
+            task.vshard_id,
+            &task.plan,
+        )
+        .map_err(|e| sqlstate_error_raw("XX000", &e.to_string()))?;
+        crate::control::server::dispatch_utils::dispatch_to_data_plane(
+            state,
+            tenant_id,
+            task.vshard_id,
+            task.plan,
+            0,
+        )
+        .await
+        .map_err(|e| sqlstate_error_raw("XX000", &e.to_string()))?;
+    }
+    Ok(())
+}
+
+/// Create a raw PgWireError (not wrapped in Option/Result).
+fn sqlstate_error_raw(code: &str, msg: &str) -> pgwire::error::PgWireError {
+    pgwire::error::PgWireError::UserError(Box::new(pgwire::error::ErrorInfo::new(
+        "ERROR".to_owned(),
+        code.to_owned(),
+        msg.to_owned(),
+    )))
 }
 
 /// Fire SYNC AFTER INSERT triggers, returning an error response on failure.

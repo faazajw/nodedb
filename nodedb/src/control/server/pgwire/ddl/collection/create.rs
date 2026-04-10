@@ -83,10 +83,9 @@ pub fn create_collection(
 
     /// Parse columnar schema, capture column list, and resolve the profile.
     ///
-    /// Profile resolution order:
-    ///   1. `WITH profile = 'timeseries'` / `WITH profile = 'spatial'`
-    ///   2. Column modifiers: `TIME_KEY`, `SPATIAL_INDEX`
-    ///   3. Default: plain columnar
+    /// Requires explicit `WITH profile = 'timeseries'` or `WITH profile = 'spatial'`.
+    /// Column modifiers (TIME_KEY, SPATIAL_INDEX) without explicit profile
+    /// default to plain columnar — no auto-promotion.
     fn resolve_columnar(
         sql: &str,
         _upper: &str,
@@ -141,25 +140,8 @@ pub fn create_collection(
             return nodedb_types::CollectionType::spatial(geom_col);
         }
 
-        // Fall back to column modifiers.
-        if let Some(time_key) = schema.as_ref().and_then(|s| {
-            s.columns
-                .iter()
-                .find(|c| c.is_time_key())
-                .map(|c| c.name.clone())
-        }) {
-            return nodedb_types::CollectionType::timeseries(time_key, partition_by);
-        }
-
-        if let Some(geom_col) = schema.as_ref().and_then(|s| {
-            s.columns
-                .iter()
-                .find(|c| c.is_spatial_index())
-                .map(|c| c.name.clone())
-        }) {
-            return nodedb_types::CollectionType::spatial(geom_col);
-        }
-
+        // No auto-promotion: TIME_KEY or SPATIAL_INDEX without explicit profile
+        // is plain columnar. The modifiers are only used when profile is declared.
         nodedb_types::CollectionType::columnar()
     }
 
