@@ -57,6 +57,13 @@ pub enum SqlPlan {
         collection: String,
         entries: Vec<(SqlValue, Vec<(String, SqlValue)>)>,
     },
+    /// UPSERT: insert or merge if document exists.
+    Upsert {
+        collection: String,
+        engine: EngineType,
+        rows: Vec<Vec<(String, SqlValue)>>,
+        column_defaults: Vec<(String, String)>,
+    },
     InsertSelect {
         target: String,
         source: Box<SqlPlan>,

@@ -2,6 +2,7 @@
 
 use sqlparser::ast::{self, GroupByExpr};
 
+use crate::engine_rules::{self, AggregateParams};
 use crate::error::Result;
 use crate::functions::registry::{FunctionRegistry, SearchTrigger};
 use crate::parser::normalize::normalize_ident;
@@ -24,89 +25,54 @@ pub fn plan_aggregate(
         None => Vec::new(),
     };
 
-    // Check for timeseries routing: GROUP BY time_bucket(...) on timeseries collection.
-    if table.info.engine == EngineType::Timeseries {
-        return plan_timeseries_aggregate(
-            table,
-            &group_by_exprs,
-            &aggregates,
-            filters,
-            &select.group_by,
-            &select.projection,
-            functions,
-        );
-    }
+    // Extract timeseries-specific params (bucket interval, group columns) if applicable.
+    let (bucket_interval_ms, group_columns) =
+        extract_timeseries_params(&select.group_by, &select.projection, functions)?;
 
-    let base_scan = SqlPlan::Scan {
+    let rules = engine_rules::resolve_engine_rules(table.info.engine);
+    rules.plan_aggregate(AggregateParams {
         collection: table.name.clone(),
         alias: table.alias.clone(),
-        engine: table.info.engine,
         filters: filters.to_vec(),
-        projection: Vec::new(),
-        sort_keys: Vec::new(),
-        limit: None,
-        offset: 0,
-        distinct: false,
-        window_functions: Vec::new(),
-    };
-
-    Ok(SqlPlan::Aggregate {
-        input: Box::new(base_scan),
         group_by: group_by_exprs,
         aggregates,
         having,
         limit: 10000,
+        bucket_interval_ms,
+        group_columns,
+        has_auto_tier: table.info.has_auto_tier,
     })
 }
 
-/// Plan a timeseries aggregate with optional time_bucket.
-fn plan_timeseries_aggregate(
-    table: &ResolvedTable,
-    _group_by: &[SqlExpr],
-    aggregates: &[AggregateExpr],
-    filters: &[Filter],
+/// Extract timeseries-specific parameters from GROUP BY (bucket interval, group columns).
+///
+/// Returns `(Some(interval_ms), group_columns)` if a `time_bucket()` call is found,
+/// or `(None, empty)` otherwise. Non-timeseries engines ignore these values.
+fn extract_timeseries_params(
     raw_group_by: &GroupByExpr,
     select_items: &[ast::SelectItem],
     functions: &FunctionRegistry,
-) -> Result<SqlPlan> {
-    let mut bucket_interval_ms: i64 = 0;
+) -> Result<(Option<i64>, Vec<String>)> {
+    let mut bucket_interval_ms: Option<i64> = None;
     let mut group_columns = Vec::new();
 
-    // Check for time_bucket in GROUP BY.
     if let GroupByExpr::Expressions(exprs, _) = raw_group_by {
         for expr in exprs {
-            // Resolve the expression: GROUP BY alias or GROUP BY ordinal (1-based)
-            // should resolve to the corresponding SELECT item expression.
             let resolved = resolve_group_by_expr(expr, select_items);
             let check_expr = resolved.unwrap_or(expr);
 
             if let Some(interval) = try_extract_time_bucket(check_expr, functions)? {
-                bucket_interval_ms = interval;
+                bucket_interval_ms = Some(interval);
                 continue;
             }
 
-            // Non-time_bucket GROUP BY columns.
             if let ast::Expr::Identifier(ident) = expr {
                 group_columns.push(normalize_ident(ident));
             }
         }
     }
 
-    // Extract time range from filters.
-    let time_range = extract_time_range(filters);
-
-    Ok(SqlPlan::TimeseriesScan {
-        collection: table.name.clone(),
-        time_range,
-        bucket_interval_ms,
-        group_by: group_columns,
-        aggregates: aggregates.to_vec(),
-        filters: filters.to_vec(),
-        projection: Vec::new(),
-        gap_fill: String::new(),
-        limit: 10000,
-        tiered: table.info.has_auto_tier,
-    })
+    Ok((bucket_interval_ms, group_columns))
 }
 
 /// Check if an expression is a time_bucket() call and extract the interval.
@@ -211,12 +177,6 @@ fn parse_interval_to_ms(s: &str) -> i64 {
     nodedb_types::kv_parsing::parse_interval_to_ms(s)
         .map(|ms| ms as i64)
         .unwrap_or(0)
-}
-
-/// Extract time range from filters (timestamp >= X AND timestamp <= Y).
-fn extract_time_range(_filters: &[Filter]) -> (i64, i64) {
-    // Default: unbounded.
-    (i64::MIN, i64::MAX)
 }
 
 /// Convert GROUP BY clause to SqlExpr list.

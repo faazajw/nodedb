@@ -216,10 +216,10 @@ fn plan_select(
         Vec::new()
     };
 
-    let mut plan = SqlPlan::Scan {
+    let rules = crate::engine_rules::resolve_engine_rules(table.info.engine);
+    let mut plan = rules.plan_scan(crate::engine_rules::ScanParams {
         collection: table.name.clone(),
         alias: table.alias.clone(),
-        engine: table.info.engine,
         filters,
         projection: scan_projection,
         sort_keys: Vec::new(),
@@ -227,7 +227,7 @@ fn plan_select(
         offset: 0,
         distinct: select.distinct.is_some(),
         window_functions,
-    };
+    })?;
 
     // 10. Wrap with subquery joins (semi/anti/cross) if any.
     for sq in subquery_joins {

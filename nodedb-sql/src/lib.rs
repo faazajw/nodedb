@@ -8,6 +8,7 @@
 //! SQL → parse → resolve → plan → optimize → SqlPlan
 //! ```
 
+pub mod engine_rules;
 pub mod error;
 pub mod functions;
 pub mod optimizer;
@@ -22,49 +23,20 @@ pub use params::ParamValue;
 pub use types::*;
 
 use functions::registry::FunctionRegistry;
+use parser::preprocess;
 use parser::statement::{StatementKind, classify, parse_sql};
 
 /// Plan one or more SQL statements against the given catalog.
 ///
-/// Returns a list of `SqlPlan` — one per statement (some statements
-/// like multi-row INSERT may produce multiple plans).
+/// Handles NodeDB-specific syntax (UPSERT, `{ }` object literals) via
+/// pre-processing before handing to sqlparser.
 pub fn plan_sql(sql: &str, catalog: &dyn SqlCatalog) -> Result<Vec<SqlPlan>> {
-    let functions = FunctionRegistry::new();
-    let statements = parse_sql(sql)?;
-    let mut plans = Vec::new();
+    let preprocessed = preprocess::preprocess(sql);
+    let effective_sql = preprocessed.as_ref().map_or(sql, |p| p.sql.as_str());
+    let is_upsert = preprocessed.as_ref().is_some_and(|p| p.is_upsert);
 
-    for stmt in &statements {
-        match classify(stmt) {
-            StatementKind::Select(query) => {
-                let plan = planner::select::plan_query(query, catalog, &functions)?;
-                let plan = optimizer::optimize(plan);
-                plans.push(plan);
-            }
-            StatementKind::Insert(ins) => {
-                let mut insert_plans = planner::dml::plan_insert(ins, catalog)?;
-                plans.append(&mut insert_plans);
-            }
-            StatementKind::Update(stmt) => {
-                let mut update_plans = planner::dml::plan_update(stmt, catalog)?;
-                plans.append(&mut update_plans);
-            }
-            StatementKind::Delete(stmt) => {
-                let mut delete_plans = planner::dml::plan_delete(stmt, catalog)?;
-                plans.append(&mut delete_plans);
-            }
-            StatementKind::Truncate(stmt) => {
-                let mut trunc_plans = planner::dml::plan_truncate_stmt(stmt)?;
-                plans.append(&mut trunc_plans);
-            }
-            StatementKind::Other => {
-                return Err(SqlError::Unsupported {
-                    detail: format!("statement type: {stmt}"),
-                });
-            }
-        }
-    }
-
-    Ok(plans)
+    let statements = parse_sql(effective_sql)?;
+    plan_statements(&statements, is_upsert, catalog)
 }
 
 /// Plan SQL with bound parameters (prepared statement execution).
@@ -78,16 +50,27 @@ pub fn plan_sql_with_params(
     params: &[ParamValue],
     catalog: &dyn SqlCatalog,
 ) -> Result<Vec<SqlPlan>> {
-    let functions = FunctionRegistry::new();
-    let mut statements = parse_sql(sql)?;
+    let preprocessed = preprocess::preprocess(sql);
+    let effective_sql = preprocessed.as_ref().map_or(sql, |p| p.sql.as_str());
+    let is_upsert = preprocessed.as_ref().is_some_and(|p| p.is_upsert);
 
-    // Bind parameters at AST level before planning.
+    let mut statements = parse_sql(effective_sql)?;
     for stmt in &mut statements {
         params::bind_params(stmt, params);
     }
+    plan_statements(&statements, is_upsert, catalog)
+}
 
+/// Plan a list of parsed statements.
+fn plan_statements(
+    statements: &[sqlparser::ast::Statement],
+    is_upsert: bool,
+    catalog: &dyn SqlCatalog,
+) -> Result<Vec<SqlPlan>> {
+    let functions = FunctionRegistry::new();
     let mut plans = Vec::new();
-    for stmt in &statements {
+
+    for stmt in statements {
         match classify(stmt) {
             StatementKind::Select(query) => {
                 let plan = planner::select::plan_query(query, catalog, &functions)?;
@@ -95,8 +78,12 @@ pub fn plan_sql_with_params(
                 plans.push(plan);
             }
             StatementKind::Insert(ins) => {
-                let mut insert_plans = planner::dml::plan_insert(ins, catalog)?;
-                plans.append(&mut insert_plans);
+                let mut dml_plans = if is_upsert {
+                    planner::dml::plan_upsert(ins, catalog)?
+                } else {
+                    planner::dml::plan_insert(ins, catalog)?
+                };
+                plans.append(&mut dml_plans);
             }
             StatementKind::Update(stmt) => {
                 let mut update_plans = planner::dml::plan_update(stmt, catalog)?;

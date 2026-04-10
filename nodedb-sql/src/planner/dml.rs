@@ -2,6 +2,7 @@
 
 use sqlparser::ast::{self};
 
+use crate::engine_rules::{self, DeleteParams, InsertParams, UpdateParams};
 use crate::error::{Result, SqlError};
 use crate::parser::normalize::{normalize_ident, normalize_object_name};
 use crate::resolver::expr::{convert_expr, convert_value};
@@ -55,16 +56,7 @@ pub fn plan_insert(ins: &ast::Insert, catalog: &dyn SqlCatalog) -> Result<Vec<Sq
         }
     };
 
-    // For timeseries, route to TimeseriesIngest.
-    if info.engine == EngineType::Timeseries {
-        let rows = convert_value_rows(&columns, rows_ast)?;
-        return Ok(vec![SqlPlan::TimeseriesIngest {
-            collection: table_name,
-            rows,
-        }]);
-    }
-
-    // KV engine: key (= document ID) and value are fundamentally separate.
+    // KV engine: key and value are fundamentally separate — handle directly.
     if info.engine == EngineType::KeyValue {
         let key_idx = columns.iter().position(|c| c == "key");
         let mut entries = Vec::with_capacity(rows_ast.len());
@@ -73,7 +65,81 @@ pub fn plan_insert(ins: &ast::Insert, catalog: &dyn SqlCatalog) -> Result<Vec<Sq
                 Some(idx) => expr_to_sql_value(&row_exprs[idx])?,
                 None => SqlValue::String(String::new()),
             };
-            // Value columns = everything except key.
+            let value_cols: Vec<(String, SqlValue)> = columns
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| Some(*i) != key_idx)
+                .map(|(i, col)| {
+                    let val = expr_to_sql_value(&row_exprs[i])?;
+                    Ok((col.clone(), val))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            entries.push((key_val, value_cols));
+        }
+        return Ok(vec![SqlPlan::KvInsert {
+            collection: table_name,
+            entries,
+        }]);
+    }
+
+    // All other engines: delegate to engine rules.
+    let rows = convert_value_rows(&columns, rows_ast)?;
+    let column_defaults: Vec<(String, String)> = info
+        .columns
+        .iter()
+        .filter_map(|c| c.default.as_ref().map(|d| (c.name.clone(), d.clone())))
+        .collect();
+    let rules = engine_rules::resolve_engine_rules(info.engine);
+    rules.plan_insert(InsertParams {
+        collection: table_name,
+        columns,
+        rows,
+        column_defaults,
+    })
+}
+
+/// Plan an UPSERT statement (pre-processed from `UPSERT INTO` to `INSERT INTO`).
+///
+/// Same parsing as INSERT but routes through `engine_rules.plan_upsert()`.
+pub fn plan_upsert(ins: &ast::Insert, catalog: &dyn SqlCatalog) -> Result<Vec<SqlPlan>> {
+    let table_name = match &ins.table {
+        ast::TableObject::TableName(name) => normalize_object_name(name),
+        ast::TableObject::TableFunction(_) => {
+            return Err(SqlError::Unsupported {
+                detail: "UPSERT INTO table function not supported".into(),
+            });
+        }
+    };
+    let info = catalog
+        .get_collection(&table_name)
+        .ok_or_else(|| SqlError::UnknownTable {
+            name: table_name.clone(),
+        })?;
+
+    let columns: Vec<String> = ins.columns.iter().map(normalize_ident).collect();
+
+    let source = ins.source.as_ref().ok_or_else(|| SqlError::Parse {
+        detail: "UPSERT requires VALUES".into(),
+    })?;
+
+    let rows_ast = match &*source.body {
+        ast::SetExpr::Values(values) => &values.rows,
+        _ => {
+            return Err(SqlError::Unsupported {
+                detail: "UPSERT source must be VALUES".into(),
+            });
+        }
+    };
+
+    // KV: upsert is just a PUT (natural overwrite).
+    if info.engine == EngineType::KeyValue {
+        let key_idx = columns.iter().position(|c| c == "key");
+        let mut entries = Vec::with_capacity(rows_ast.len());
+        for row_exprs in rows_ast {
+            let key_val = match key_idx {
+                Some(idx) => expr_to_sql_value(&row_exprs[idx])?,
+                None => SqlValue::String(String::new()),
+            };
             let value_cols: Vec<(String, SqlValue)> = columns
                 .iter()
                 .enumerate()
@@ -97,12 +163,13 @@ pub fn plan_insert(ins: &ast::Insert, catalog: &dyn SqlCatalog) -> Result<Vec<Sq
         .iter()
         .filter_map(|c| c.default.as_ref().map(|d| (c.name.clone(), d.clone())))
         .collect();
-    Ok(vec![SqlPlan::Insert {
+    let rules = engine_rules::resolve_engine_rules(info.engine);
+    rules.plan_upsert(engine_rules::UpsertParams {
         collection: table_name,
-        engine: info.engine,
+        columns,
         rows,
         column_defaults,
-    }])
+    })
 }
 
 /// Plan an UPDATE statement.
@@ -145,14 +212,14 @@ pub fn plan_update(stmt: &ast::Statement, catalog: &dyn SqlCatalog) -> Result<Ve
     // Detect point updates (WHERE pk = literal).
     let target_keys = extract_point_keys(update.selection.as_ref(), &info);
 
-    Ok(vec![SqlPlan::Update {
+    let rules = engine_rules::resolve_engine_rules(info.engine);
+    rules.plan_update(UpdateParams {
         collection: table_name,
-        engine: info.engine,
         assignments: assigns,
         filters,
         target_keys,
         returning: update.returning.is_some(),
-    }])
+    })
 }
 
 /// Plan a DELETE statement.
@@ -185,12 +252,12 @@ pub fn plan_delete(stmt: &ast::Statement, catalog: &dyn SqlCatalog) -> Result<Ve
 
     let target_keys = extract_point_keys(delete.selection.as_ref(), &info);
 
-    Ok(vec![SqlPlan::Delete {
+    let rules = engine_rules::resolve_engine_rules(info.engine);
+    rules.plan_delete(DeleteParams {
         collection: table_name,
-        engine: info.engine,
         filters,
         target_keys,
-    }])
+    })
 }
 
 /// Plan a TRUNCATE statement.
