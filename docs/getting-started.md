@@ -256,7 +256,10 @@ INSERT INTO social (id, name) VALUES ('alice', 'Alice');
 INSERT INTO social (id, name) VALUES ('bob', 'Bob');
 
 -- Add edges
+-- JSON string form:
 GRAPH INSERT EDGE FROM 'alice' TO 'bob' TYPE 'knows' PROPERTIES '{"since": 2020}';
+-- Object literal form (equivalent):
+GRAPH INSERT EDGE FROM 'alice' TO 'bob' TYPE 'knows' PROPERTIES { since: 2020 };
 
 -- Traverse
 GRAPH TRAVERSE FROM 'alice' DEPTH 2;
@@ -418,6 +421,6 @@ SHOW TENANT QUOTA FOR acme;
 - [Architecture](architecture.md) — understand how the three-plane execution model works
 - Engine deep dives: [Vectors](vectors.md) | [Graph](graph.md) | [Documents](documents.md) | [Columnar](columnar.md) | [Timeseries](timeseries.md) | [Spatial](spatial.md) | [KV](kv.md) | [Full-Text](full-text-search.md)
 - [NodeDB-Lite](lite.md) — embed NodeDB in your app (mobile, WASM, desktop)
-- [Security](security.md) — set up authentication and access control
+- [Security](security/README.md) — set up authentication and access control
 
 [Back to docs](README.md)

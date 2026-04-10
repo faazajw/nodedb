@@ -583,7 +583,10 @@ LIMIT 10;
 
 ```sql
 -- Add edges
+-- JSON string form:
 GRAPH INSERT EDGE FROM 'alice' TO 'bob' TYPE 'knows' PROPERTIES '{"since": 2020}';
+-- Object literal form (equivalent):
+GRAPH INSERT EDGE FROM 'alice' TO 'bob' TYPE 'knows' PROPERTIES { since: 2020 };
 
 -- Traversal
 GRAPH TRAVERSE FROM 'users:alice' DEPTH 3 LABEL 'follows' DIRECTION out;

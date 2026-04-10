@@ -29,8 +29,12 @@ INSERT INTO entities VALUES (
 
 -- Insert relationships using graph edges
 GRAPH INSERT EDGE FROM 'chunks:chunk-042' TO 'entities:entity-raft' TYPE 'mentions';
+-- JSON string form:
 GRAPH INSERT EDGE FROM 'entities:entity-raft' TO 'entities:entity-paxos' TYPE 'related_to'
   PROPERTIES '{"weight": 0.85}';
+-- Object literal form (equivalent):
+GRAPH INSERT EDGE FROM 'entities:entity-raft' TO 'entities:entity-paxos' TYPE 'related_to'
+  PROPERTIES { weight: 0.85 };
 
 -- Bulk entity relationships from extraction results
 -- (Your app extracts entities and emits these statements)
@@ -44,7 +48,7 @@ The core GraphRAG pattern: vector search finds seed chunks, then graph traversal
 
 ```sql
 -- Step 1: Vector retrieval gets seed chunks
-SELECT id, content, vector_distance() AS score
+SELECT id, content, vector_distance(embedding, $query_embedding) AS score
 FROM chunks
 WHERE embedding <-> $query_embedding
 LIMIT 10;
@@ -93,7 +97,7 @@ INSERT INTO entity_communities {
 
 -- Query: for a broad topic, retrieve community summaries
 -- Step 1: find relevant entities via vector search
-SELECT id, name, vector_distance() AS score
+SELECT id, name, vector_distance(embedding, $query_embedding) AS score
 FROM entities
 WHERE embedding <-> $query_embedding
 LIMIT 5;
@@ -119,7 +123,7 @@ When extracting entities, the same real-world concept may appear with different 
 ```sql
 -- Find potential duplicates: entities with similar embeddings
 SELECT e1.id, e1.name, e2.id AS candidate_id, e2.name AS candidate_name,
-       vector_distance() AS similarity
+       vector_distance(e1.embedding, e2.embedding) AS similarity
 FROM entities e1, entities e2
 WHERE e1.embedding <-> e2.embedding
   AND e1.id != e2.id
