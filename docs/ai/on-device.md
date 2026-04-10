@@ -42,7 +42,7 @@ INSERT INTO knowledge {
 };
 
 -- Offline search — works in airplane mode
-SELECT content, source, page, vector_distance() AS score
+SELECT content, source, page, vector_distance(embedding, $query_embedding) AS score
 FROM knowledge
 WHERE embedding <-> $query_embedding
 LIMIT 5;
@@ -92,7 +92,7 @@ INSERT INTO shared_notes {
 -- or custom conflict policies per collection).
 
 -- On device: query includes both local and synced data
-SELECT content, vector_distance() AS score
+SELECT content, vector_distance(embedding, $query_embedding) AS score
 FROM shared_notes
 WHERE embedding <-> $query_embedding
 LIMIT 10;

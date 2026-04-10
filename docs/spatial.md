@@ -60,14 +60,14 @@ WHERE ST_Within(location, ST_GeomFromGeoJSON('{
 }'));
 
 -- Hybrid spatial-vector: nearby AND semantically similar
-SELECT name, vector_distance() AS similarity
+SELECT name, vector_distance(embedding, $query_vec) AS similarity
 FROM restaurants
 WHERE ST_DWithin(location, ST_Point(-73.990, 40.750), 2000)
   AND embedding <-> $query_vec
 LIMIT 10;
 
 -- H3 hexagonal binning
-SELECT h3_to_string(h3_lat_lng_to_cell(40.748, -73.985, 9)) AS hex;
+SELECT h3_to_string(h3_encode(40.748, -73.985, 9)) AS hex;
 
 -- Spatial join
 SELECT r.name, z.zone_name

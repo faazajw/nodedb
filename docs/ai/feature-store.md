@@ -121,7 +121,7 @@ CREATE COLLECTION user_features_live TYPE strict (
     session_dur FLOAT,
     cart_value  FLOAT,
     region      STRING,
-    updated_at  DATETIME DEFAULT NOW()
+    updated_at  TIMESTAMP DEFAULT NOW()
 );
 
 -- Upsert latest features (from your streaming pipeline)

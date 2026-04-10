@@ -16,7 +16,7 @@ CREATE COLLECTION episodic_memory TYPE strict (
     content    STRING NOT NULL,
     embedding  VECTOR(1536),
     tool_calls STRING,
-    created_at DATETIME DEFAULT NOW()
+    created_at TIMESTAMP DEFAULT NOW()
 );
 
 CREATE VECTOR INDEX idx_episodic_memory_embedding ON episodic_memory METRIC cosine DIM 1536;
@@ -36,7 +36,7 @@ ORDER BY created_at DESC
 LIMIT 10;
 
 -- Retrieve: semantically relevant past interactions (any session)
-SELECT session_id, role, content, vector_distance() AS relevance
+SELECT session_id, role, content, vector_distance(embedding, $query_embedding) AS relevance
 FROM episodic_memory
 WHERE agent_id = $agent
   AND id IN (
@@ -56,8 +56,8 @@ CREATE COLLECTION semantic_memory TYPE strict (
     embedding  VECTOR(1536),
     confidence DECIMAL,
     source     STRING,
-    created_at DATETIME DEFAULT NOW(),
-    updated_at DATETIME DEFAULT NOW()
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
 );
 
 CREATE VECTOR INDEX idx_semantic_memory_embedding ON semantic_memory METRIC cosine DIM 1536;
@@ -70,7 +70,7 @@ INSERT INTO semantic_memory VALUES (
 );
 
 -- Retrieve relevant knowledge for the current query
-SELECT fact, confidence, vector_distance() AS relevance
+SELECT fact, confidence, vector_distance(embedding, $query_embedding) AS relevance
 FROM semantic_memory
 WHERE agent_id = $agent
   AND confidence > 0.5

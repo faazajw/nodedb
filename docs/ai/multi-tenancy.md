@@ -41,11 +41,11 @@ CREATE RLS POLICY dept_filter ON chunks FOR read
 
 -- RLS policy: users only see their own or public documents
 CREATE RLS POLICY visibility ON chunks FOR read
-    USING (visibility = 'public' OR author_id = $auth.user_id);
+    USING (visibility = 'public' OR author_id = $auth.id);
 
 -- Vector search automatically applies RLS
 -- User in "engineering" department sees only engineering chunks
-SELECT id, content, vector_distance() AS score
+SELECT id, content, vector_distance(embedding, $query_embedding) AS score
 FROM chunks
 WHERE embedding <-> $query_embedding
 LIMIT 10;

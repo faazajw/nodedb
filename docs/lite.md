@@ -83,6 +83,6 @@ Sync features:
 
 - [Documents](documents.md) — Schemaless documents with CRDT sync
 - [Architecture](architecture.md) — How Origin's execution model differs from Lite
-- [Security](security.md) — Encryption at rest on Lite devices
+- [Security](security/README.md) — Encryption at rest on Lite devices
 
 [Back to docs](README.md)

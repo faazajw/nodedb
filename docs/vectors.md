@@ -37,7 +37,7 @@ INSERT INTO articles {
 SEARCH articles USING VECTOR(embedding, ARRAY[0.1, 0.3, -0.2, ...], 10);
 
 -- Filtered vector search (adaptive pre-filtering kicks in)
-SELECT title, vector_distance() AS score
+SELECT title, vector_distance(embedding, ARRAY[0.1, 0.3, -0.2, ...]) AS score
 FROM articles
 WHERE category = 'machine-learning'
   AND id IN (
@@ -50,7 +50,7 @@ FROM articles
 WHERE id IN (
     SEARCH articles USING VECTOR(embedding, ARRAY[0.1, 0.3, ...], 10)
   )
-  AND MATCH(body, 'transformer attention mechanism')
+  AND text_match(body, 'transformer attention mechanism')
 LIMIT 10;
 ```
 

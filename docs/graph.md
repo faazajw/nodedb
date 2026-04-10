@@ -43,9 +43,12 @@ Writes go to a mutable buffer and become visible immediately. Compaction merges 
 ```sql
 GRAPH INSERT EDGE FROM 'users:alice' TO 'users:bob' TYPE 'KNOWS';
 
--- With properties
+-- With properties (JSON string form):
 GRAPH INSERT EDGE FROM 'users:alice' TO 'users:bob' TYPE 'KNOWS'
   PROPERTIES '{"since": 2020, "weight": 0.9}';
+-- Object literal form (equivalent):
+GRAPH INSERT EDGE FROM 'users:alice' TO 'users:bob' TYPE 'KNOWS'
+  PROPERTIES { since: 2020, weight: 0.9 };
 ```
 
 ### Delete Edge

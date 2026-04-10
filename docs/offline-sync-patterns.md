@@ -59,11 +59,13 @@ ALTER COLLECTION invoices ADD CONSTRAINT invoice_flow
 ```
 
 On the **device (NodeDB-Lite):**
+
 - Reps create drafts and submit them
 - `draft → submitted` is allowed without a role guard
 - `submitted → approved` requires the `manager` role — only available on Origin
 
 On **Origin:**
+
 - Managers approve, accountants issue, controllers void
 - Each transition is role-guarded and audited
 - The state constraint prevents skipping steps (e.g., `draft → issued` is not in the list)
@@ -127,9 +129,9 @@ db.sync(url: "wss://origin.example.com/sync", token: authToken)
 ### WASM (Browser)
 
 ```javascript
-import { NodeDbLite } from 'nodedb-lite-wasm';
+import { NodeDbLite } from "nodedb-lite-wasm";
 
-const db = await NodeDbLite.open('invoices');
+const db = await NodeDbLite.open("invoices");
 
 await db.execute(`
     INSERT INTO invoices (invoice_number, customer_id, amount, status)
@@ -137,7 +139,7 @@ await db.execute(`
 `);
 
 // Sync via WebSocket
-await db.sync('wss://origin.example.com/sync');
+await db.sync("wss://origin.example.com/sync");
 ```
 
 ### Key Points

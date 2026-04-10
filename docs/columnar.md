@@ -118,7 +118,7 @@ CREATE COLLECTION orders TYPE DOCUMENT STRICT (
     customer_id UUID,
     total DECIMAL,
     status STRING,
-    created_at DATETIME DEFAULT now()
+    created_at TIMESTAMP DEFAULT now()
 );
 
 -- OLAP: materialized view auto-replicates to columnar via CDC

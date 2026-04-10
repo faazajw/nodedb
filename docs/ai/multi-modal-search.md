@@ -16,7 +16,7 @@ CREATE COLLECTION media TYPE strict (
     clip_embedding  VECTOR(512),
     audio_embedding VECTOR(256),
     modality        STRING,
-    created_at      DATETIME DEFAULT NOW()
+    created_at      TIMESTAMP DEFAULT NOW()
 );
 
 -- Each vector column gets its own index
@@ -42,19 +42,19 @@ Search a single modality when you know which type of content you're looking for.
 
 ```sql
 -- Text search: find documents by semantic text similarity
-SELECT id, title, vector_distance() AS score
+SELECT id, title, vector_distance(text_embedding, $text_query_embedding) AS score
 FROM media
 WHERE text_embedding <-> $text_query_embedding
 LIMIT 10;
 
 -- Image search: find visually similar items
-SELECT id, title, vector_distance() AS score
+SELECT id, title, vector_distance(clip_embedding, $image_query_embedding) AS score
 FROM media
 WHERE clip_embedding <-> $image_query_embedding
 LIMIT 10;
 
 -- Audio search: find similar-sounding content
-SELECT id, title, vector_distance() AS score
+SELECT id, title, vector_distance(audio_embedding, $audio_query_embedding) AS score
 FROM media
 WHERE audio_embedding <-> $audio_query_embedding
 LIMIT 10;
@@ -67,7 +67,7 @@ CLIP-style models encode text and images into the same embedding space. A text q
 ```sql
 -- Text-to-image: user types a text query, find matching images
 -- (Your app embeds the text query using CLIP's text encoder)
-SELECT id, title, modality, vector_distance() AS score
+SELECT id, title, modality, vector_distance(clip_embedding, $clip_text_embedding) AS score
 FROM media
 WHERE modality = 'image'
   AND clip_embedding <-> $clip_text_embedding
@@ -75,7 +75,7 @@ LIMIT 10;
 
 -- Image-to-text: user uploads an image, find matching descriptions
 -- (Your app embeds the image using CLIP's image encoder)
-SELECT id, title, description, vector_distance() AS score
+SELECT id, title, description, vector_distance(clip_embedding, $clip_image_embedding) AS score
 FROM media
 WHERE modality = 'text'
   AND clip_embedding <-> $clip_image_embedding

@@ -22,7 +22,7 @@ INSERT INTO chunks {
 };
 
 -- 3. Retrieve relevant chunks
-SELECT id, content, source_doc, page, vector_distance() AS score
+SELECT id, content, source_doc, page, vector_distance(embedding, $query_embedding) AS score
 FROM chunks
 WHERE embedding <-> $query_embedding
 LIMIT 5;
@@ -82,7 +82,7 @@ Real applications always filter by metadata — tenant, category, date range, ac
 
 ```sql
 -- Filter by category + date range, then vector search
-SELECT id, content, vector_distance() AS score
+SELECT id, content, vector_distance(embedding, $query_embedding) AS score
 FROM chunks
 WHERE category = 'engineering'
   AND created_at > '2025-01-01'
@@ -90,7 +90,7 @@ WHERE category = 'engineering'
 LIMIT 10;
 
 -- Multi-tenant: tenant_id is enforced at the WAL level
-SELECT id, content, vector_distance() AS score
+SELECT id, content, vector_distance(embedding, $query_embedding) AS score
 FROM chunks
 WHERE tenant_id = $tenant
   AND source_doc = 'api-reference'
@@ -128,7 +128,7 @@ INSERT INTO documents {
 
 -- Search chunks, then look up parent docs
 -- Step 1: find relevant chunks
-SELECT id, parent_doc_id, vector_distance() AS score
+SELECT id, parent_doc_id, vector_distance(embedding, $query_embedding) AS score
 FROM chunks
 WHERE embedding <-> $query_embedding
 LIMIT 5;
@@ -163,7 +163,7 @@ CREATE COLLECTION conversations TYPE strict (
     role       STRING NOT NULL,
     content    STRING NOT NULL,
     embedding  VECTOR(1536),
-    created_at DATETIME DEFAULT NOW()
+    created_at TIMESTAMP DEFAULT NOW()
 );
 
 -- Insert each turn
@@ -174,7 +174,7 @@ INSERT INTO conversations VALUES (
 -- Retrieve: search all chunks using a conversation-aware embedding
 -- (Your app creates $context_embedding from the full conversation history,
 --  not just the last message. This improves retrieval relevance significantly.)
-SELECT id, content, vector_distance() AS score
+SELECT id, content, vector_distance(embedding, $context_embedding) AS score
 FROM chunks
 WHERE embedding <-> $context_embedding
 LIMIT 10;
