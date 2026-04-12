@@ -67,6 +67,21 @@ pub struct RaftLoop<A: CommitApplier, F: RequestForwarder = crate::forward::Noop
     /// from the join flow. When `None`, persistence is skipped — useful
     /// for unit tests that don't care about durability.
     pub(super) catalog: Option<Arc<ClusterCatalog>>,
+    /// Cooperative shutdown signal observed by every detached
+    /// `tokio::spawn` task in [`super::tick`]. `run()` flips it on
+    /// its own shutdown, and [`Self::begin_shutdown`] provides a
+    /// direct entry point for test harnesses that abort the run /
+    /// serve handles and need the spawned tasks to drop their
+    /// `Arc<Mutex<MultiRaft>>` clones immediately so the per-group
+    /// redb log files can release their in-process locks.
+    ///
+    /// Using `watch::Sender` here rather than a raw `AtomicBool` +
+    /// `Notify` pair gives us two properties at once: the latest
+    /// value is visible to every newly-subscribed receiver (no
+    /// missed-notification race when a new detached task is
+    /// spawned just after `begin_shutdown`), and awaiting
+    /// `receiver.changed()` is cancellable inside `tokio::select!`.
+    pub(super) shutdown_watch: tokio::sync::watch::Sender<bool>,
 }
 
 impl<A: CommitApplier> RaftLoop<A> {
@@ -77,6 +92,7 @@ impl<A: CommitApplier> RaftLoop<A> {
         applier: A,
     ) -> Self {
         let node_id = multi_raft.node_id();
+        let (shutdown_watch, _) = tokio::sync::watch::channel(false);
         Self {
             node_id,
             multi_raft: Arc::new(Mutex::new(multi_raft)),
@@ -87,6 +103,7 @@ impl<A: CommitApplier> RaftLoop<A> {
             tick_interval: DEFAULT_TICK_INTERVAL,
             vshard_handler: None,
             catalog: None,
+            shutdown_watch,
         }
     }
 }
@@ -101,6 +118,7 @@ impl<A: CommitApplier, F: RequestForwarder> RaftLoop<A, F> {
         forwarder: Arc<F>,
     ) -> Self {
         let node_id = multi_raft.node_id();
+        let (shutdown_watch, _) = tokio::sync::watch::channel(false);
         Self {
             node_id,
             multi_raft: Arc::new(Mutex::new(multi_raft)),
@@ -111,7 +129,23 @@ impl<A: CommitApplier, F: RequestForwarder> RaftLoop<A, F> {
             tick_interval: DEFAULT_TICK_INTERVAL,
             vshard_handler: None,
             catalog: None,
+            shutdown_watch,
         }
+    }
+
+    /// Signal cooperative shutdown to every detached task spawned
+    /// inside [`super::tick::do_tick`].
+    ///
+    /// This is the entry point for test harnesses that want to
+    /// tear down a `RaftLoop` without waiting for the external
+    /// `run()` shutdown watch channel to propagate. In production
+    /// the same signal is emitted automatically by `run()` when
+    /// its external shutdown receiver fires.
+    ///
+    /// Idempotent: calling this multiple times is a no-op after
+    /// the first.
+    pub fn begin_shutdown(&self) {
+        let _ = self.shutdown_watch.send(true);
     }
 
     /// Set a handler for incoming VShardEnvelope messages.
@@ -141,6 +175,12 @@ impl<A: CommitApplier, F: RequestForwarder> RaftLoop<A, F> {
     ///
     /// This drives Raft elections, heartbeats, and message dispatch.
     /// Call [`NexarTransport::serve`] separately with `Arc<Self>` as the handler.
+    ///
+    /// When the externally-supplied `shutdown` receiver fires,
+    /// the loop also propagates the signal to the internal
+    /// cooperative-shutdown channel so every detached task
+    /// spawned inside `do_tick` exits promptly and drops its
+    /// `Arc<Mutex<MultiRaft>>` clone.
     pub async fn run(&self, mut shutdown: tokio::sync::watch::Receiver<bool>) {
         let mut interval = tokio::time::interval(self.tick_interval);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -153,6 +193,7 @@ impl<A: CommitApplier, F: RequestForwarder> RaftLoop<A, F> {
                 _ = shutdown.changed() => {
                     if *shutdown.borrow() {
                         debug!("raft loop shutting down");
+                        self.begin_shutdown();
                         break;
                     }
                 }

@@ -2,9 +2,26 @@
 //!
 //! Accepts connections from the QUIC endpoint, dispatches incoming bidi
 //! streams to a [`RaftRpcHandler`], and writes back the response frame.
+//!
+//! # Cooperative shutdown
+//!
+//! Every long-lived `.await` in this module is wrapped in a
+//! `tokio::select!` over a `watch::Receiver<bool>` shutdown signal
+//! that is cloned into every spawned child task. When the
+//! top-level `NexarTransport::serve` loop observes its `shutdown`
+//! receiver flip to `true`, the same signal reaches every
+//! grandchild stream-handler task at its next await point, their
+//! futures drop, and the per-connection captured
+//! `Arc<RaftRpcHandler>` clones are released promptly. Without
+//! this propagation, a graceful shutdown of the serve loop
+//! leaves grandchild tasks pinned inside
+//! `quinn::Connection::accept_bi` or `quinn::RecvStream::read_exact`
+//! forever, holding the handler Arc — and therefore any redb file
+//! handles the handler owns — for the lifetime of the runtime.
 
 use std::sync::Arc;
 
+use tokio::sync::watch;
 use tracing::debug;
 
 use crate::error::{ClusterError, Result};
@@ -20,12 +37,29 @@ pub trait RaftRpcHandler: Send + Sync + 'static {
 }
 
 /// Handle all bidi streams on a single connection.
+///
+/// Exits cleanly (Ok) on shutdown, on normal connection close,
+/// or on unrecoverable transport error.
 pub(crate) async fn handle_connection<H: RaftRpcHandler>(
     conn: quinn::Connection,
     handler: Arc<H>,
+    mut shutdown: watch::Receiver<bool>,
 ) -> Result<()> {
     loop {
-        let (send, recv) = match conn.accept_bi().await {
+        // Respect shutdown even if the peer is idle. `accept_bi`
+        // otherwise blocks indefinitely, pinning the handler Arc.
+        let accepted = tokio::select! {
+            biased;
+            _ = shutdown.changed() => {
+                if *shutdown.borrow() {
+                    return Ok(());
+                }
+                continue;
+            }
+            result = conn.accept_bi() => result,
+        };
+
+        let (send, recv) = match accepted {
             Ok(streams) => streams,
             Err(quinn::ConnectionError::ApplicationClosed(_)) => return Ok(()),
             Err(quinn::ConnectionError::LocallyClosed) => return Ok(()),
@@ -37,8 +71,9 @@ pub(crate) async fn handle_connection<H: RaftRpcHandler>(
         };
 
         let h = handler.clone();
+        let stream_shutdown = shutdown.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_stream(h, send, recv).await {
+            if let Err(e) = handle_stream(h, send, recv, stream_shutdown).await {
                 debug!(error = %e, "raft RPC stream error");
             }
         });
@@ -46,27 +81,36 @@ pub(crate) async fn handle_connection<H: RaftRpcHandler>(
 }
 
 /// Handle a single bidi stream: read request → dispatch → write response.
+///
+/// Every long-lived await is racing a shutdown signal — see the
+/// module docstring for the rationale.
 async fn handle_stream<H: RaftRpcHandler>(
     handler: Arc<H>,
     mut send: quinn::SendStream,
     mut recv: quinn::RecvStream,
+    mut shutdown: watch::Receiver<bool>,
 ) -> Result<()> {
-    let request_frame = read_frame(&mut recv).await?;
-    let request = rpc_codec::decode(&request_frame)?;
-
-    let response = handler.handle_rpc(request).await?;
-
-    let response_frame = rpc_codec::encode(&response)?;
-    send.write_all(&response_frame)
-        .await
-        .map_err(|e| ClusterError::Transport {
-            detail: format!("write response: {e}"),
+    let work = async {
+        let request_frame = read_frame(&mut recv).await?;
+        let request = rpc_codec::decode(&request_frame)?;
+        let response = handler.handle_rpc(request).await?;
+        let response_frame = rpc_codec::encode(&response)?;
+        send.write_all(&response_frame)
+            .await
+            .map_err(|e| ClusterError::Transport {
+                detail: format!("write response: {e}"),
+            })?;
+        send.finish().map_err(|e| ClusterError::Transport {
+            detail: format!("finish response: {e}"),
         })?;
-    send.finish().map_err(|e| ClusterError::Transport {
-        detail: format!("finish response: {e}"),
-    })?;
+        Ok::<(), ClusterError>(())
+    };
 
-    Ok(())
+    tokio::select! {
+        biased;
+        _ = shutdown.changed() => Ok(()),
+        result = work => result,
+    }
 }
 
 /// Read a complete RPC frame from a QUIC receive stream.

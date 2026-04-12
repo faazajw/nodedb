@@ -66,23 +66,43 @@ impl<A: CommitApplier, F: RequestForwarder> RaftLoop<A, F> {
             }
 
             // Dispatch batched AppendEntries — one task per peer.
+            //
+            // Each detached task subscribes to the shutdown watch
+            // and wraps its RPC awaits in `tokio::select!` so a
+            // `RaftLoop::begin_shutdown` signal (or the `run` loop
+            // propagating an external shutdown) cancels the
+            // in-flight QUIC call at the next await point. This
+            // is what lets graceful shutdown drop the
+            // `Arc<Mutex<MultiRaft>>` clone promptly and release
+            // per-group redb locks for an in-process restart.
             for (peer, messages) in ae_batches {
                 let transport = self.transport.clone();
                 let mr = self.multi_raft.clone();
+                let mut shutdown_rx = self.shutdown_watch.subscribe();
                 tokio::spawn(async move {
+                    if *shutdown_rx.borrow() {
+                        return;
+                    }
                     for (group_id, req) in messages {
-                        match transport.append_entries(peer, req).await {
-                            Ok(resp) => {
-                                let mut mr = mr.lock().unwrap_or_else(|p| p.into_inner());
-                                if let Err(e) =
-                                    mr.handle_append_entries_response(group_id, peer, &resp)
-                                {
-                                    debug!(group_id, peer, error = %e, "handle ae response");
+                        tokio::select! {
+                            biased;
+                            _ = shutdown_rx.changed() => return,
+                            rpc = transport.append_entries(peer, req) => {
+                                match rpc {
+                                    Ok(resp) => {
+                                        let mut mr =
+                                            mr.lock().unwrap_or_else(|p| p.into_inner());
+                                        if let Err(e) = mr
+                                            .handle_append_entries_response(group_id, peer, &resp)
+                                        {
+                                            debug!(group_id, peer, error = %e, "handle ae response");
+                                        }
+                                    }
+                                    Err(e) => {
+                                        warn!(group_id, peer, error = %e, "append_entries RPC failed");
+                                        break; // Peer is down — skip remaining groups.
+                                    }
                                 }
-                            }
-                            Err(e) => {
-                                warn!(group_id, peer, error = %e, "append_entries RPC failed");
-                                break; // Peer is down — skip remaining groups.
                             }
                         }
                     }
@@ -93,20 +113,31 @@ impl<A: CommitApplier, F: RequestForwarder> RaftLoop<A, F> {
             for (peer, votes) in vote_batches {
                 let transport = self.transport.clone();
                 let mr = self.multi_raft.clone();
+                let mut shutdown_rx = self.shutdown_watch.subscribe();
                 tokio::spawn(async move {
+                    if *shutdown_rx.borrow() {
+                        return;
+                    }
                     for (group_id, req) in votes {
-                        match transport.request_vote(peer, req).await {
-                            Ok(resp) => {
-                                let mut mr = mr.lock().unwrap_or_else(|p| p.into_inner());
-                                if let Err(e) =
-                                    mr.handle_request_vote_response(group_id, peer, &resp)
-                                {
-                                    debug!(group_id, peer, error = %e, "handle vote response");
+                        tokio::select! {
+                            biased;
+                            _ = shutdown_rx.changed() => return,
+                            rpc = transport.request_vote(peer, req) => {
+                                match rpc {
+                                    Ok(resp) => {
+                                        let mut mr =
+                                            mr.lock().unwrap_or_else(|p| p.into_inner());
+                                        if let Err(e) = mr
+                                            .handle_request_vote_response(group_id, peer, &resp)
+                                        {
+                                            debug!(group_id, peer, error = %e, "handle vote response");
+                                        }
+                                    }
+                                    Err(e) => {
+                                        warn!(group_id, peer, error = %e, "request_vote RPC failed");
+                                        break;
+                                    }
                                 }
-                            }
-                            Err(e) => {
-                                warn!(group_id, peer, error = %e, "request_vote RPC failed");
-                                break;
                             }
                         }
                     }
@@ -147,6 +178,7 @@ impl<A: CommitApplier, F: RequestForwarder> RaftLoop<A, F> {
                         for peer in group_ready.snapshots_needed {
                             let transport = self.transport.clone();
                             let mr = self.multi_raft.clone();
+                            let mut shutdown_rx = self.shutdown_watch.subscribe();
                             let req = nodedb_raft::InstallSnapshotRequest {
                                 term,
                                 leader_id: self.node_id,
@@ -158,29 +190,38 @@ impl<A: CommitApplier, F: RequestForwarder> RaftLoop<A, F> {
                                 group_id,
                             };
                             tokio::spawn(async move {
-                                match transport.install_snapshot(peer, req).await {
-                                    Ok(resp) => {
-                                        if resp.term > term {
-                                            let mut mr =
-                                                mr.lock().unwrap_or_else(|p| p.into_inner());
-                                            // Higher term — let the tick loop handle step-down.
-                                            let _ = mr.handle_append_entries_response(
-                                                group_id,
-                                                peer,
-                                                &nodedb_raft::AppendEntriesResponse {
-                                                    term: resp.term,
-                                                    success: false,
-                                                    last_log_index: 0,
-                                                },
-                                            );
+                                if *shutdown_rx.borrow() {
+                                    return;
+                                }
+                                tokio::select! {
+                                    biased;
+                                    _ = shutdown_rx.changed() => {}
+                                    rpc = transport.install_snapshot(peer, req) => {
+                                        match rpc {
+                                            Ok(resp) => {
+                                                if resp.term > term {
+                                                    let mut mr =
+                                                        mr.lock().unwrap_or_else(|p| p.into_inner());
+                                                    // Higher term — let the tick loop handle step-down.
+                                                    let _ = mr.handle_append_entries_response(
+                                                        group_id,
+                                                        peer,
+                                                        &nodedb_raft::AppendEntriesResponse {
+                                                            term: resp.term,
+                                                            success: false,
+                                                            last_log_index: 0,
+                                                        },
+                                                    );
+                                                }
+                                                debug!(group_id, peer, "install_snapshot sent");
+                                            }
+                                            Err(e) => {
+                                                warn!(
+                                                    group_id, peer, error = %e,
+                                                    "install_snapshot RPC failed"
+                                                );
+                                            }
                                         }
-                                        debug!(group_id, peer, "install_snapshot sent");
-                                    }
-                                    Err(e) => {
-                                        warn!(
-                                            group_id, peer, error = %e,
-                                            "install_snapshot RPC failed"
-                                        );
                                     }
                                 }
                             });
