@@ -92,15 +92,23 @@ fn apply_join_response(
             GroupInfo {
                 leader: g.leader,
                 members: g.members.clone(),
+                learners: g.learners.clone(),
             },
         );
     }
     let routing = RoutingTable::from_parts(resp.vshard_to_group.clone(), group_members);
 
-    // Create MultiRaft — join the groups that include this node.
+    // Create MultiRaft — join any group that includes this node, either
+    // as a voter (group members) or as a learner (group learners). A
+    // learner-started group boots in the `Learner` role and will not run
+    // an election until a subsequent `PromoteLearner` conf change is
+    // applied.
     let mut multi_raft = MultiRaft::new(config.node_id, routing.clone(), config.data_dir.clone());
     for g in &resp.groups {
-        if g.members.contains(&config.node_id) {
+        let is_voter = g.members.contains(&config.node_id);
+        let is_learner = g.learners.contains(&config.node_id);
+
+        if is_voter {
             let peers: Vec<u64> = g
                 .members
                 .iter()
@@ -108,6 +116,17 @@ fn apply_join_response(
                 .filter(|&id| id != config.node_id)
                 .collect();
             multi_raft.add_group(g.group_id, peers)?;
+        } else if is_learner {
+            // Voters = full member set (none of them is self).
+            let voters = g.members.clone();
+            // Other learners catching up alongside us (exclude self).
+            let other_learners: Vec<u64> = g
+                .learners
+                .iter()
+                .copied()
+                .filter(|&id| id != config.node_id)
+                .collect();
+            multi_raft.add_group_as_learner(g.group_id, voters, other_learners)?;
         }
     }
 

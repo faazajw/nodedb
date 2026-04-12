@@ -1,18 +1,18 @@
-//! Core `RaftLoop` struct, construction, and the periodic tick pipeline.
-//!
-//! The RPC handler (`impl RaftRpcHandler for RaftLoop`) lives in
-//! [`super::handle_rpc`] — it's a separate file so the tick/dispatch pipeline
-//! and the inbound-RPC fan-out don't share a single oversized file.
+//! `RaftLoop` struct, constructors, top-level run loop, and thin wrappers
+//! over `MultiRaft` proposal APIs. The tick body lives in
+//! [`super::tick`]; the inbound-RPC handler lives in
+//! [`super::handle_rpc`]; the async join orchestration lives in
+//! [`super::join`].
 
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
-use tracing::{debug, warn};
+use tracing::debug;
 
 use nodedb_raft::message::LogEntry;
-use nodedb_raft::transport::RaftTransport;
 
+use crate::catalog::ClusterCatalog;
 use crate::conf_change::ConfChange;
 use crate::error::Result;
 use crate::forward::RequestForwarder;
@@ -22,10 +22,8 @@ use crate::transport::NexarTransport;
 
 /// Default tick interval (10ms — fast enough for sub-second elections).
 ///
-/// Matches `ClusterTransportTuning::raft_tick_interval_ms` default. Override
-/// at startup by calling `.with_tick_interval()` on the `RaftLoop`, passing
-/// `Duration::from_millis(config.tuning.cluster_transport.raft_tick_interval_ms)`.
-const DEFAULT_TICK_INTERVAL: Duration = Duration::from_millis(10);
+/// Matches `ClusterTransportTuning::raft_tick_interval_ms` default.
+pub(super) const DEFAULT_TICK_INTERVAL: Duration = Duration::from_millis(10);
 
 /// Callback for applying committed Raft log entries to the state machine.
 ///
@@ -65,6 +63,10 @@ pub struct RaftLoop<A: CommitApplier, F: RequestForwarder = crate::forward::Noop
     /// Optional handler for incoming VShardEnvelope messages.
     /// Set when the Event Plane or other subsystems need cross-node messaging.
     pub(super) vshard_handler: Option<VShardEnvelopeHandler>,
+    /// Optional catalog handle for persisting topology/routing updates
+    /// from the join flow. When `None`, persistence is skipped — useful
+    /// for unit tests that don't care about durability.
+    pub(super) catalog: Option<Arc<ClusterCatalog>>,
 }
 
 impl<A: CommitApplier> RaftLoop<A> {
@@ -84,6 +86,7 @@ impl<A: CommitApplier> RaftLoop<A> {
             forwarder: Arc::new(crate::forward::NoopForwarder),
             tick_interval: DEFAULT_TICK_INTERVAL,
             vshard_handler: None,
+            catalog: None,
         }
     }
 }
@@ -107,6 +110,7 @@ impl<A: CommitApplier, F: RequestForwarder> RaftLoop<A, F> {
             forwarder,
             tick_interval: DEFAULT_TICK_INTERVAL,
             vshard_handler: None,
+            catalog: None,
         }
     }
 
@@ -118,6 +122,13 @@ impl<A: CommitApplier, F: RequestForwarder> RaftLoop<A, F> {
 
     pub fn with_tick_interval(mut self, interval: Duration) -> Self {
         self.tick_interval = interval;
+        self
+    }
+
+    /// Attach a cluster catalog — used by the join flow to persist the
+    /// updated topology + routing after a conf-change commits.
+    pub fn with_catalog(mut self, catalog: Arc<ClusterCatalog>) -> Self {
+        self.catalog = Some(catalog);
         self
     }
 
@@ -143,167 +154,6 @@ impl<A: CommitApplier, F: RequestForwarder> RaftLoop<A, F> {
                     if *shutdown.borrow() {
                         debug!("raft loop shutting down");
                         break;
-                    }
-                }
-            }
-        }
-    }
-
-    /// Execute a single tick: drive Raft, dispatch outbound messages, apply commits.
-    pub(super) fn do_tick(&self) {
-        // Phase 1: tick under lock, extract Ready.
-        let ready = {
-            let mut mr = self.multi_raft.lock().unwrap_or_else(|p| p.into_inner());
-            mr.tick()
-        };
-
-        if ready.is_empty() {
-            return;
-        }
-
-        // Phase 2: Batch messages by peer for efficient dispatch.
-        // Instead of spawning one task per (group, peer) message, we batch all
-        // messages to the same peer into one task, reducing QUIC stream overhead.
-        use std::collections::HashMap as BatchMap;
-
-        let mut ae_batches: BatchMap<u64, Vec<(u64, nodedb_raft::AppendEntriesRequest)>> =
-            BatchMap::new();
-        let mut vote_batches: BatchMap<u64, Vec<(u64, nodedb_raft::RequestVoteRequest)>> =
-            BatchMap::new();
-
-        for (group_id, group_ready) in &ready.groups {
-            for (peer, req) in &group_ready.messages {
-                ae_batches
-                    .entry(*peer)
-                    .or_default()
-                    .push((*group_id, req.clone()));
-            }
-            for (peer, req) in &group_ready.vote_requests {
-                vote_batches
-                    .entry(*peer)
-                    .or_default()
-                    .push((*group_id, req.clone()));
-            }
-        }
-
-        // Dispatch batched AppendEntries — one task per peer.
-        for (peer, messages) in ae_batches {
-            let transport = self.transport.clone();
-            let mr = self.multi_raft.clone();
-            tokio::spawn(async move {
-                for (group_id, req) in messages {
-                    match transport.append_entries(peer, req).await {
-                        Ok(resp) => {
-                            let mut mr = mr.lock().unwrap_or_else(|p| p.into_inner());
-                            if let Err(e) = mr.handle_append_entries_response(group_id, peer, &resp)
-                            {
-                                debug!(group_id, peer, error = %e, "handle ae response");
-                            }
-                        }
-                        Err(e) => {
-                            warn!(group_id, peer, error = %e, "append_entries RPC failed");
-                            break; // Peer is down — skip remaining groups.
-                        }
-                    }
-                }
-            });
-        }
-
-        // Dispatch batched RequestVote — one task per peer.
-        for (peer, votes) in vote_batches {
-            let transport = self.transport.clone();
-            let mr = self.multi_raft.clone();
-            tokio::spawn(async move {
-                for (group_id, req) in votes {
-                    match transport.request_vote(peer, req).await {
-                        Ok(resp) => {
-                            let mut mr = mr.lock().unwrap_or_else(|p| p.into_inner());
-                            if let Err(e) = mr.handle_request_vote_response(group_id, peer, &resp) {
-                                debug!(group_id, peer, error = %e, "handle vote response");
-                            }
-                        }
-                        Err(e) => {
-                            warn!(group_id, peer, error = %e, "request_vote RPC failed");
-                            break;
-                        }
-                    }
-                }
-            });
-        }
-
-        for (group_id, group_ready) in ready.groups {
-            // Apply committed entries synchronously.
-            if !group_ready.committed_entries.is_empty() {
-                // First, detect and apply any ConfChange entries to MultiRaft.
-                for entry in &group_ready.committed_entries {
-                    if let Some(cc) = ConfChange::from_entry_data(&entry.data) {
-                        let mut mr = self.multi_raft.lock().unwrap_or_else(|p| p.into_inner());
-                        if let Err(e) = mr.apply_conf_change(group_id, &cc) {
-                            warn!(group_id, error = %e, "failed to apply conf change");
-                        }
-                    }
-                }
-
-                // Then pass all entries (including ConfChanges) to the state machine.
-                let last_applied = self
-                    .applier
-                    .apply_committed(group_id, &group_ready.committed_entries);
-                if last_applied > 0 {
-                    let mut mr = self.multi_raft.lock().unwrap_or_else(|p| p.into_inner());
-                    if let Err(e) = mr.advance_applied(group_id, last_applied) {
-                        warn!(group_id, error = %e, "failed to advance applied index");
-                    }
-                }
-            }
-
-            // Send InstallSnapshot RPCs to peers that are too far behind.
-            if !group_ready.snapshots_needed.is_empty() {
-                // Get snapshot metadata under lock.
-                let snapshot_meta = {
-                    let mr = self.multi_raft.lock().unwrap_or_else(|p| p.into_inner());
-                    mr.snapshot_metadata(group_id).ok()
-                };
-
-                if let Some((term, snap_index, snap_term)) = snapshot_meta {
-                    for peer in group_ready.snapshots_needed {
-                        let transport = self.transport.clone();
-                        let mr = self.multi_raft.clone();
-                        let req = nodedb_raft::InstallSnapshotRequest {
-                            term,
-                            leader_id: self.node_id,
-                            last_included_index: snap_index,
-                            last_included_term: snap_term,
-                            offset: 0,
-                            data: vec![], // Metadata-only snapshot.
-                            done: true,
-                            group_id,
-                        };
-                        tokio::spawn(async move {
-                            match transport.install_snapshot(peer, req).await {
-                                Ok(resp) => {
-                                    if resp.term > term {
-                                        let mut mr = mr.lock().unwrap_or_else(|p| p.into_inner());
-                                        // Higher term — let the tick loop handle step-down.
-                                        let _ = mr.handle_append_entries_response(
-                                            group_id,
-                                            peer,
-                                            &nodedb_raft::AppendEntriesResponse {
-                                                term: resp.term,
-                                                success: false,
-                                                last_log_index: 0,
-                                            },
-                                        );
-                                    }
-                                    debug!(group_id, peer, "install_snapshot sent");
-                                }
-                                Err(e) => {
-                                    warn!(
-                                        group_id, peer, error = %e,
-                                        "install_snapshot RPC failed"
-                                    );
-                                }
-                            }
-                        });
                     }
                 }
             }
@@ -342,18 +192,18 @@ mod tests {
     use std::time::Instant;
 
     /// Test applier that counts applied entries.
-    pub(super) struct CountingApplier {
+    pub(crate) struct CountingApplier {
         applied: AtomicU64,
     }
 
     impl CountingApplier {
-        pub(super) fn new() -> Self {
+        pub(crate) fn new() -> Self {
             Self {
                 applied: AtomicU64::new(0),
             }
         }
 
-        pub(super) fn count(&self) -> u64 {
+        pub(crate) fn count(&self) -> u64 {
             self.applied.load(Ordering::Relaxed)
         }
     }
@@ -373,14 +223,12 @@ mod tests {
 
     #[tokio::test]
     async fn single_node_raft_loop_commits() {
-        // Single-node cluster: elections and commits happen locally.
         let dir = tempfile::tempdir().unwrap();
         let transport = make_transport(1);
         let rt = RoutingTable::uniform(1, &[1], 1);
         let mut mr = MultiRaft::new(1, rt, dir.path().to_path_buf());
         mr.add_group(0, vec![]).unwrap();
 
-        // Force election.
         for node in mr.groups_mut().values_mut() {
             node.election_deadline_override(Instant::now() - Duration::from_millis(1));
         }
@@ -396,21 +244,17 @@ mod tests {
             rl.run(shutdown_rx).await;
         });
 
-        // Wait for election + no-op commit.
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        // The no-op entry should have been committed and applied.
         assert!(
             raft_loop.applier.count() >= 1,
             "expected at least 1 applied entry (no-op), got {}",
             raft_loop.applier.count()
         );
 
-        // Propose a command.
         let (_gid, idx) = raft_loop.propose(0, b"hello".to_vec()).unwrap();
-        assert!(idx >= 2); // 1 = no-op, 2+ = our command
+        assert!(idx >= 2);
 
-        // Wait for commit.
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         assert!(
@@ -425,12 +269,10 @@ mod tests {
 
     #[tokio::test]
     async fn three_node_election_over_quic() {
-        // Three-node cluster: node 1 should win election via QUIC RPCs.
         let t1 = make_transport(1);
         let t2 = make_transport(2);
         let t3 = make_transport(3);
 
-        // Register peers.
         t1.register_peer(2, t2.local_addr());
         t1.register_peer(3, t3.local_addr());
         t2.register_peer(1, t1.local_addr());
@@ -440,7 +282,6 @@ mod tests {
 
         let rt = RoutingTable::uniform(1, &[1, 2, 3], 3);
 
-        // Node 1: force immediate election.
         let dir1 = tempfile::tempdir().unwrap();
         let mut mr1 = MultiRaft::new(1, rt.clone(), dir1.path().to_path_buf());
         mr1.add_group(0, vec![2, 3]).unwrap();
@@ -448,7 +289,6 @@ mod tests {
             node.election_deadline_override(Instant::now() - Duration::from_millis(1));
         }
 
-        // Nodes 2 and 3: normal timeouts (won't start election).
         let transport_tuning = ClusterTransportTuning::default();
         let election_timeout_min = Duration::from_secs(transport_tuning.election_timeout_min_secs);
         let election_timeout_max = Duration::from_secs(transport_tuning.election_timeout_max_secs);
@@ -477,7 +317,6 @@ mod tests {
 
         let (shutdown_tx, _) = tokio::sync::watch::channel(false);
 
-        // Start serve loops (incoming RPCs).
         let rl2_h = rl2.clone();
         let sr2 = shutdown_tx.subscribe();
         tokio::spawn(async move { t2.serve(rl2_h, sr2).await });
@@ -486,7 +325,6 @@ mod tests {
         let sr3 = shutdown_tx.subscribe();
         tokio::spawn(async move { t3.serve(rl3_h, sr3).await });
 
-        // Start tick loops.
         let rl1_r = rl1.clone();
         let sr1 = shutdown_tx.subscribe();
         tokio::spawn(async move { rl1_r.run(sr1).await });
@@ -499,26 +337,21 @@ mod tests {
         let sr3r = shutdown_tx.subscribe();
         tokio::spawn(async move { rl3_r.run(sr3r).await });
 
-        // Also start serve for node 1 (receives responses).
         let rl1_h = rl1.clone();
         let sr1h = shutdown_tx.subscribe();
         tokio::spawn(async move { t1.serve(rl1_h, sr1h).await });
 
-        // Wait for election + replication.
         tokio::time::sleep(Duration::from_millis(200)).await;
 
-        // Node 1 should be leader and have committed the no-op.
         assert!(
             rl1.applier.count() >= 1,
             "node 1 should have committed at least the no-op, got {}",
             rl1.applier.count()
         );
 
-        // Propose a command on node 1.
         let (_gid, idx) = rl1.propose(0, b"distributed-cmd".to_vec()).unwrap();
         assert!(idx >= 2);
 
-        // Wait for replication.
         tokio::time::sleep(Duration::from_millis(200)).await;
 
         assert!(
@@ -527,8 +360,6 @@ mod tests {
             rl1.applier.count()
         );
 
-        // Followers apply committed entries when they receive AppendEntries
-        // with updated leader_commit.
         assert!(
             rl2.applier.count() >= 1,
             "node 2: expected >= 1 applied, got {}",

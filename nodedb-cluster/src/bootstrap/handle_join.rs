@@ -84,6 +84,7 @@ fn build_response(topology: &ClusterTopology, routing: &RoutingTable) -> JoinRes
             group_id: gid,
             leader: info.leader,
             members: info.members.clone(),
+            learners: info.learners.clone(),
         })
         .collect();
 

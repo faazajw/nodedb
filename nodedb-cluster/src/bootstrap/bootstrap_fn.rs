@@ -40,6 +40,17 @@ pub(super) fn bootstrap(config: &ClusterConfig, catalog: &ClusterCatalog) -> Res
         multi_raft.add_group(group_id, vec![])?;
     }
 
+    // Kick every group's election deadline into the past so the very
+    // first tick of `RaftLoop::run` elects this node as leader of each
+    // group. Otherwise an incoming `JoinRequest` that arrives before the
+    // random 150–300 ms election timeout fires would hit a non-leader
+    // node and be rejected. The bootstrap seed is by definition the only
+    // voter in every group, so self-election is unambiguous.
+    let now = std::time::Instant::now();
+    for node in multi_raft.groups_mut().values_mut() {
+        node.election_deadline_override(now - std::time::Duration::from_millis(1));
+    }
+
     // Generate cluster ID and persist everything.
     let cluster_id = generate_cluster_id();
     catalog.save_cluster_id(cluster_id)?;
