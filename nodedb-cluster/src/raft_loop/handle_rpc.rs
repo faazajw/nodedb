@@ -92,8 +92,29 @@ impl<A: CommitApplier, F: RequestForwarder> RaftRpcHandler for RaftLoop<A, F> {
             }
             // Topology broadcast.
             RaftRpc::TopologyUpdate(update) => {
-                let (_updated, ack) =
+                let (updated, ack) =
                     health::handle_topology_update(self.node_id, &self.topology, &update);
+                // Persist the adopted topology so a subsequent
+                // restart reads the latest member set from catalog
+                // rather than the stale snapshot taken at join
+                // time. Without this, a node that joined a 2-node
+                // cluster and later learned about the third member
+                // via broadcast would boot with a 2-member topology
+                // after a restart. Persist only when we actually
+                // updated, and only when a catalog is attached;
+                // failures are logged but never propagate — a
+                // failed persist is recoverable (the next
+                // TopologyUpdate will retry).
+                if updated && let Some(catalog) = self.catalog.as_ref() {
+                    let snap = self
+                        .topology
+                        .read()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .clone();
+                    if let Err(e) = catalog.save_topology(&snap) {
+                        tracing::warn!(error = %e, "failed to persist topology update to catalog");
+                    }
+                }
                 Ok(ack)
             }
             // Query forwarding — execute locally via the RequestForwarder.

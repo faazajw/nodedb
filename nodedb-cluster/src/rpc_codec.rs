@@ -122,6 +122,12 @@ pub struct JoinRequest {
 pub struct JoinResponse {
     pub success: bool,
     pub error: String,
+    /// Unique id of the cluster this node has joined. The client
+    /// persists this via `ClusterCatalog::save_cluster_id` so a
+    /// subsequent restart takes the `restart()` path (via
+    /// `is_bootstrapped`) instead of running a fresh bootstrap.
+    /// Zero on rejection responses (where nothing was joined).
+    pub cluster_id: u64,
     /// All nodes in the cluster.
     pub nodes: Vec<JoinNodeInfo>,
     /// vShard → Raft group mapping (1024 entries).
@@ -805,6 +811,7 @@ mod tests {
         let resp = JoinResponse {
             success: true,
             error: String::new(),
+            cluster_id: 12345,
             nodes: vec![
                 JoinNodeInfo {
                     node_id: 1,

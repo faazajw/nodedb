@@ -283,6 +283,14 @@ fn apply_join_response(
     let routing = RoutingTable::from_parts(resp.vshard_to_group.clone(), group_members);
 
     // 2. Persist to catalog before any on-disk Raft side effects.
+    //    Cluster id is written first so `is_bootstrapped()` returns
+    //    `true` on any subsequent boot — without this, a joined node
+    //    that restarts would re-enter the bootstrap/join path
+    //    instead of taking `restart()`. Zero is a valid marker: the
+    //    joining node's catalog now carries `Some(0)` for
+    //    `load_cluster_id`, which is enough for the restart
+    //    dispatcher.
+    catalog.save_cluster_id(resp.cluster_id)?;
     catalog.save_topology(&topology)?;
     catalog.save_routing(&routing)?;
 
@@ -439,7 +447,7 @@ mod tests {
                 match rpc {
                     RaftRpc::JoinRequest(req) => {
                         let mut topo = self.topology.lock().unwrap();
-                        let resp = handle_join_request(&req, &mut topo, &self.routing);
+                        let resp = handle_join_request(&req, &mut topo, &self.routing, 99);
                         Ok(RaftRpc::JoinResponse(resp))
                     }
                     other => Err(ClusterError::Transport {

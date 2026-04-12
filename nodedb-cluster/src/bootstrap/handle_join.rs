@@ -25,10 +25,18 @@ use crate::topology::{ClusterTopology, NodeInfo, NodeState};
 ///
 /// See module docs for semantics. Mutates `topology` only when the node is
 /// newly admitted; idempotent for re-joins with the same address.
+///
+/// `cluster_id` is the id of the cluster this node belongs to — the
+/// join flow reads it from the local catalog and threads it through so
+/// the joining node can persist it and take the `restart()` path on a
+/// subsequent boot. Zero is a valid placeholder when the server's
+/// catalog has not yet been populated; rejection responses also carry
+/// zero.
 pub fn handle_join_request(
     req: &JoinRequest,
     topology: &mut ClusterTopology,
     routing: &RoutingTable,
+    cluster_id: u64,
 ) -> JoinResponse {
     // Validate the listen address early.
     let addr: SocketAddr = match req.listen_addr.parse() {
@@ -57,16 +65,20 @@ pub fn handle_join_request(
         {
             entry.state = NodeState::Active;
         }
-        return build_response(topology, routing);
+        return build_response(topology, routing, cluster_id);
     }
 
     // Brand new node — admit as Active.
     topology.add_node(NodeInfo::new(req.node_id, addr, NodeState::Active));
-    build_response(topology, routing)
+    build_response(topology, routing, cluster_id)
 }
 
 /// Build a successful `JoinResponse` from the current topology and routing.
-fn build_response(topology: &ClusterTopology, routing: &RoutingTable) -> JoinResponse {
+fn build_response(
+    topology: &ClusterTopology,
+    routing: &RoutingTable,
+    cluster_id: u64,
+) -> JoinResponse {
     let nodes: Vec<JoinNodeInfo> = topology
         .all_nodes()
         .map(|n| JoinNodeInfo {
@@ -91,6 +103,7 @@ fn build_response(topology: &ClusterTopology, routing: &RoutingTable) -> JoinRes
     JoinResponse {
         success: true,
         error: String::new(),
+        cluster_id,
         nodes,
         vshard_to_group: routing.vshard_to_group().to_vec(),
         groups,
@@ -102,6 +115,7 @@ fn reject(error: String) -> JoinResponse {
     JoinResponse {
         success: false,
         error,
+        cluster_id: 0,
         nodes: vec![],
         vshard_to_group: vec![],
         groups: vec![],
@@ -132,7 +146,7 @@ mod tests {
             listen_addr: "10.0.0.2:9400".into(),
         };
 
-        let resp = handle_join_request(&req, &mut topology, &routing);
+        let resp = handle_join_request(&req, &mut topology, &routing, 42);
 
         assert!(resp.success);
         assert_eq!(resp.nodes.len(), 2);
@@ -153,8 +167,8 @@ mod tests {
             listen_addr: "10.0.0.2:9400".into(),
         };
 
-        let _ = handle_join_request(&req, &mut topology, &routing);
-        let resp = handle_join_request(&req, &mut topology, &routing);
+        let _ = handle_join_request(&req, &mut topology, &routing, 42);
+        let resp = handle_join_request(&req, &mut topology, &routing, 42);
 
         assert!(resp.success);
         assert_eq!(resp.nodes.len(), 2); // Still 2, not 3.
@@ -174,11 +188,13 @@ mod tests {
             listen_addr: "10.0.0.2:9400".into(),
         };
 
-        let resp1 = handle_join_request(&req, &mut topology, &routing);
+        let resp1 = handle_join_request(&req, &mut topology, &routing, 7);
         let ids_before: Vec<u64> = topology.all_nodes().map(|n| n.node_id).collect();
         let count_before = topology.node_count();
 
-        let resp2 = handle_join_request(&req, &mut topology, &routing);
+        let resp2 = handle_join_request(&req, &mut topology, &routing, 7);
+        assert_eq!(resp1.cluster_id, 7);
+        assert_eq!(resp2.cluster_id, 7);
         let ids_after: Vec<u64> = topology.all_nodes().map(|n| n.node_id).collect();
 
         assert!(resp1.success && resp2.success);
@@ -201,7 +217,7 @@ mod tests {
             node_id: 2,
             listen_addr: "10.0.0.2:9400".into(),
         };
-        let resp1 = handle_join_request(&req1, &mut topology, &routing);
+        let resp1 = handle_join_request(&req1, &mut topology, &routing, 11);
         assert!(resp1.success);
 
         // Second join: same id, different address — must be rejected.
@@ -209,7 +225,7 @@ mod tests {
             node_id: 2,
             listen_addr: "10.0.0.99:9400".into(),
         };
-        let resp2 = handle_join_request(&req2, &mut topology, &routing);
+        let resp2 = handle_join_request(&req2, &mut topology, &routing, 11);
 
         assert!(!resp2.success);
         assert!(
@@ -233,7 +249,7 @@ mod tests {
             listen_addr: "not-a-valid-address".into(),
         };
 
-        let resp = handle_join_request(&req, &mut topology, &routing);
+        let resp = handle_join_request(&req, &mut topology, &routing, 42);
         assert!(!resp.success);
         assert!(!resp.error.is_empty());
     }

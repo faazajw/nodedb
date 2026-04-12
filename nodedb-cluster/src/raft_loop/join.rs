@@ -155,10 +155,24 @@ impl<A: CommitApplier, F: RequestForwarder> RaftLoop<A, F> {
         // 4. Register transport peer so the leader can reach it.
         self.transport.register_peer(req.node_id, new_addr);
 
+        // Read the local cluster id from the catalog (if one is
+        // attached) so we can echo it on every successful
+        // `JoinResponse`. The joining node persists this id so its
+        // next boot takes the `restart()` path instead of
+        // re-bootstrapping. Zero is a benign fallback when no
+        // catalog is attached — the joining node's
+        // `is_bootstrapped` check still returns true because
+        // `load_cluster_id` reads back `Some(0)`.
+        let cluster_id = self
+            .catalog
+            .as_ref()
+            .and_then(|c| c.load_cluster_id().ok().flatten())
+            .unwrap_or(0);
+
         // 5. Admit into topology.
         {
             let mut topo = self.topology.write().unwrap_or_else(|p| p.into_inner());
-            let initial_resp = handle_join_request(&req, &mut topo, &routing);
+            let initial_resp = handle_join_request(&req, &mut topo, &routing, cluster_id);
             if !initial_resp.success {
                 // Reject bubbled up from the shared function (e.g., the
                 // collision check we just did, repeated under the write
@@ -283,12 +297,17 @@ impl<A: CommitApplier, F: RequestForwarder> RaftLoop<A, F> {
             let mr = self.multi_raft.lock().unwrap_or_else(|p| p.into_inner());
             mr.routing().clone()
         };
+        let cluster_id = self
+            .catalog
+            .as_ref()
+            .and_then(|c| c.load_cluster_id().ok().flatten())
+            .unwrap_or(0);
         // Re-use the pure builder from bootstrap/handle_join.rs.
         // `handle_join_request` here is idempotent against the same
         // (id, addr) — at this point the topology already contains the
         // new node, so this call only rebuilds the wire response.
         let mut topo = topology_clone;
-        handle_join_request(req, &mut topo, &routing_clone)
+        handle_join_request(req, &mut topo, &routing_clone, cluster_id)
     }
 }
 
@@ -297,6 +316,7 @@ fn reject(error: String) -> JoinResponse {
     JoinResponse {
         success: false,
         error,
+        cluster_id: 0,
         nodes: vec![],
         vshard_to_group: vec![],
         groups: vec![],
