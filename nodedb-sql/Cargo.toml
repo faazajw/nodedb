@@ -7,6 +7,6 @@ license.workspace = true
 description = "SQL parser, planner, and optimizer for NodeDB"
 
 [dependencies]
-nodedb-types = { path = "../nodedb-types" }
+nodedb-types = { workspace = true }
 sqlparser = "0.61"
 thiserror = { workspace = true }
