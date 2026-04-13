@@ -156,9 +156,22 @@ impl<A: CommitApplier, F: RequestForwarder> RaftLoop<A, F> {
                         }
                     }
 
-                    let last_applied = self
-                        .applier
-                        .apply_committed(group_id, &group_ready.committed_entries);
+                    let last_applied = if group_id == crate::metadata_group::METADATA_GROUP_ID {
+                        // Metadata group (0): dispatch to the metadata applier.
+                        // Raft no-op entries and conf-changes are already
+                        // handled above; data entries carry a serialized
+                        // `MetadataEntry` and are decoded by the applier.
+                        let pairs: Vec<(u64, Vec<u8>)> = group_ready
+                            .committed_entries
+                            .iter()
+                            .filter(|e| ConfChange::from_entry_data(&e.data).is_none())
+                            .map(|e| (e.index, e.data.clone()))
+                            .collect();
+                        self.metadata_applier.apply(&pairs)
+                    } else {
+                        self.applier
+                            .apply_committed(group_id, &group_ready.committed_entries)
+                    };
                     if last_applied > 0 {
                         let mut mr = self.multi_raft.lock().unwrap_or_else(|p| p.into_inner());
                         if let Err(e) = mr.advance_applied(group_id, last_applied) {

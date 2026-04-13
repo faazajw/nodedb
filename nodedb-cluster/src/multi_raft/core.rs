@@ -242,6 +242,18 @@ impl MultiRaft {
         let log_index = node.propose(data)?;
         Ok((group_id, log_index))
     }
+
+    /// Propose a command directly to a specific Raft group (e.g. the
+    /// metadata group, which has no vShard mapping).
+    ///
+    /// Returns the committed log index on success.
+    pub fn propose_to_group(&mut self, group_id: u64, data: Vec<u8>) -> Result<u64> {
+        let node = self
+            .groups
+            .get_mut(&group_id)
+            .ok_or(ClusterError::GroupNotFound { group_id })?;
+        Ok(node.propose(data)?)
+    }
 }
 
 #[cfg(test)]

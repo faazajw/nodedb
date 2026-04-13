@@ -16,6 +16,7 @@ use crate::catalog::ClusterCatalog;
 use crate::conf_change::ConfChange;
 use crate::error::Result;
 use crate::forward::RequestForwarder;
+use crate::metadata_group::applier::{MetadataApplier, NoopMetadataApplier};
 use crate::multi_raft::MultiRaft;
 use crate::topology::ClusterTopology;
 use crate::transport::NexarTransport;
@@ -58,6 +59,10 @@ pub struct RaftLoop<A: CommitApplier, F: RequestForwarder = crate::forward::Noop
     pub(super) transport: Arc<NexarTransport>,
     pub(super) topology: Arc<RwLock<ClusterTopology>>,
     pub(super) applier: A,
+    /// Applies committed entries from the metadata Raft group (group 0).
+    /// Every node has one; defaults to a no-op until the host crate wires
+    /// in a real [`MetadataApplier`] via [`Self::with_metadata_applier`].
+    pub(super) metadata_applier: Arc<dyn MetadataApplier>,
     pub(super) forwarder: Arc<F>,
     pub(super) tick_interval: Duration,
     /// Optional handler for incoming VShardEnvelope messages.
@@ -99,6 +104,7 @@ impl<A: CommitApplier> RaftLoop<A> {
             transport,
             topology,
             applier,
+            metadata_applier: Arc::new(NoopMetadataApplier),
             forwarder: Arc::new(crate::forward::NoopForwarder),
             tick_interval: DEFAULT_TICK_INTERVAL,
             vshard_handler: None,
@@ -125,6 +131,7 @@ impl<A: CommitApplier, F: RequestForwarder> RaftLoop<A, F> {
             transport,
             topology,
             applier,
+            metadata_applier: Arc::new(NoopMetadataApplier),
             forwarder,
             tick_interval: DEFAULT_TICK_INTERVAL,
             vshard_handler: None,
@@ -151,6 +158,17 @@ impl<A: CommitApplier, F: RequestForwarder> RaftLoop<A, F> {
     /// Set a handler for incoming VShardEnvelope messages.
     pub fn with_vshard_handler(mut self, handler: VShardEnvelopeHandler) -> Self {
         self.vshard_handler = Some(handler);
+        self
+    }
+
+    /// Install the metadata applier used for group-0 commits.
+    ///
+    /// The host crate (nodedb) calls this with a production applier that
+    /// wraps an in-memory `MetadataCache` and additionally persists to
+    /// redb / broadcasts catalog change events. The default
+    /// [`NoopMetadataApplier`] is kept only for tests that don't care.
+    pub fn with_metadata_applier(mut self, applier: Arc<dyn MetadataApplier>) -> Self {
+        self.metadata_applier = applier;
         self
     }
 
@@ -232,20 +250,29 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Instant;
 
-    /// Test applier that counts applied entries.
+    /// Test applier that counts applied entries across both data and
+    /// metadata groups. The metadata-group variant ([`CountingMetadataApplier`])
+    /// increments the same counter so tests that propose against group 0
+    /// (the metadata group) still see the count move.
     pub(crate) struct CountingApplier {
-        applied: AtomicU64,
+        applied: Arc<AtomicU64>,
     }
 
     impl CountingApplier {
         pub(crate) fn new() -> Self {
             Self {
-                applied: AtomicU64::new(0),
+                applied: Arc::new(AtomicU64::new(0)),
             }
         }
 
         pub(crate) fn count(&self) -> u64 {
             self.applied.load(Ordering::Relaxed)
+        }
+
+        pub(crate) fn metadata_applier(&self) -> Arc<CountingMetadataApplier> {
+            Arc::new(CountingMetadataApplier {
+                applied: self.applied.clone(),
+            })
         }
     }
 
@@ -254,6 +281,18 @@ mod tests {
             self.applied
                 .fetch_add(entries.len() as u64, Ordering::Relaxed);
             entries.last().map(|e| e.index).unwrap_or(0)
+        }
+    }
+
+    pub(crate) struct CountingMetadataApplier {
+        applied: Arc<AtomicU64>,
+    }
+
+    impl MetadataApplier for CountingMetadataApplier {
+        fn apply(&self, entries: &[(u64, Vec<u8>)]) -> u64 {
+            self.applied
+                .fetch_add(entries.len() as u64, Ordering::Relaxed);
+            entries.last().map(|(idx, _)| *idx).unwrap_or(0)
         }
     }
 
@@ -275,8 +314,10 @@ mod tests {
         }
 
         let applier = CountingApplier::new();
+        let meta = applier.metadata_applier();
         let topo = Arc::new(RwLock::new(ClusterTopology::new()));
-        let raft_loop = Arc::new(RaftLoop::new(mr, transport, topo, applier));
+        let raft_loop =
+            Arc::new(RaftLoop::new(mr, transport, topo, applier).with_metadata_applier(meta));
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
@@ -345,16 +386,19 @@ mod tests {
         mr3.add_group(0, vec![1, 2]).unwrap();
 
         let a1 = CountingApplier::new();
+        let m1 = a1.metadata_applier();
         let a2 = CountingApplier::new();
+        let m2 = a2.metadata_applier();
         let a3 = CountingApplier::new();
+        let m3 = a3.metadata_applier();
 
         let topo1 = Arc::new(RwLock::new(ClusterTopology::new()));
         let topo2 = Arc::new(RwLock::new(ClusterTopology::new()));
         let topo3 = Arc::new(RwLock::new(ClusterTopology::new()));
 
-        let rl1 = Arc::new(RaftLoop::new(mr1, t1.clone(), topo1, a1));
-        let rl2 = Arc::new(RaftLoop::new(mr2, t2.clone(), topo2, a2));
-        let rl3 = Arc::new(RaftLoop::new(mr3, t3.clone(), topo3, a3));
+        let rl1 = Arc::new(RaftLoop::new(mr1, t1.clone(), topo1, a1).with_metadata_applier(m1));
+        let rl2 = Arc::new(RaftLoop::new(mr2, t2.clone(), topo2, a2).with_metadata_applier(m2));
+        let rl3 = Arc::new(RaftLoop::new(mr3, t3.clone(), topo3, a3).with_metadata_applier(m3));
 
         let (shutdown_tx, _) = tokio::sync::watch::channel(false);
 

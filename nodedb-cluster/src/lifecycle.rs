@@ -8,35 +8,31 @@
 //!    other nodes, then shuts down cleanly.
 //! 3. **Leave**: Node is removed from topology after decommission completes.
 //!
-//! All transitions are replicated via the metadata Raft group to ensure
-//! consistency across the cluster.
+//! All transitions are replicated via the metadata Raft group as
+//! [`MetadataEntry::TopologyChange`] / [`MetadataEntry::RoutingChange`]
+//! entries and applied through the `MetadataApplier` on every node.
 
 use tracing::{info, warn};
 
 use crate::error::{ClusterError, Result};
-use crate::metadata_group::{MembershipAction, MetadataEntry};
+use crate::metadata_group::{MetadataEntry, RoutingChange, TopologyChange};
 use crate::routing::RoutingTable;
 use crate::topology::{ClusterTopology, NodeInfo, NodeState};
 
 /// Result of a decommission operation.
 #[derive(Debug)]
 pub struct DecommissionResult {
-    /// Number of vShards migrated away from this node.
     pub vshards_migrated: usize,
-    /// Number of Raft groups where leadership was transferred.
     pub leadership_transferred: usize,
-    /// Whether the decommission completed successfully.
     pub completed: bool,
 }
 
 /// Plan a node decommission: compute which vShards to migrate and where.
 ///
-/// Steps:
-/// 1. Mark node as `Draining` in topology
-/// 2. Transfer leadership of all Raft groups led by this node
-/// 3. Compute migration plan to move all vShards off this node
-/// 4. Execute migrations
-/// 5. Mark node as `Decommissioned` and remove from topology
+/// Produces a sequence of [`MetadataEntry`] values to be proposed against
+/// the metadata Raft group in order. Steps:
+/// 1. Start decommission (topology transition).
+/// 2. Transfer leadership of all Raft groups led by this node.
 pub fn plan_decommission(
     node_id: u64,
     topology: &ClusterTopology,
@@ -54,25 +50,23 @@ pub fn plan_decommission(
 
     let mut entries = Vec::new();
 
-    // Step 1: Mark as Draining.
-    entries.push(MetadataEntry::MembershipChange {
-        node_id,
-        action: MembershipAction::Leave,
-    });
+    // Step 1: Start decommission.
+    entries.push(MetadataEntry::TopologyChange(
+        TopologyChange::StartDecommission { node_id },
+    ));
 
-    // Step 2: Identify Raft groups led by this node and plan leadership transfer.
+    // Step 2: Leadership transfers for groups led by this node.
     for group_id in routing.group_ids() {
         if let Some(info) = routing.group_info(group_id)
             && info.leader == node_id
+            && let Some(&new_leader) = info.members.iter().find(|&&m| m != node_id)
         {
-            // Find a different member to take over leadership.
-            if let Some(&new_leader) = info.members.iter().find(|&&m| m != node_id) {
-                entries.push(MetadataEntry::RoutingUpdate {
-                    vshard_id: 0, // Group-level, not vShard-specific.
-                    new_node_id: new_leader,
-                    new_group_id: group_id,
-                });
-            }
+            entries.push(MetadataEntry::RoutingChange(
+                RoutingChange::LeadershipTransfer {
+                    group_id,
+                    new_leader_node_id: new_leader,
+                },
+            ));
         }
     }
 
@@ -85,11 +79,6 @@ pub fn plan_decommission(
 }
 
 /// Check if a node can be safely removed from the cluster.
-///
-/// A node is safe to remove when:
-/// - It's in `Draining` or `Decommissioned` state
-/// - It doesn't lead any Raft groups
-/// - It doesn't host any vShards exclusively (replication factor covered)
 pub fn is_safe_to_remove(node_id: u64, topology: &ClusterTopology, routing: &RoutingTable) -> bool {
     let Some(node) = topology.get_node(node_id) else {
         return false;
@@ -98,22 +87,20 @@ pub fn is_safe_to_remove(node_id: u64, topology: &ClusterTopology, routing: &Rou
         return false;
     }
 
-    // Check no Raft group has this node as sole leader.
     for group_id in routing.group_ids() {
         if let Some(info) = routing.group_info(group_id)
             && info.leader == node_id
             && info.members.len() <= 1
         {
-            return false; // Sole member — can't remove.
+            return false;
         }
     }
 
     true
 }
 
-/// Apply a topology change: handle join, leave, or state transition.
-///
-/// Returns a `MetadataEntry` to be proposed to the metadata Raft group.
+/// Register a joining node in the local topology and produce the
+/// [`MetadataEntry`] to be proposed on the metadata Raft group.
 pub fn handle_node_join(node_id: u64, addr: &str, topology: &mut ClusterTopology) -> MetadataEntry {
     use std::net::SocketAddr;
 
@@ -126,19 +113,13 @@ pub fn handle_node_join(node_id: u64, addr: &str, topology: &mut ClusterTopology
     topology.join_as_learner(info);
 
     info!(node_id, addr, "node joining as learner");
-    MetadataEntry::MembershipChange {
+    MetadataEntry::TopologyChange(TopologyChange::Join {
         node_id,
-        action: MembershipAction::Join {
-            addr: addr.to_string(),
-        },
-    }
+        addr: addr.to_string(),
+    })
 }
 
 /// Handle learner promotion after state catch-up validation.
-///
-/// Validates that the learner has caught up by checking:
-/// - Raft log index lag <= threshold
-/// - State checksum matches leader
 pub fn handle_learner_promotion(
     node_id: u64,
     topology: &mut ClusterTopology,
@@ -164,10 +145,9 @@ pub fn handle_learner_promotion(
     topology.promote_to_voter(node_id);
     info!(node_id, log_lag, "learner promoted to voter");
 
-    Ok(MetadataEntry::MembershipChange {
-        node_id,
-        action: MembershipAction::PromoteToVoter,
-    })
+    Ok(MetadataEntry::TopologyChange(
+        TopologyChange::PromoteToVoter { node_id },
+    ))
 }
 
 #[cfg(test)]
@@ -194,13 +174,11 @@ mod tests {
         let (topo, routing) = make_topology_and_routing();
         let entries = plan_decommission(1, &topo, &routing).unwrap();
         assert!(!entries.is_empty());
-        // First entry should be MembershipChange::Leave.
         match &entries[0] {
-            MetadataEntry::MembershipChange { node_id, action } => {
+            MetadataEntry::TopologyChange(TopologyChange::StartDecommission { node_id }) => {
                 assert_eq!(*node_id, 1);
-                assert!(matches!(action, MembershipAction::Leave));
             }
-            _ => panic!("expected MembershipChange"),
+            other => panic!("expected StartDecommission, got {other:?}"),
         }
     }
 
@@ -208,10 +186,7 @@ mod tests {
     fn safe_to_remove_draining_node() {
         let (mut topo, routing) = make_topology_and_routing();
         topo.set_state(1, NodeState::Draining);
-        // Node 1 leads some groups but has other members → safe if leadership transferred.
-        let safe = is_safe_to_remove(1, &topo, &routing);
-        // May or may not be safe depending on routing — the check is structural.
-        let _ = safe;
+        let _ = is_safe_to_remove(1, &topo, &routing);
     }
 
     #[test]
@@ -221,8 +196,10 @@ mod tests {
         assert!(topo.contains(5));
         assert_eq!(topo.learner_nodes().len(), 1);
         match entry {
-            MetadataEntry::MembershipChange { node_id, .. } => assert_eq!(node_id, 5),
-            _ => panic!("expected MembershipChange"),
+            MetadataEntry::TopologyChange(TopologyChange::Join { node_id, .. }) => {
+                assert_eq!(node_id, 5);
+            }
+            other => panic!("expected Join, got {other:?}"),
         }
     }
 
@@ -233,11 +210,9 @@ mod tests {
         let info = NodeInfo::new(10, addr, NodeState::Joining);
         topo.join_as_learner(info);
 
-        // Lag too high — should fail.
         let result = handle_learner_promotion(10, &mut topo, 100, 10);
         assert!(result.is_err());
 
-        // Lag within threshold — should succeed.
         let result = handle_learner_promotion(10, &mut topo, 5, 10);
         assert!(result.is_ok());
         assert_eq!(topo.get_node(10).unwrap().state, NodeState::Active);

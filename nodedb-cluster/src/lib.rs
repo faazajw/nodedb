@@ -63,7 +63,11 @@ pub use wire::VShardEnvelope;
 pub use cross_shard_txn::{
     CrossShardTransaction, ForwardEntry, GsiForwardEntry, TransactionCoordinator,
 };
-pub use metadata_group::{METADATA_GROUP_ID, MetadataCache, MetadataEntry};
+pub use metadata_group::{
+    CacheApplier, CollectionDescriptor, DescriptorHeader, DescriptorId, DescriptorState,
+    METADATA_GROUP_ID, MetadataApplier, MetadataCache, MetadataEntry, NoopMetadataApplier,
+    RoutingChange, TopologyChange, decode_entry, encode_entry,
+};
 pub use quic_transport::{QuicTransport, QuicTransportConfig};
 
 pub use distributed_join::{BroadcastJoinRequest, JoinStrategy, ShufflePartition, select_strategy};
