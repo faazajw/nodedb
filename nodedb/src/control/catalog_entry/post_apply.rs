@@ -149,6 +149,21 @@ pub fn spawn_post_apply_side_effects(entry: CatalogEntry, shared: Arc<SharedStat
                 shared.stream_registry.unregister(tenant_id, &name);
                 shared.cdc_router.remove_buffer(tenant_id, &name);
             }
+            CatalogEntry::PutUser(stored) => {
+                // Upsert the in-memory cache. Follower nodes accept
+                // the leader's pre-computed StoredUser verbatim —
+                // salt + hash + user_id all come from the leader.
+                shared.credentials.install_replicated_user(&stored);
+            }
+            CatalogEntry::DeactivateUser { username } => {
+                shared.credentials.install_replicated_deactivate(&username);
+            }
+            CatalogEntry::PutRole(stored) => {
+                shared.roles.install_replicated_role(&stored);
+            }
+            CatalogEntry::DeleteRole { name } => {
+                shared.roles.install_replicated_drop_role(&name);
+            }
         }
     });
 }

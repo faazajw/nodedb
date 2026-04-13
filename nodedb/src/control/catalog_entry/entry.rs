@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::control::security::catalog::{
     StoredCollection,
+    auth_types::{StoredRole, StoredUser},
     function_types::StoredFunction,
     procedure_types::StoredProcedure,
     sequence_types::{SequenceState, StoredSequence},
@@ -88,6 +89,26 @@ pub enum CatalogEntry {
     /// Delete a CDC change-stream definition + tear down its
     /// buffer via `cdc_router.remove_buffer`.
     DeleteChangeStream { tenant_id: u32, name: String },
+
+    // ── User ───────────────────────────────────────────────────────
+    /// Upsert a user record. The leader builds the full `StoredUser`
+    /// (including Argon2 hash, SCRAM salt, and user_id) via
+    /// `CredentialStore::prepare_user` before proposing — followers
+    /// accept the pre-computed record verbatim and bump their local
+    /// `next_user_id` counter to stay ahead of replicated IDs.
+    PutUser(Box<StoredUser>),
+    /// Soft-delete a user: flip `is_active = false` on every node's
+    /// in-memory cache and redb record.
+    DeactivateUser { username: String },
+
+    // ── Role ───────────────────────────────────────────────────────
+    /// Upsert a custom role. Built-in roles (Superuser/TenantAdmin/
+    /// ReadWrite/ReadOnly/Monitor) never flow through this variant —
+    /// they're hardcoded in `identity.rs`.
+    PutRole(Box<StoredRole>),
+    /// Delete a custom role. Does not cascade to grants that
+    /// reference it (matching current local-only DROP semantics).
+    DeleteRole { name: String },
 }
 
 impl CatalogEntry {
@@ -110,6 +131,10 @@ impl CatalogEntry {
             Self::DeleteSchedule { .. } => "delete_schedule",
             Self::PutChangeStream(_) => "put_change_stream",
             Self::DeleteChangeStream { .. } => "delete_change_stream",
+            Self::PutUser(_) => "put_user",
+            Self::DeactivateUser { .. } => "deactivate_user",
+            Self::PutRole(_) => "put_role",
+            Self::DeleteRole { .. } => "delete_role",
         }
     }
 }

@@ -189,5 +189,61 @@ pub fn apply_to(entry: &CatalogEntry, catalog: &SystemCatalog) {
                 );
             }
         }
+        CatalogEntry::PutUser(stored) => {
+            if let Err(e) = catalog.put_user(stored) {
+                warn!(
+                    username = %stored.username,
+                    error = %e,
+                    "catalog_entry: put_user failed"
+                );
+            }
+        }
+        CatalogEntry::DeactivateUser { username } => {
+            // No direct `deactivate_user(username)` on SystemCatalog —
+            // load the record, flip the bit, write it back. Missing
+            // record on a fresh follower is a silent no-op (the
+            // applier post-apply hook handles the in-memory side).
+            match catalog.get_user(username) {
+                Ok(Some(mut stored)) => {
+                    stored.is_active = false;
+                    if let Err(e) = catalog.put_user(&stored) {
+                        warn!(
+                            username = %username,
+                            error = %e,
+                            "catalog_entry: deactivate_user put failed"
+                        );
+                    }
+                }
+                Ok(None) => {
+                    debug!(
+                        username = %username,
+                        "catalog_entry: deactivate on missing user (fresh follower)"
+                    );
+                }
+                Err(e) => warn!(
+                    username = %username,
+                    error = %e,
+                    "catalog_entry: deactivate_user get failed"
+                ),
+            }
+        }
+        CatalogEntry::PutRole(stored) => {
+            if let Err(e) = catalog.put_role(stored) {
+                warn!(
+                    role = %stored.name,
+                    error = %e,
+                    "catalog_entry: put_role failed"
+                );
+            }
+        }
+        CatalogEntry::DeleteRole { name } => {
+            if let Err(e) = catalog.delete_role(name) {
+                warn!(
+                    role = %name,
+                    error = %e,
+                    "catalog_entry: delete_role failed"
+                );
+            }
+        }
     }
 }
