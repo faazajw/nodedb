@@ -227,6 +227,27 @@ impl<A: CommitApplier, F: RequestForwarder> RaftLoop<A, F> {
         mr.propose(vshard_id, data)
     }
 
+    /// Propose a command directly to the metadata Raft group (group 0).
+    ///
+    /// Used by the host crate's metadata proposer and by integration
+    /// tests that exercise the replicated-catalog path without a
+    /// pgwire client. Fails with `ClusterError::GroupNotFound` if
+    /// group 0 does not exist on this node, and with
+    /// `ClusterError::Raft(NotLeader)` if this node is not the
+    /// current leader of group 0.
+    pub fn propose_to_metadata_group(&self, data: Vec<u8>) -> Result<u64> {
+        let mut mr = self.multi_raft.lock().unwrap_or_else(|p| p.into_inner());
+        mr.propose_to_group(crate::metadata_group::METADATA_GROUP_ID, data)
+    }
+
+    /// Returns the inner multi-raft handle. Exposed for tests and for
+    /// the host crate's metadata proposer so it can hold a second
+    /// reference to the same underlying mutex without pulling the
+    /// whole raft loop into the caller's lifetime.
+    pub fn multi_raft_handle(&self) -> Arc<Mutex<crate::multi_raft::MultiRaft>> {
+        self.multi_raft.clone()
+    }
+
     /// Snapshot all Raft group states for observability (SHOW RAFT GROUPS).
     pub fn group_statuses(&self) -> Vec<crate::multi_raft::GroupStatus> {
         let mr = self.multi_raft.lock().unwrap_or_else(|p| p.into_inner());

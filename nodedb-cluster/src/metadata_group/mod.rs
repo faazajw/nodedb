@@ -22,10 +22,10 @@ pub use cache::MetadataCache;
 pub use codec::{decode_entry, encode_entry};
 pub use descriptors::{
     ApiKeyDescriptor, AuditRetentionDescriptor, ChangeStreamDescriptor, CollectionDescriptor,
-    DescriptorHeader, DescriptorId, DescriptorLease, FunctionDescriptor, GrantDescriptor,
-    IndexDescriptor, MaterializedViewDescriptor, ProcedureDescriptor, RlsDescriptor,
-    RoleDescriptor, ScheduleDescriptor, SequenceDescriptor, TenantDescriptor, TriggerDescriptor,
-    UserDescriptor,
+    DescriptorHeader, DescriptorId, DescriptorKind, DescriptorLease, FunctionDescriptor,
+    GrantDescriptor, IndexDescriptor, MaterializedViewDescriptor, ProcedureDescriptor,
+    RlsDescriptor, RoleDescriptor, ScheduleDescriptor, SequenceDescriptor, TenantDescriptor,
+    TriggerDescriptor, UserDescriptor,
 };
 pub use entry::{MetadataEntry, RoutingChange, TopologyChange};
 pub use state::DescriptorState;

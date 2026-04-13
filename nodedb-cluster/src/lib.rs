@@ -63,10 +63,12 @@ pub use wire::VShardEnvelope;
 pub use cross_shard_txn::{
     CrossShardTransaction, ForwardEntry, GsiForwardEntry, TransactionCoordinator,
 };
+pub use metadata_group::actions::{CollectionAction, CollectionAlter};
+pub use metadata_group::descriptors::collection::ColumnDef;
 pub use metadata_group::{
-    CacheApplier, CollectionDescriptor, DescriptorHeader, DescriptorId, DescriptorState,
-    METADATA_GROUP_ID, MetadataApplier, MetadataCache, MetadataEntry, NoopMetadataApplier,
-    RoutingChange, TopologyChange, decode_entry, encode_entry,
+    CacheApplier, CollectionDescriptor, DescriptorHeader, DescriptorId, DescriptorKind,
+    DescriptorState, METADATA_GROUP_ID, MetadataApplier, MetadataCache, MetadataEntry,
+    NoopMetadataApplier, RoutingChange, TopologyChange, decode_entry, encode_entry,
 };
 pub use quic_transport::{QuicTransport, QuicTransportConfig};
 

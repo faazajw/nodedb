@@ -27,7 +27,7 @@ pub use api_key::ApiKeyDescriptor;
 pub use audit_retention::AuditRetentionDescriptor;
 pub use change_stream::ChangeStreamDescriptor;
 pub use collection::CollectionDescriptor;
-pub use common::{DescriptorHeader, DescriptorId};
+pub use common::{DescriptorHeader, DescriptorId, DescriptorKind};
 pub use function::FunctionDescriptor;
 pub use grant::GrantDescriptor;
 pub use index::IndexDescriptor;
