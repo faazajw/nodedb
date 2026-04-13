@@ -144,7 +144,7 @@ pub struct SharedState {
     >,
 
     /// Watcher advanced by the `MetadataCommitApplier` after each
-    /// apply batch. Used by `metadata_proposer::propose_metadata_and_wait`
+    /// apply batch. Used by `metadata_proposer::propose_catalog_entry`
     /// to synchronously block until a freshly-proposed entry is
     /// visible on this node.
     pub metadata_applied_index_watcher:

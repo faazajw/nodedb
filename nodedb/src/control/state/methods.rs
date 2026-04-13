@@ -12,7 +12,7 @@ use super::SharedState;
 impl SharedState {
     /// Shared handle to the metadata applied-index watcher.
     ///
-    /// Used by [`crate::control::metadata_proposer::propose_metadata_and_wait`]
+    /// Used by [`crate::control::metadata_proposer::propose_catalog_entry`]
     /// to block until a freshly-proposed metadata entry has been
     /// applied locally.
     pub fn applied_index_watcher(
