@@ -108,6 +108,17 @@ impl TenantIsolation {
         self.quotas.insert(tenant_id, quota);
     }
 
+    /// Whether a tenant already has an explicit quota record.
+    pub fn has_quota(&self, tenant_id: TenantId) -> bool {
+        self.quotas.contains_key(&tenant_id)
+    }
+
+    /// Remove the quota record (and any usage counters) for a tenant.
+    pub fn remove_quota(&mut self, tenant_id: TenantId) {
+        self.quotas.remove(&tenant_id);
+        self.usage.remove(&tenant_id);
+    }
+
     /// Get quota for a tenant (falls back to default).
     pub fn quota(&self, tenant_id: TenantId) -> &TenantQuota {
         self.quotas.get(&tenant_id).unwrap_or(&self.default_quota)

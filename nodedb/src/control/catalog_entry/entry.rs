@@ -9,8 +9,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::control::security::catalog::{
-    StoredCollection, StoredMaterializedView,
-    auth_types::{StoredApiKey, StoredRole, StoredUser},
+    StoredCollection, StoredMaterializedView, StoredRlsPolicy,
+    auth_types::{StoredApiKey, StoredRole, StoredTenant, StoredUser},
     function_types::StoredFunction,
     procedure_types::StoredProcedure,
     sequence_types::{SequenceState, StoredSequence},
@@ -131,6 +131,31 @@ pub enum CatalogEntry {
     /// collection is NOT deleted — operators drop it separately
     /// with `DROP COLLECTION` if desired.
     DeleteMaterializedView { tenant_id: u32, name: String },
+
+    // ── Tenant ─────────────────────────────────────────────────────
+    /// Upsert a tenant identity record. Quotas are NOT part of
+    /// `StoredTenant`; they live in the in-memory `TenantStore` and
+    /// quota replication is intentionally out of scope for batch 1k.
+    /// Post-apply seeds default quota on every node so reads work
+    /// immediately after creation.
+    PutTenant(Box<StoredTenant>),
+    /// Hard-delete a tenant identity record. Tenant data is not
+    /// purged — that is a separate `PURGE TENANT CONFIRM` Data
+    /// Plane meta op.
+    DeleteTenant { tenant_id: u32 },
+
+    // ── RLS policy ─────────────────────────────────────────────────
+    /// Upsert an RLS policy. The leader serializes the runtime
+    /// `RlsPolicy` (compiled predicate + deny mode) into the
+    /// catalog-shape `StoredRlsPolicy` before proposing; followers
+    /// re-hydrate the runtime form via `to_runtime()` in post_apply.
+    PutRlsPolicy(Box<StoredRlsPolicy>),
+    /// Delete a single RLS policy by `(tenant_id, collection, name)`.
+    DeleteRlsPolicy {
+        tenant_id: u32,
+        collection: String,
+        name: String,
+    },
 }
 
 impl CatalogEntry {
@@ -161,6 +186,10 @@ impl CatalogEntry {
             Self::RevokeApiKey { .. } => "revoke_api_key",
             Self::PutMaterializedView(_) => "put_materialized_view",
             Self::DeleteMaterializedView { .. } => "delete_materialized_view",
+            Self::PutTenant(_) => "put_tenant",
+            Self::DeleteTenant { .. } => "delete_tenant",
+            Self::PutRlsPolicy(_) => "put_rls_policy",
+            Self::DeleteRlsPolicy { .. } => "delete_rls_policy",
         }
     }
 }

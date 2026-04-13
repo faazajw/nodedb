@@ -13,9 +13,11 @@ pub mod collection;
 pub mod function;
 pub mod materialized_view;
 pub mod procedure;
+pub mod rls;
 pub mod role;
 pub mod schedule;
 pub mod sequence;
+pub mod tenant;
 pub mod trigger;
 pub mod user;
 
@@ -67,5 +69,13 @@ pub fn apply_to(entry: &CatalogEntry, catalog: &SystemCatalog) {
         CatalogEntry::DeleteMaterializedView { tenant_id, name } => {
             materialized_view::delete(*tenant_id, name, catalog)
         }
+        CatalogEntry::PutTenant(stored) => tenant::put(stored, catalog),
+        CatalogEntry::DeleteTenant { tenant_id } => tenant::delete(*tenant_id, catalog),
+        CatalogEntry::PutRlsPolicy(stored) => rls::put(stored, catalog),
+        CatalogEntry::DeleteRlsPolicy {
+            tenant_id,
+            collection,
+            name,
+        } => rls::delete(*tenant_id, collection, name, catalog),
     }
 }

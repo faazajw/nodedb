@@ -14,9 +14,11 @@ pub mod collection;
 pub mod function;
 pub mod materialized_view;
 pub mod procedure;
+pub mod rls;
 pub mod role;
 pub mod schedule;
 pub mod sequence;
+pub mod tenant;
 pub mod trigger;
 pub mod user;
 
@@ -99,6 +101,22 @@ pub fn spawn_post_apply_side_effects(entry: CatalogEntry, shared: Arc<SharedStat
             }
             CatalogEntry::DeleteMaterializedView { tenant_id, name } => {
                 materialized_view::delete(tenant_id, name, shared);
+            }
+            CatalogEntry::PutTenant(stored) => {
+                tenant::put(*stored, shared);
+            }
+            CatalogEntry::DeleteTenant { tenant_id } => {
+                tenant::delete(tenant_id, shared);
+            }
+            CatalogEntry::PutRlsPolicy(stored) => {
+                rls::put(*stored, shared);
+            }
+            CatalogEntry::DeleteRlsPolicy {
+                tenant_id,
+                collection,
+                name,
+            } => {
+                rls::delete(tenant_id, collection, name, shared);
             }
         }
     });
