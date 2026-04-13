@@ -167,6 +167,19 @@ pub struct ClusterTransportTuning {
     /// loop re-acquires leases at 80% of this value.
     #[serde(default = "default_descriptor_lease_duration_secs")]
     pub descriptor_lease_duration_secs: u64,
+    /// How often the descriptor-lease renewal loop wakes up to
+    /// look for near-expiry leases. Default: 60s. Tests override
+    /// this with a much smaller value (e.g. 1s) to drive renewal
+    /// within a multi-second test budget.
+    #[serde(default = "default_descriptor_lease_renewal_check_interval_secs")]
+    pub descriptor_lease_renewal_check_interval_secs: u64,
+    /// Re-acquire leases when the remaining time (until expiry)
+    /// falls below this percentage of the original duration.
+    /// Default: 20 (re-acquire when 80% of the duration has
+    /// elapsed). Tests can set this to 50 to make renewal trigger
+    /// earlier in the lease lifecycle.
+    #[serde(default = "default_descriptor_lease_renewal_threshold_pct")]
+    pub descriptor_lease_renewal_threshold_pct: u8,
 }
 
 impl Default for ClusterTransportTuning {
@@ -188,12 +201,22 @@ impl Default for ClusterTransportTuning {
             health_ping_interval_secs: default_health_ping_interval_secs(),
             health_failure_threshold: default_health_failure_threshold(),
             descriptor_lease_duration_secs: default_descriptor_lease_duration_secs(),
+            descriptor_lease_renewal_check_interval_secs:
+                default_descriptor_lease_renewal_check_interval_secs(),
+            descriptor_lease_renewal_threshold_pct: default_descriptor_lease_renewal_threshold_pct(
+            ),
         }
     }
 }
 
 fn default_descriptor_lease_duration_secs() -> u64 {
     300
+}
+fn default_descriptor_lease_renewal_check_interval_secs() -> u64 {
+    60
+}
+fn default_descriptor_lease_renewal_threshold_pct() -> u8 {
+    20
 }
 
 fn default_raft_tick_interval_ms() -> u64 {

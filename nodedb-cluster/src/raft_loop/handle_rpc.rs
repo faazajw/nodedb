@@ -140,6 +140,22 @@ impl<A: CommitApplier, F: RequestForwarder> RaftRpcHandler for RaftLoop<A, F> {
                 let resp = self.forwarder.execute_forwarded(req).await;
                 Ok(RaftRpc::ForwardResponse(resp))
             }
+            // Metadata-group proposal forwarding — apply locally if
+            // we're the metadata leader, otherwise return a
+            // NotLeader response with a leader hint so the
+            // forwarder can chase the redirect.
+            RaftRpc::MetadataProposeRequest(req) => {
+                let resp = match self.propose_to_metadata_group(req.bytes) {
+                    Ok(log_index) => crate::rpc_codec::MetadataProposeResponse::ok(log_index),
+                    Err(crate::error::ClusterError::Raft(nodedb_raft::RaftError::NotLeader {
+                        leader_hint,
+                    })) => {
+                        crate::rpc_codec::MetadataProposeResponse::err("not leader", leader_hint)
+                    }
+                    Err(e) => crate::rpc_codec::MetadataProposeResponse::err(e.to_string(), None),
+                };
+                Ok(RaftRpc::MetadataProposeResponse(resp))
+            }
             // VShardEnvelope — dispatch to registered handler (Event Plane, etc.).
             RaftRpc::VShardEnvelope(bytes) => {
                 if let Some(ref handler) = self.vshard_handler {

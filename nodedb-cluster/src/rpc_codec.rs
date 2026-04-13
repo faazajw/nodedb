@@ -49,6 +49,8 @@ const RPC_TOPOLOGY_ACK: u8 = 12;
 const RPC_FORWARD_REQ: u8 = 13;
 const RPC_FORWARD_RESP: u8 = 14;
 const RPC_VSHARD_ENVELOPE: u8 = 15;
+const RPC_METADATA_PROPOSE_REQ: u8 = 16;
+const RPC_METADATA_PROPOSE_RESP: u8 = 17;
 
 // ── Cluster management wire types ───────────────────────────────────
 
@@ -78,6 +80,57 @@ pub struct ForwardResponse {
     pub payloads: Vec<Vec<u8>>,
     /// Non-empty if success=false.
     pub error_message: String,
+}
+
+/// Forward an opaque metadata-group proposal payload to the
+/// metadata-group leader. Used by `RaftLoop::propose_to_metadata_group_via_leader`
+/// when the local node is not the leader of the metadata raft
+/// group (group 0). The receiving node MUST be the current leader;
+/// if it is not, it returns `MetadataProposeResponse::not_leader`.
+#[derive(Debug, Clone, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub struct MetadataProposeRequest {
+    /// Encoded `MetadataEntry` bytes (as produced by
+    /// `metadata_group::codec::encode_entry`).
+    pub bytes: Vec<u8>,
+}
+
+/// Response to a forwarded metadata-group proposal.
+///
+/// `success == true` means the leader accepted the proposal and
+/// `log_index` is the assigned raft log index. `error_message` is
+/// always empty in that case.
+///
+/// `success == false` means the proposal failed. `log_index` is `0`
+/// and `error_message` carries the failure detail. Common cases:
+/// the receiving node is not the leader (`leader_hint` may carry
+/// a redirect), the proposal failed validation, or the underlying
+/// raft propose returned an error.
+#[derive(Debug, Clone, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub struct MetadataProposeResponse {
+    pub success: bool,
+    pub log_index: u64,
+    pub leader_hint: Option<u64>,
+    pub error_message: String,
+}
+
+impl MetadataProposeResponse {
+    pub fn ok(log_index: u64) -> Self {
+        Self {
+            success: true,
+            log_index,
+            leader_hint: None,
+            error_message: String::new(),
+        }
+    }
+
+    pub fn err(message: impl Into<String>, leader_hint: Option<u64>) -> Self {
+        Self {
+            success: false,
+            log_index: 0,
+            leader_hint,
+            error_message: message.into(),
+        }
+    }
 }
 
 /// Health check ping.
@@ -200,6 +253,12 @@ pub enum RaftRpc {
     // retention, and archival messages. The inner VShardMessageType determines
     // the handler.
     VShardEnvelope(Vec<u8>), // Serialized VShardEnvelope bytes.
+    // Metadata-group proposal forwarding (group 0). Used by
+    // `RaftLoop::propose_to_metadata_group_via_leader` to forward
+    // a `MetadataEntry` payload from a follower to the current
+    // leader of the metadata raft group.
+    MetadataProposeRequest(MetadataProposeRequest),
+    MetadataProposeResponse(MetadataProposeResponse),
 }
 
 impl RaftRpc {
@@ -220,6 +279,8 @@ impl RaftRpc {
             Self::ForwardRequest(_) => RPC_FORWARD_REQ,
             Self::ForwardResponse(_) => RPC_FORWARD_RESP,
             Self::VShardEnvelope(_) => RPC_VSHARD_ENVELOPE,
+            Self::MetadataProposeRequest(_) => RPC_METADATA_PROPOSE_REQ,
+            Self::MetadataProposeResponse(_) => RPC_METADATA_PROPOSE_RESP,
         }
     }
 }
@@ -324,6 +385,8 @@ fn serialize_payload(rpc: &RaftRpc) -> Result<Vec<u8>> {
         RaftRpc::ForwardRequest(msg) => rkyv::to_bytes::<rkyv::rancor::Error>(msg),
         RaftRpc::ForwardResponse(msg) => rkyv::to_bytes::<rkyv::rancor::Error>(msg),
         RaftRpc::VShardEnvelope(bytes) => return Ok(bytes.clone()), // Already serialized.
+        RaftRpc::MetadataProposeRequest(msg) => rkyv::to_bytes::<rkyv::rancor::Error>(msg),
+        RaftRpc::MetadataProposeResponse(msg) => rkyv::to_bytes::<rkyv::rancor::Error>(msg),
     };
     bytes.map(|b| b.to_vec()).map_err(|e| ClusterError::Codec {
         detail: format!("rkyv serialize failed: {e}"),
@@ -453,6 +516,20 @@ fn deserialize_payload(rpc_type: u8, payload: &[u8]) -> Result<RaftRpc> {
         RPC_VSHARD_ENVELOPE => {
             // VShardEnvelope is already in its own binary format — pass through raw.
             Ok(RaftRpc::VShardEnvelope(payload.to_vec()))
+        }
+        RPC_METADATA_PROPOSE_REQ => {
+            let msg = rkyv::from_bytes::<MetadataProposeRequest, rkyv::rancor::Error>(&aligned)
+                .map_err(|e| ClusterError::Codec {
+                    detail: format!("rkyv deserialize MetadataProposeRequest: {e}"),
+                })?;
+            Ok(RaftRpc::MetadataProposeRequest(msg))
+        }
+        RPC_METADATA_PROPOSE_RESP => {
+            let msg = rkyv::from_bytes::<MetadataProposeResponse, rkyv::rancor::Error>(&aligned)
+                .map_err(|e| ClusterError::Codec {
+                    detail: format!("rkyv deserialize MetadataProposeResponse: {e}"),
+                })?;
+            Ok(RaftRpc::MetadataProposeResponse(msg))
         }
         _ => Err(ClusterError::Codec {
             detail: format!("unknown rpc_type: {rpc_type}"),

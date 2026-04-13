@@ -268,6 +268,117 @@ impl<A: CommitApplier, F: RequestForwarder> RaftLoop<A, F> {
         mr.propose_to_group(crate::metadata_group::METADATA_GROUP_ID, data)
     }
 
+    /// Propose to the metadata Raft group, transparently forwarding
+    /// to the current leader if this node is not it.
+    ///
+    /// Tries a local propose first. On
+    /// `ClusterError::Raft(NotLeader { leader_hint })`, looks up the
+    /// hinted leader's address in cluster topology and sends a
+    /// [`crate::rpc_codec::MetadataProposeRequest`] over QUIC. The
+    /// receiving leader applies the proposal locally and returns
+    /// the log index.
+    ///
+    /// On `NotLeader { leader_hint: None }` (election in progress,
+    /// no observed leader yet) the call returns the original
+    /// `NotLeader` error so the caller can decide whether to retry.
+    /// We deliberately do not implement a wait-and-retry loop here
+    /// because the caller (the host-side proposer) may have a
+    /// shorter deadline than any reasonable retry budget.
+    ///
+    /// The leader-side path through this function is identical to
+    /// the bare `propose_to_metadata_group` — the only extra cost is
+    /// an `is_leader_locally` check before the local propose.
+    pub async fn propose_to_metadata_group_via_leader(&self, data: Vec<u8>) -> Result<u64> {
+        // Phase 1: try local propose.
+        match self.propose_to_metadata_group(data.clone()) {
+            Ok(idx) => return Ok(idx),
+            Err(crate::error::ClusterError::Raft(nodedb_raft::RaftError::NotLeader {
+                leader_hint,
+            })) => {
+                let Some(leader_id) = leader_hint else {
+                    return Err(crate::error::ClusterError::Raft(
+                        nodedb_raft::RaftError::NotLeader { leader_hint: None },
+                    ));
+                };
+                if leader_id == self.node_id {
+                    // Should not happen — local propose said we
+                    // weren't leader but the hint points at us. Fall
+                    // through to the original error so the caller
+                    // sees the contradiction.
+                    return Err(crate::error::ClusterError::Raft(
+                        nodedb_raft::RaftError::NotLeader {
+                            leader_hint: Some(leader_id),
+                        },
+                    ));
+                }
+                // Phase 2: forward to the hinted leader.
+                self.forward_metadata_propose(leader_id, data).await
+            }
+            Err(other) => Err(other),
+        }
+    }
+
+    /// Send a `MetadataProposeRequest` to `leader_id`. Looks up the
+    /// leader's listen address via the local topology snapshot and
+    /// dispatches through the existing peer transport.
+    async fn forward_metadata_propose(&self, leader_id: u64, data: Vec<u8>) -> Result<u64> {
+        // Resolve and register the leader's address with the
+        // transport so `send_rpc` has a destination. Topology is
+        // updated by the membership / health subsystem; if the
+        // leader isn't in our local topology yet we fail loudly so
+        // the caller can fall back to its own retry policy rather
+        // than silently dropping the proposal.
+        {
+            let topo = self.topology.read().unwrap_or_else(|p| p.into_inner());
+            let Some(node) = topo.get_node(leader_id) else {
+                return Err(crate::error::ClusterError::Transport {
+                    detail: format!(
+                        "metadata propose forward: leader {leader_id} not in local topology"
+                    ),
+                });
+            };
+            let Some(addr) = node.socket_addr() else {
+                return Err(crate::error::ClusterError::Transport {
+                    detail: format!(
+                        "metadata propose forward: leader {leader_id} has unparseable addr {:?}",
+                        node.addr
+                    ),
+                });
+            };
+            // Idempotent: register_peer overwrites any prior mapping.
+            self.transport.register_peer(leader_id, addr);
+        }
+
+        let req = crate::rpc_codec::RaftRpc::MetadataProposeRequest(
+            crate::rpc_codec::MetadataProposeRequest { bytes: data },
+        );
+        let resp = self.transport.send_rpc(leader_id, req).await?;
+        match resp {
+            crate::rpc_codec::RaftRpc::MetadataProposeResponse(r) => {
+                if r.success {
+                    Ok(r.log_index)
+                } else if let Some(hint) = r.leader_hint {
+                    // The receiving node was also not the leader
+                    // (rare: leader changed between our local check
+                    // and the forwarded RPC). Surface as NotLeader
+                    // so the caller's normal retry path runs.
+                    Err(crate::error::ClusterError::Raft(
+                        nodedb_raft::RaftError::NotLeader {
+                            leader_hint: Some(hint),
+                        },
+                    ))
+                } else {
+                    Err(crate::error::ClusterError::Transport {
+                        detail: format!("metadata propose forward failed: {}", r.error_message),
+                    })
+                }
+            }
+            other => Err(crate::error::ClusterError::Transport {
+                detail: format!("metadata propose forward: unexpected response variant {other:?}"),
+            }),
+        }
+    }
+
     /// Returns the inner multi-raft handle. Exposed for tests and for
     /// the host crate's metadata proposer so it can hold a second
     /// reference to the same underlying mutex without pulling the

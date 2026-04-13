@@ -79,11 +79,22 @@ impl RaftLoopProposerHandle {
 
 impl MetadataRaftHandle for RaftLoopProposerHandle {
     fn propose(&self, bytes: Vec<u8>) -> Result<u64, Error> {
-        self.raft_loop
-            .propose_to_metadata_group(bytes)
-            .map_err(|e| Error::Config {
-                detail: format!("metadata propose: {e}"),
-            })
+        // The cluster crate's `propose_to_metadata_group_via_leader`
+        // is async because it may need to forward to the metadata
+        // leader over QUIC. The trait method is sync because every
+        // caller (catalog DDL handlers, lease grant/release helpers)
+        // is itself sync but runs inside a tokio task. Wrap in
+        // `block_in_place` + the current runtime's `block_on` so the
+        // forwarding QUIC round-trip drives without starving the
+        // raft tick that produces the leader_hint.
+        let raft_loop = self.raft_loop.clone();
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current()
+                .block_on(raft_loop.propose_to_metadata_group_via_leader(bytes))
+        })
+        .map_err(|e| Error::Config {
+            detail: format!("metadata propose: {e}"),
+        })
     }
 
     fn watcher(&self) -> Arc<AppliedIndexWatcher> {
