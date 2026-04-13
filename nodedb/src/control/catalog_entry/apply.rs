@@ -79,5 +79,55 @@ pub fn apply_to(entry: &CatalogEntry, catalog: &SystemCatalog) {
                 );
             }
         }
+        CatalogEntry::PutSequenceState(state) => {
+            if let Err(e) = catalog.put_sequence_state(state) {
+                warn!(
+                    sequence = %state.name,
+                    tenant = state.tenant_id,
+                    error = %e,
+                    "catalog_entry: put_sequence_state failed"
+                );
+            }
+        }
+        CatalogEntry::PutTrigger(trigger) => {
+            if let Err(e) = catalog.put_trigger(trigger) {
+                warn!(
+                    trigger = %trigger.name,
+                    tenant = trigger.tenant_id,
+                    error = %e,
+                    "catalog_entry: put_trigger failed"
+                );
+            }
+        }
+        CatalogEntry::DeleteTrigger { tenant_id, name } => {
+            if let Err(e) = catalog.delete_trigger(*tenant_id, name) {
+                warn!(
+                    trigger = %name,
+                    tenant = *tenant_id,
+                    error = %e,
+                    "catalog_entry: delete_trigger failed"
+                );
+            }
+        }
+        CatalogEntry::PutFunction(func) => {
+            if let Err(e) = catalog.put_function(func) {
+                warn!(
+                    function = %func.name,
+                    tenant = func.tenant_id,
+                    error = %e,
+                    "catalog_entry: put_function failed"
+                );
+            }
+        }
+        CatalogEntry::DeleteFunction { tenant_id, name } => {
+            if let Err(e) = catalog.delete_function(*tenant_id, name) {
+                warn!(
+                    function = %name,
+                    tenant = *tenant_id,
+                    error = %e,
+                    "catalog_entry: delete_function failed"
+                );
+            }
+        }
     }
 }

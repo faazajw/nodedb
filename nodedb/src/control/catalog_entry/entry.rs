@@ -8,7 +8,12 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::control::security::catalog::{StoredCollection, sequence_types::StoredSequence};
+use crate::control::security::catalog::{
+    StoredCollection,
+    function_types::StoredFunction,
+    sequence_types::{SequenceState, StoredSequence},
+    trigger_types::StoredTrigger,
+};
 
 #[derive(
     Debug, Clone, Serialize, Deserialize, zerompk::ToMessagePack, zerompk::FromMessagePack,
@@ -26,13 +31,35 @@ pub enum CatalogEntry {
 
     // ── Sequence ───────────────────────────────────────────────────
     /// Upsert a sequence record. Used by CREATE SEQUENCE and ALTER
-    /// SEQUENCE. Carries the full updated record so followers can
-    /// apply the change without shipping a separate diff.
+    /// SEQUENCE FORMAT. Carries the full updated record so
+    /// followers can apply the change without shipping a diff.
     PutSequence(Box<StoredSequence>),
     /// Delete a sequence record entirely. Used by DROP SEQUENCE and
     /// by the cascade path in DROP COLLECTION that removes implicit
     /// `{coll}_{field}_seq` sequences for SERIAL columns.
     DeleteSequence { tenant_id: u32, name: String },
+    /// Upsert the runtime state of a sequence (current value,
+    /// is_called, epoch, period_key). Used by ALTER SEQUENCE
+    /// RESTART to propagate the new counter across nodes.
+    PutSequenceState(Box<SequenceState>),
+
+    // ── Trigger ────────────────────────────────────────────────────
+    /// Upsert a trigger record. Used by CREATE [OR REPLACE] TRIGGER
+    /// and by ALTER TRIGGER ENABLE/DISABLE paths that ship a full
+    /// updated record.
+    PutTrigger(Box<StoredTrigger>),
+    /// Delete a trigger record.
+    DeleteTrigger { tenant_id: u32, name: String },
+
+    // ── Function ───────────────────────────────────────────────────
+    /// Upsert a function record. Used by CREATE [OR REPLACE]
+    /// FUNCTION. WASM binaries still live in their separate
+    /// wasm-store redb table and are written directly on the
+    /// proposing node; replicated wasm binary distribution is its
+    /// own future batch.
+    PutFunction(Box<StoredFunction>),
+    /// Delete a function record.
+    DeleteFunction { tenant_id: u32, name: String },
 }
 
 impl CatalogEntry {
@@ -44,6 +71,11 @@ impl CatalogEntry {
             Self::DeactivateCollection { .. } => "deactivate_collection",
             Self::PutSequence(_) => "put_sequence",
             Self::DeleteSequence { .. } => "delete_sequence",
+            Self::PutSequenceState(_) => "put_sequence_state",
+            Self::PutTrigger(_) => "put_trigger",
+            Self::DeleteTrigger { .. } => "delete_trigger",
+            Self::PutFunction(_) => "put_function",
+            Self::DeleteFunction { .. } => "delete_function",
         }
     }
 }

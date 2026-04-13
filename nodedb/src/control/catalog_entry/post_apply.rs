@@ -77,6 +77,47 @@ pub fn spawn_post_apply_side_effects(entry: CatalogEntry, shared: Arc<SharedStat
                     );
                 }
             }
+            CatalogEntry::PutSequenceState(state) => {
+                // ALTER SEQUENCE RESTART / period reset paths ship
+                // a fresh `SequenceState`; replicate it into the
+                // in-memory registry handle so `NEXTVAL` on every
+                // node returns from the new counter immediately.
+                // `restart` is the existing setval path — it takes
+                // the next value and atomically updates the handle.
+                if let Err(e) = shared.sequence_registry.restart(
+                    state.tenant_id,
+                    &state.name,
+                    state.current_value,
+                ) {
+                    debug!(
+                        sequence = %state.name,
+                        tenant = state.tenant_id,
+                        error = %e,
+                        "catalog_entry: sequence_registry restart (ignored — sequence may be missing on fresh follower)"
+                    );
+                }
+            }
+            CatalogEntry::PutTrigger(trigger) => {
+                // `register` is an upsert: inserts on new triggers
+                // and replaces on OR REPLACE / ALTER ENABLE/DISABLE.
+                shared.trigger_registry.register((*trigger).clone());
+            }
+            CatalogEntry::DeleteTrigger { tenant_id, name } => {
+                shared.trigger_registry.unregister(tenant_id, &name);
+            }
+            CatalogEntry::PutFunction(func) => {
+                // The block cache is keyed by body-SQL hash, not
+                // by (tenant, name), so a point invalidation isn't
+                // possible. Clear the whole cache — it's small,
+                // reparsing is cheap, and this mirrors PostgreSQL's
+                // "any DDL invalidates prepared plans" behavior.
+                shared.block_cache.clear();
+                let _ = func;
+            }
+            CatalogEntry::DeleteFunction { tenant_id, name } => {
+                shared.block_cache.clear();
+                let _ = (tenant_id, name);
+            }
         }
     });
 }
