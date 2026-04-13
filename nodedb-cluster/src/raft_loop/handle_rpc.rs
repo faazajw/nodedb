@@ -94,25 +94,43 @@ impl<A: CommitApplier, F: RequestForwarder> RaftRpcHandler for RaftLoop<A, F> {
             RaftRpc::TopologyUpdate(update) => {
                 let (updated, ack) =
                     health::handle_topology_update(self.node_id, &self.topology, &update);
-                // Persist the adopted topology so a subsequent
-                // restart reads the latest member set from catalog
-                // rather than the stale snapshot taken at join
-                // time. Without this, a node that joined a 2-node
-                // cluster and later learned about the third member
-                // via broadcast would boot with a 2-member topology
-                // after a restart. Persist only when we actually
-                // updated, and only when a catalog is attached;
-                // failures are logged but never propagate — a
-                // failed persist is recoverable (the next
-                // TopologyUpdate will retry).
-                if updated && let Some(catalog) = self.catalog.as_ref() {
-                    let snap = self
-                        .topology
-                        .read()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .clone();
-                    if let Err(e) = catalog.save_topology(&snap) {
-                        tracing::warn!(error = %e, "failed to persist topology update to catalog");
+                if updated {
+                    // Register every member's address with the transport
+                    // so raft RPCs to newly-learned peers actually have
+                    // a destination. Without this, a node that joined
+                    // early and then learned about a later joiner via
+                    // broadcast would hold a stale peer set in its
+                    // transport and AppendEntries to the new peer would
+                    // fail until the circuit breaker opened permanently.
+                    for node in &update.nodes {
+                        if node.node_id == self.node_id {
+                            continue;
+                        }
+                        match node.addr.parse::<std::net::SocketAddr>() {
+                            Ok(addr) => self.transport.register_peer(node.node_id, addr),
+                            Err(e) => tracing::warn!(
+                                node_id = node.node_id,
+                                addr = %node.addr,
+                                error = %e,
+                                "topology update contains unparseable peer address; skipping register_peer"
+                            ),
+                        }
+                    }
+                    // Persist the adopted topology so a subsequent
+                    // restart reads the latest member set from catalog
+                    // rather than the stale snapshot taken at join
+                    // time. Persist only when a catalog is attached;
+                    // failures are logged but never propagate — the
+                    // next TopologyUpdate will retry.
+                    if let Some(catalog) = self.catalog.as_ref() {
+                        let snap = self
+                            .topology
+                            .read()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .clone();
+                        if let Err(e) = catalog.save_topology(&snap) {
+                            tracing::warn!(error = %e, "failed to persist topology update to catalog");
+                        }
                     }
                 }
                 Ok(ack)
