@@ -397,6 +397,118 @@ impl TestClusterNode {
             .is_some()
     }
 
+    /// Total number of leases (across all descriptors and node_ids)
+    /// in this node's `MetadataCache.leases` map. Includes expired
+    /// records — for filtered counts use [`active_lease_count`].
+    pub fn lease_count(&self) -> usize {
+        let cache = self
+            .shared
+            .metadata_cache
+            .read()
+            .unwrap_or_else(|p| p.into_inner());
+        cache.leases.len()
+    }
+
+    /// Number of leases whose `expires_at` is strictly greater
+    /// than this node's current HLC peek.
+    pub fn active_lease_count(&self) -> usize {
+        let now = self.shared.hlc_clock.peek();
+        let cache = self
+            .shared
+            .metadata_cache
+            .read()
+            .unwrap_or_else(|p| p.into_inner());
+        cache.leases.values().filter(|l| l.expires_at > now).count()
+    }
+
+    /// Whether this node's `MetadataCache` holds a non-expired
+    /// lease at the given version (or higher) on
+    /// `(kind, tenant_id, name)` granted to `holder_node_id`.
+    pub fn has_lease(
+        &self,
+        kind: nodedb_cluster::DescriptorKind,
+        tenant_id: u32,
+        name: &str,
+        holder_node_id: u64,
+        min_version: u64,
+    ) -> bool {
+        let now = self.shared.hlc_clock.peek();
+        let id = nodedb_cluster::DescriptorId::new(tenant_id, kind, name);
+        let cache = self
+            .shared
+            .metadata_cache
+            .read()
+            .unwrap_or_else(|p| p.into_inner());
+        cache
+            .leases
+            .get(&(id, holder_node_id))
+            .map(|l| l.expires_at > now && l.version >= min_version)
+            .unwrap_or(false)
+    }
+
+    /// Snapshot of every lease on this node for the given descriptor.
+    pub fn leases_for_descriptor(
+        &self,
+        kind: nodedb_cluster::DescriptorKind,
+        tenant_id: u32,
+        name: &str,
+    ) -> Vec<nodedb_cluster::DescriptorLease> {
+        let id = nodedb_cluster::DescriptorId::new(tenant_id, kind, name);
+        let cache = self
+            .shared
+            .metadata_cache
+            .read()
+            .unwrap_or_else(|p| p.into_inner());
+        cache
+            .leases
+            .iter()
+            .filter(|((did, _), _)| did == &id)
+            .map(|(_, l)| l.clone())
+            .collect()
+    }
+
+    /// Direct accessor for the `applied_index` watermark — used by
+    /// the lease tests to assert that the fast-path acquire did NOT
+    /// advance raft.
+    pub fn metadata_applied_index(&self) -> u64 {
+        let cache = self
+            .shared
+            .metadata_cache
+            .read()
+            .unwrap_or_else(|p| p.into_inner());
+        cache.applied_index
+    }
+
+    /// Acquire a lease on this node via the SharedState facade.
+    /// Called directly from the test's tokio runtime worker so the
+    /// `block_in_place` inside `acquire_descriptor_lease` lands on
+    /// a real runtime thread (which is what `block_in_place`
+    /// requires — it cannot be called from a `spawn_blocking`
+    /// worker).
+    pub async fn acquire_lease(
+        &self,
+        kind: nodedb_cluster::DescriptorKind,
+        tenant_id: u32,
+        name: &str,
+        version: u64,
+        duration: std::time::Duration,
+    ) -> Result<nodedb_cluster::DescriptorLease, String> {
+        let id = nodedb_cluster::DescriptorId::new(tenant_id, kind, name.to_string());
+        self.shared
+            .acquire_descriptor_lease(id, version, duration)
+            .map_err(|e| format!("acquire failed: {e}"))
+    }
+
+    /// Release a batch of leases on this node via the SharedState facade.
+    pub async fn release_leases(
+        &self,
+        descriptor_ids: Vec<nodedb_cluster::DescriptorId>,
+    ) -> Result<(), String> {
+        self.shared
+            .release_descriptor_leases(descriptor_ids)
+            .map_err(|e| format!("release failed: {e}"))
+    }
+
     /// Read the `(descriptor_version, modification_hlc)` stamp of a
     /// collection on this node's local `SystemCatalog`. The applier
     /// is the only writer, so this is what every other node should

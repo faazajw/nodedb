@@ -301,4 +301,56 @@ impl SharedState {
             }
         }
     }
+
+    /// Acquire (or re-confirm) a descriptor lease at the given
+    /// version, valid for `duration` from now. This is the public
+    /// API the planner and tests use to obtain a lease before reading
+    /// a descriptor.
+    ///
+    /// Fast path returns immediately if a non-expired lease at the
+    /// requested version (or higher) is already held by this node.
+    /// Slow path proposes a `MetadataEntry::DescriptorLeaseGrant`
+    /// through the metadata raft group and blocks on the local
+    /// applied watermark. Single-node fallback writes directly to
+    /// the in-memory cache. See
+    /// [`crate::control::lease::propose::acquire_lease`] for the
+    /// full semantics.
+    pub fn acquire_descriptor_lease(
+        &self,
+        descriptor_id: nodedb_cluster::DescriptorId,
+        version: u64,
+        duration: std::time::Duration,
+    ) -> crate::Result<nodedb_cluster::DescriptorLease> {
+        crate::control::lease::acquire_lease(self, descriptor_id, version, duration)
+    }
+
+    /// Release every lease this node currently holds against any
+    /// of `descriptor_ids`. Used on `SIGTERM` drain and by tests.
+    /// Empty input is a no-op.
+    pub fn release_descriptor_leases(
+        &self,
+        descriptor_ids: Vec<nodedb_cluster::DescriptorId>,
+    ) -> crate::Result<()> {
+        crate::control::lease::release_leases(self, descriptor_ids)
+    }
+
+    /// Look up a single lease by `(descriptor_id, this_node_id)`,
+    /// filtering expired records. Used by tests and by the planner
+    /// to short-circuit when a fresh lease already exists. Returns
+    /// `None` if absent or past expiry.
+    pub fn lookup_lease_for_self(
+        &self,
+        descriptor_id: &nodedb_cluster::DescriptorId,
+    ) -> Option<nodedb_cluster::DescriptorLease> {
+        let now = self.hlc_clock.peek();
+        let cache = self
+            .metadata_cache
+            .read()
+            .unwrap_or_else(|p| p.into_inner());
+        cache
+            .leases
+            .get(&(descriptor_id.clone(), self.node_id))
+            .filter(|l| l.expires_at > now)
+            .cloned()
+    }
 }

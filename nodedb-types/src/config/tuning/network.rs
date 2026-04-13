@@ -161,6 +161,12 @@ pub struct ClusterTransportTuning {
     /// See `nodedb_cluster::health::DEFAULT_FAILURE_THRESHOLD`.
     #[serde(default = "default_health_failure_threshold")]
     pub health_failure_threshold: u32,
+    /// Default duration of a descriptor lease, in seconds.
+    /// Used by `SharedState::acquire_descriptor_lease` when the
+    /// caller does not specify an explicit duration. The renewal
+    /// loop re-acquires leases at 80% of this value.
+    #[serde(default = "default_descriptor_lease_duration_secs")]
+    pub descriptor_lease_duration_secs: u64,
 }
 
 impl Default for ClusterTransportTuning {
@@ -181,8 +187,13 @@ impl Default for ClusterTransportTuning {
             ghost_sweep_interval_secs: default_ghost_sweep_interval_secs(),
             health_ping_interval_secs: default_health_ping_interval_secs(),
             health_failure_threshold: default_health_failure_threshold(),
+            descriptor_lease_duration_secs: default_descriptor_lease_duration_secs(),
         }
     }
+}
+
+fn default_descriptor_lease_duration_secs() -> u64 {
+    300
 }
 
 fn default_raft_tick_interval_ms() -> u64 {

@@ -8,6 +8,7 @@ pub mod cold_tier;
 pub mod distributed_applier;
 pub mod event_trigger;
 pub mod forward;
+pub mod lease;
 pub mod lock_utils;
 pub mod metadata_proposer;
 pub mod metrics;
