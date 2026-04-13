@@ -153,7 +153,7 @@ impl LeaseRenewalLoop {
         let Some(shared) = self.shared.upgrade() else {
             return;
         };
-        let now_wall_ns = wall_now_ns();
+        let now_wall_ns = super::wall_now_ns();
         let near_expiry = collect_near_expiry(&shared, now_wall_ns, &self.config);
         if near_expiry.is_empty() {
             return;
@@ -215,17 +215,6 @@ pub(crate) fn collect_near_expiry(
             }
         })
         .collect()
-}
-
-/// Wall-clock nanoseconds since Unix epoch. Same arithmetic as
-/// `HlcClock::now`'s internal wall read — we duplicate it here
-/// (rather than reading via `HlcClock::now`) so the renewal tick
-/// does not mutate the shared HLC state on every wake-up.
-fn wall_now_ns() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

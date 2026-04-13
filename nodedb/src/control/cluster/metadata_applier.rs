@@ -82,6 +82,47 @@ impl MetadataCommitApplier {
     ///   no host-side redb effects in this crate — the cluster crate
     ///   already tracks them in the `MetadataCache`.
     fn apply_host_side_effects(&self, entry: &MetadataEntry) {
+        // Handle non-CatalogDdl variants that still have host-side
+        // effects. Drain start/end land on `shared.lease_drain` on
+        // every node so the next `force_refresh_lease` check sees
+        // the replicated drain state.
+        match entry {
+            MetadataEntry::DescriptorDrainStart {
+                descriptor_id,
+                up_to_version,
+                expires_at,
+            } => {
+                if let Some(weak) = self.shared.get()
+                    && let Some(shared) = weak.upgrade()
+                {
+                    shared.lease_drain.install_start(
+                        descriptor_id.clone(),
+                        *up_to_version,
+                        *expires_at,
+                    );
+                    debug!(
+                        descriptor = ?descriptor_id,
+                        up_to_version,
+                        "drain_start applied to host tracker"
+                    );
+                }
+                return;
+            }
+            MetadataEntry::DescriptorDrainEnd { descriptor_id } => {
+                if let Some(weak) = self.shared.get()
+                    && let Some(shared) = weak.upgrade()
+                {
+                    shared.lease_drain.install_end(descriptor_id);
+                    debug!(
+                        descriptor = ?descriptor_id,
+                        "drain_end applied to host tracker"
+                    );
+                }
+                return;
+            }
+            _ => {}
+        }
+
         let Some(catalog) = self.credentials.catalog() else {
             return;
         };
@@ -133,13 +174,20 @@ impl MetadataCommitApplier {
 
         debug!(kind = stamped.kind(), "catalog_entry: applying to redb");
         catalog_entry::apply::apply_to(&stamped, catalog);
-        // Async side effects (Data Plane register, sequence registry
-        // sync) need `Arc<SharedState>`. `Weak::upgrade` returns
-        // `None` during shutdown — drop the spawn silently in that
-        // case; the raft tick is still allowed to advance.
+        // Implicit drain clear: if the entry is a `Put*` for one
+        // of the six stamped descriptor types, the DDL that was
+        // waiting on drain has now committed — remove the drain
+        // entry from every node's host tracker. Happens before
+        // post_apply so a subsequent `acquire_lease` fired from
+        // post_apply doesn't see a stale drain.
         if let Some(weak) = self.shared.get()
             && let Some(shared) = weak.upgrade()
         {
+            if let Some(drained_id) =
+                crate::control::lease::drain_propose::descriptor_id_for_implicit_clear(&stamped)
+            {
+                shared.lease_drain.install_end(&drained_id);
+            }
             catalog_entry::post_apply::spawn_post_apply_side_effects(stamped, shared);
         }
     }

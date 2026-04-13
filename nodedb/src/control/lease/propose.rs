@@ -87,6 +87,28 @@ pub fn force_refresh_lease(
     version: u64,
     duration: Duration,
 ) -> Result<DescriptorLease, Error> {
+    // Phase B.4 drain gate: reject new acquires at versions
+    // being drained by an in-flight DDL. The caller is supposed
+    // to retry with the bumped version once the DDL commits and
+    // publishes the new descriptor_version.
+    //
+    // Wall-clock comparison, not `hlc_clock.peek()`, for the
+    // same reason the renewal loop uses wall clock: peek is
+    // frozen between HLC-advancing events, and the drain's
+    // `expires_at` is a real wall timestamp.
+    let now_wall_ns = super::wall_now_ns();
+    if shared
+        .lease_drain
+        .is_draining(&descriptor_id, version, now_wall_ns)
+    {
+        return Err(Error::Config {
+            detail: format!(
+                "descriptor lease drain in progress: \
+                 {descriptor_id:?} at version {version}"
+            ),
+        });
+    }
+
     let now = shared.hlc_clock.now();
     let cache_key = (descriptor_id.clone(), shared.node_id);
     let expires_at = compute_expires_at(now, duration);

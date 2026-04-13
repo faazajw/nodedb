@@ -46,6 +46,12 @@ pub const DISTRIBUTED_CATALOG_VERSION: u16 = 2;
 /// `WIRE_FORMAT_VERSION >= 3`, the applier transitions to stamping.
 pub const DESCRIPTOR_VERSIONING_VERSION: u16 = 3;
 
+/// Wire version that introduced the replicated
+/// `DescriptorDrainStart` / `DescriptorDrainEnd` metadata
+/// entries. Mixed-version clusters below this version skip
+/// drain via the compat-mode fallback in `drain_for_ddl`.
+pub const DESCRIPTOR_DRAIN_VERSION: u16 = 4;
+
 /// Cluster-wide version state.
 #[derive(Debug, Clone)]
 pub struct ClusterVersionState {
@@ -229,6 +235,19 @@ mod tests {
 
         state.report_version(3, 2); // Node 3 upgraded.
         assert!(state.can_activate_feature(2)); // All on v2 now.
+    }
+
+    #[test]
+    fn descriptor_drain_gated_on_min_version() {
+        let mut state = ClusterVersionState::new();
+        state.report_version(1, DESCRIPTOR_DRAIN_VERSION);
+        state.report_version(2, DESCRIPTOR_DRAIN_VERSION);
+        state.report_version(3, DESCRIPTOR_DRAIN_VERSION - 1);
+
+        assert!(!state.can_activate_feature(DESCRIPTOR_DRAIN_VERSION));
+
+        state.report_version(3, DESCRIPTOR_DRAIN_VERSION);
+        assert!(state.can_activate_feature(DESCRIPTOR_DRAIN_VERSION));
     }
 
     #[test]

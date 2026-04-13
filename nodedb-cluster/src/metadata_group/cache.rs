@@ -94,6 +94,18 @@ impl MetadataCache {
                     self.leases.remove(&(id.clone(), *node_id));
                 }
             }
+            // Drain state is host-side (lives in
+            // `nodedb::control::lease::DescriptorDrainTracker`);
+            // the cluster-side cache only tracks lease state
+            // directly. These no-op arms keep the exhaustive
+            // match coverage so adding new variants is a
+            // compile-time error here too.
+            MetadataEntry::DescriptorDrainStart { expires_at, .. } => {
+                if *expires_at > self.last_applied_hlc {
+                    self.last_applied_hlc = *expires_at;
+                }
+            }
+            MetadataEntry::DescriptorDrainEnd { .. } => {}
         }
     }
 }

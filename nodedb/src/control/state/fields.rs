@@ -302,6 +302,15 @@ pub struct SharedState {
     /// before every stamp so cross-node causality is preserved.
     pub hlc_clock: Arc<nodedb_types::HlcClock>,
 
+    /// Replicated descriptor lease drain state (Phase B.4).
+    /// Written by the metadata applier on `DescriptorDrainStart`
+    /// / `DescriptorDrainEnd` raft entries (and implicitly
+    /// cleared on successful `Put*` apply). Read by the lease
+    /// acquire path (`force_refresh_lease`) to reject new
+    /// acquires at versions being drained, and by the drain
+    /// proposer's wait loop to check for completion.
+    pub lease_drain: Arc<crate::control::lease::DescriptorDrainTracker>,
+
     /// Keep-alive senders for shutdown watch channels.
     pub(super) _shutdown_senders: Vec<tokio::sync::watch::Sender<bool>>,
 

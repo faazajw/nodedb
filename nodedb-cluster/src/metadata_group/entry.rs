@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use nodedb_types::Hlc;
+
 use crate::metadata_group::descriptors::{DescriptorId, DescriptorLease};
 
 /// An entry in the replicated metadata log.
@@ -52,6 +54,30 @@ pub enum MetadataEntry {
     DescriptorLeaseRelease {
         node_id: u64,
         descriptor_ids: Vec<DescriptorId>,
+    },
+
+    // ── Descriptor lease drain (Phase B.4) ────────────────────────────
+    /// Begin draining leases on a descriptor. While a drain entry
+    /// is active, any `acquire_descriptor_lease` at
+    /// `version <= up_to_version` must be rejected cluster-wide so
+    /// the in-flight DDL that bumps the version can make progress.
+    ///
+    /// `expires_at` is the HLC at which this drain entry is
+    /// considered stale and ignored by `is_draining` checks on
+    /// read. Acts as a TTL that prevents a crashed proposer from
+    /// leaving an orphaned drain that blocks the cluster forever.
+    DescriptorDrainStart {
+        descriptor_id: DescriptorId,
+        up_to_version: u64,
+        expires_at: Hlc,
+    },
+    /// End draining on a descriptor. Emitted explicitly on drain
+    /// timeout so the cluster can make progress. On the happy
+    /// path (successful `Put*` apply), the host-side applier
+    /// clears drain implicitly — this variant is the escape
+    /// hatch for the failure path.
+    DescriptorDrainEnd {
+        descriptor_id: DescriptorId,
     },
 }
 

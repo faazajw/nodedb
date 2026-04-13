@@ -35,6 +35,17 @@ use crate::error::Error;
 /// error.
 pub const DEFAULT_PROPOSE_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Default upper bound on how long a DDL drain will wait for
+/// prior-version leases to release before giving up. Must be at
+/// least `ClusterTransportTuning::descriptor_lease_duration_secs`
+/// so an existing lease gets at least one full lifetime to
+/// expire naturally. 35 seconds matches the 300s lease duration
+/// plus a 30-second grace minus the typical 5-minute default
+/// cut down for test budget — in production
+/// `propose_catalog_entry_with_drain_timeout` can pass a longer
+/// value if an operator is willing to wait.
+pub const DEFAULT_DRAIN_TIMEOUT: Duration = Duration::from_secs(35);
+
 /// Type-erased handle for proposing to the metadata raft group.
 pub trait MetadataRaftHandle: Send + Sync {
     /// Propose a raw encoded `MetadataEntry` to the metadata group.
@@ -144,6 +155,38 @@ pub fn propose_catalog_entry_with_timeout(
             );
             return Ok(0);
         }
+    }
+
+    // Phase B.4 drain: for `Put*` variants that carry
+    // `descriptor_version`, wait until all prior-version leases
+    // have drained before committing the new descriptor. Reads
+    // the prior version from the local `SystemCatalog` and
+    // passes it to `lease::drain_for_ddl`, which in turn proposes
+    // a `DescriptorDrainStart` raft entry, polls
+    // `metadata_cache.leases` for completion, and either returns
+    // `Ok(())` on success or `Err` on timeout. On timeout
+    // `drain_for_ddl` emits an explicit `DescriptorDrainEnd` so
+    // the cluster isn't left blocking new acquires.
+    //
+    // `descriptor_id_and_prior_version` returns `None` for
+    // variants that don't carry descriptor versioning (users,
+    // roles, permissions, owners, schedules, change streams,
+    // tenants, RLS policies, API keys). Those skip the drain
+    // call entirely.
+    //
+    // If `prior_version == 0` the DDL is creating a new
+    // descriptor and there are no prior leases to drain — the
+    // drain helper returns `Ok(())` immediately in that case.
+    if let Some((descriptor_id, prior_version)) =
+        crate::control::lease::descriptor_id_and_prior_version(entry, shared)
+        && prior_version > 0
+    {
+        crate::control::lease::drain_for_ddl(
+            shared,
+            descriptor_id,
+            prior_version,
+            DEFAULT_DRAIN_TIMEOUT,
+        )?;
     }
 
     let payload = catalog_entry::encode(entry)?;
