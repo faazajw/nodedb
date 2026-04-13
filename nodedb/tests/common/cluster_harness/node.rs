@@ -68,6 +68,18 @@ impl TestClusterNode {
         node_id: u64,
         seed_nodes: Vec<SocketAddr>,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        Self::spawn_with_tuning(node_id, seed_nodes, ClusterTransportTuning::default()).await
+    }
+
+    /// Spawn a cluster node with a custom `ClusterTransportTuning`.
+    /// Used by tests that need to override the descriptor lease
+    /// duration or renewal cadence to drive renewal within a
+    /// short test budget.
+    pub async fn spawn_with_tuning(
+        node_id: u64,
+        seed_nodes: Vec<SocketAddr>,
+        tuning: ClusterTransportTuning,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let data_dir = tempfile::tempdir()?;
         let data_dir_path: PathBuf = data_dir.path().to_path_buf();
 
@@ -180,14 +192,24 @@ impl TestClusterNode {
 
         // Start Raft + install MetadataCommitApplier.
         let (cluster_shutdown_tx, cluster_shutdown_rx) = tokio::sync::watch::channel(false);
-        let tuning = ClusterTransportTuning::default();
         nodedb::control::cluster::start_raft(
             &handle,
             Arc::clone(&shared),
             &data_dir_path,
-            cluster_shutdown_rx,
+            cluster_shutdown_rx.clone(),
             &tuning,
         )?;
+
+        // Spawn the descriptor lease renewal loop on the same
+        // shutdown channel as raft so cluster shutdown stops it
+        // cleanly. Returns None on single-node clusters that
+        // never wired metadata_raft (the harness always wires it,
+        // so this returns Some in practice for cluster tests).
+        let _lease_renewal = nodedb::control::lease::LeaseRenewalLoop::spawn(
+            Arc::clone(&shared),
+            &tuning,
+            cluster_shutdown_rx,
+        );
 
         // pgwire listener.
         let pg_listener = PgListener::bind("127.0.0.1:0".parse()?).await?;

@@ -27,9 +27,11 @@ use crate::error::Error;
 
 pub mod propose;
 pub mod release;
+pub mod renewal;
 
-pub use propose::{DEFAULT_LEASE_DURATION, acquire_lease, compute_expires_at};
+pub use propose::{DEFAULT_LEASE_DURATION, acquire_lease, compute_expires_at, force_refresh_lease};
 pub use release::release_leases;
+pub use renewal::{LeaseRenewalConfig, LeaseRenewalLoop};
 
 /// Same propose-and-wait timeout the catalog DDL path uses.
 pub(super) const PROPOSE_TIMEOUT: Duration = Duration::from_secs(5);

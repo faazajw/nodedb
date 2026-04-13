@@ -2,6 +2,8 @@
 
 use std::time::Duration;
 
+use nodedb_types::config::tuning::ClusterTransportTuning;
+
 use super::node::TestClusterNode;
 use super::wait::wait_for;
 
@@ -15,15 +17,25 @@ impl TestCluster {
     /// via node 1's pre-bound address. Waits until every node sees
     /// topology_size == 3 (10s deadline).
     pub async fn spawn_three() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let node1 = TestClusterNode::spawn(1, vec![]).await?;
+        Self::spawn_three_with_tuning(ClusterTransportTuning::default()).await
+    }
+
+    /// Spawn a 3-node cluster with a custom `ClusterTransportTuning`.
+    /// Used by the descriptor-lease renewal tests to drive the
+    /// renewal loop on a much faster cadence than the production
+    /// 60-second default.
+    pub async fn spawn_three_with_tuning(
+        tuning: ClusterTransportTuning,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let node1 = TestClusterNode::spawn_with_tuning(1, vec![], tuning.clone()).await?;
 
         // Give node 1's transport + raft loop a moment to start
         // accepting before peers dial in.
         tokio::time::sleep(Duration::from_millis(200)).await;
 
         let seeds = vec![node1.listen_addr];
-        let node2 = TestClusterNode::spawn(2, seeds.clone()).await?;
-        let node3 = TestClusterNode::spawn(3, seeds).await?;
+        let node2 = TestClusterNode::spawn_with_tuning(2, seeds.clone(), tuning.clone()).await?;
+        let node3 = TestClusterNode::spawn_with_tuning(3, seeds, tuning).await?;
 
         let cluster = Self {
             nodes: vec![node1, node2, node3],

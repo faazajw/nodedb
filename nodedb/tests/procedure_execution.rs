@@ -365,6 +365,8 @@ fn stored_procedure_has_routability() {
         routability: ProcedureRoutability::SingleCollection("orders".into()),
         owner: "admin".into(),
         created_at: 0,
+        descriptor_version: 0,
+        modification_hlc: nodedb_types::Hlc::ZERO,
     };
     assert_eq!(
         proc.routability,

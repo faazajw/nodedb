@@ -126,6 +126,8 @@ fn trigger_definitions_stored_in_catalog() {
         batch_mode: TriggerBatchMode::default(),
         owner: "admin".into(),
         created_at: 0,
+        descriptor_version: 0,
+        modification_hlc: nodedb_types::Hlc::ZERO,
     });
 
     let matched = reg.get_matching(1, "orders", DmlEvent::Insert);

@@ -326,6 +326,16 @@ async fn main() -> anyhow::Result<()> {
             None
         };
 
+    // Spawn the descriptor lease renewal loop. Returns None on
+    // single-node clusters (no metadata raft handle wired) — the
+    // returned JoinHandle is dropped on the floor because the loop
+    // subscribes to `shutdown_rx` and exits cleanly on Ctrl+C.
+    let _lease_renewal = nodedb::control::lease::LeaseRenewalLoop::spawn(
+        Arc::clone(&shared),
+        &config.tuning.cluster_transport,
+        shutdown_rx.clone(),
+    );
+
     // Start response poller: routes Data Plane responses to waiting sessions.
     // Uses yield_now() instead of sleep() because Tokio's timer wheel has 1ms
     // minimum granularity — sleep(100us) actually sleeps ~1ms, adding 1ms to

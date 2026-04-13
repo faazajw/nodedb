@@ -69,6 +69,26 @@ pub fn acquire_lease(
         }
     }
 
+    force_refresh_lease(shared, descriptor_id, version, duration)
+}
+
+/// Unconditionally propose a fresh lease grant, skipping the
+/// "existing lease still valid" fast path. Used by the renewal
+/// loop, which has already decided the current lease is near
+/// expiry and must be refreshed even though it hasn't technically
+/// expired yet.
+///
+/// The single-node fallback and the cluster propose path are
+/// identical to [`acquire_lease`]; the only difference is that
+/// this function always stamps a new `expires_at = now + duration`.
+pub fn force_refresh_lease(
+    shared: &SharedState,
+    descriptor_id: DescriptorId,
+    version: u64,
+    duration: Duration,
+) -> Result<DescriptorLease, Error> {
+    let now = shared.hlc_clock.now();
+    let cache_key = (descriptor_id.clone(), shared.node_id);
     let expires_at = compute_expires_at(now, duration);
     let lease = DescriptorLease {
         descriptor_id,
