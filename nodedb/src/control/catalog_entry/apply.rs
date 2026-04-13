@@ -129,5 +129,65 @@ pub fn apply_to(entry: &CatalogEntry, catalog: &SystemCatalog) {
                 );
             }
         }
+        CatalogEntry::PutProcedure(proc) => {
+            if let Err(e) = catalog.put_procedure(proc) {
+                warn!(
+                    procedure = %proc.name,
+                    tenant = proc.tenant_id,
+                    error = %e,
+                    "catalog_entry: put_procedure failed"
+                );
+            }
+        }
+        CatalogEntry::DeleteProcedure { tenant_id, name } => {
+            if let Err(e) = catalog.delete_procedure(*tenant_id, name) {
+                warn!(
+                    procedure = %name,
+                    tenant = *tenant_id,
+                    error = %e,
+                    "catalog_entry: delete_procedure failed"
+                );
+            }
+        }
+        CatalogEntry::PutSchedule(schedule) => {
+            if let Err(e) = catalog.put_schedule(schedule) {
+                warn!(
+                    schedule = %schedule.name,
+                    tenant = schedule.tenant_id,
+                    error = %e,
+                    "catalog_entry: put_schedule failed"
+                );
+            }
+        }
+        CatalogEntry::DeleteSchedule { tenant_id, name } => {
+            if let Err(e) = catalog.delete_schedule(*tenant_id, name) {
+                warn!(
+                    schedule = %name,
+                    tenant = *tenant_id,
+                    error = %e,
+                    "catalog_entry: delete_schedule failed"
+                );
+            }
+        }
+        CatalogEntry::PutChangeStream(stream) => {
+            if let Err(e) = catalog.put_change_stream(stream) {
+                warn!(
+                    stream = %stream.name,
+                    tenant = stream.tenant_id,
+                    error = %e,
+                    "catalog_entry: put_change_stream failed"
+                );
+            }
+        }
+        CatalogEntry::DeleteChangeStream { tenant_id, name } => {
+            if let Err(e) = catalog.delete_change_stream(*tenant_id, name) {
+                warn!(
+                    stream = %name,
+                    tenant = *tenant_id,
+                    error = %e,
+                    "catalog_entry: delete_change_stream failed"
+                );
+            }
+        }
     }
 }

@@ -11,9 +11,12 @@ use serde::{Deserialize, Serialize};
 use crate::control::security::catalog::{
     StoredCollection,
     function_types::StoredFunction,
+    procedure_types::StoredProcedure,
     sequence_types::{SequenceState, StoredSequence},
     trigger_types::StoredTrigger,
 };
+use crate::event::cdc::stream_def::ChangeStreamDef;
+use crate::event::scheduler::types::ScheduleDef;
 
 #[derive(
     Debug, Clone, Serialize, Deserialize, zerompk::ToMessagePack, zerompk::FromMessagePack,
@@ -60,6 +63,31 @@ pub enum CatalogEntry {
     PutFunction(Box<StoredFunction>),
     /// Delete a function record.
     DeleteFunction { tenant_id: u32, name: String },
+
+    // ── Procedure ──────────────────────────────────────────────────
+    /// Upsert a stored procedure. Same body-cache invalidation
+    /// pattern as `PutFunction` — the `block_cache` is cleared so
+    /// the next CALL re-parses the new body.
+    PutProcedure(Box<StoredProcedure>),
+    /// Delete a stored procedure.
+    DeleteProcedure { tenant_id: u32, name: String },
+
+    // ── Schedule ───────────────────────────────────────────────────
+    /// Upsert a scheduled-job definition. Post-apply syncs the
+    /// in-memory `schedule_registry` so the cron executor on every
+    /// node picks up the new / updated schedule immediately.
+    PutSchedule(Box<ScheduleDef>),
+    /// Delete a scheduled-job definition.
+    DeleteSchedule { tenant_id: u32, name: String },
+
+    // ── Change stream ──────────────────────────────────────────────
+    /// Upsert a CDC change-stream definition. Post-apply syncs the
+    /// in-memory `stream_registry` so the Event Plane starts
+    /// buffering matching WriteEvents on every node.
+    PutChangeStream(Box<ChangeStreamDef>),
+    /// Delete a CDC change-stream definition + tear down its
+    /// buffer via `cdc_router.remove_buffer`.
+    DeleteChangeStream { tenant_id: u32, name: String },
 }
 
 impl CatalogEntry {
@@ -76,6 +104,12 @@ impl CatalogEntry {
             Self::DeleteTrigger { .. } => "delete_trigger",
             Self::PutFunction(_) => "put_function",
             Self::DeleteFunction { .. } => "delete_function",
+            Self::PutProcedure(_) => "put_procedure",
+            Self::DeleteProcedure { .. } => "delete_procedure",
+            Self::PutSchedule(_) => "put_schedule",
+            Self::DeleteSchedule { .. } => "delete_schedule",
+            Self::PutChangeStream(_) => "put_change_stream",
+            Self::DeleteChangeStream { .. } => "delete_change_stream",
         }
     }
 }

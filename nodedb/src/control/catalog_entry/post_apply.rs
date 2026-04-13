@@ -118,6 +118,37 @@ pub fn spawn_post_apply_side_effects(entry: CatalogEntry, shared: Arc<SharedStat
                 shared.block_cache.clear();
                 let _ = (tenant_id, name);
             }
+            CatalogEntry::PutProcedure(proc) => {
+                // Same body-cache invalidation as functions — the
+                // block cache is keyed on body-hash and reparse is
+                // cheap, so a full clear mirrors PostgreSQL's
+                // "any DDL invalidates prepared plans" behavior.
+                shared.block_cache.clear();
+                let _ = proc;
+            }
+            CatalogEntry::DeleteProcedure { tenant_id, name } => {
+                shared.block_cache.clear();
+                let _ = (tenant_id, name);
+            }
+            CatalogEntry::PutSchedule(schedule) => {
+                // Upsert in the in-memory cron registry so the
+                // scheduler executor picks up the new / updated
+                // schedule on its next tick.
+                shared.schedule_registry.register((*schedule).clone());
+            }
+            CatalogEntry::DeleteSchedule { tenant_id, name } => {
+                shared.schedule_registry.unregister(tenant_id, &name);
+            }
+            CatalogEntry::PutChangeStream(stream) => {
+                // Upsert the CDC stream definition. The Event
+                // Plane starts routing matching WriteEvents into
+                // this stream's buffer immediately.
+                shared.stream_registry.register((*stream).clone());
+            }
+            CatalogEntry::DeleteChangeStream { tenant_id, name } => {
+                shared.stream_registry.unregister(tenant_id, &name);
+                shared.cdc_router.remove_buffer(tenant_id, &name);
+            }
         }
     });
 }
