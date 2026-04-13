@@ -21,7 +21,7 @@ pub mod start_raft;
 
 pub use applied_index_watcher::AppliedIndexWatcher;
 pub use handle::ClusterHandle;
-pub use init::init_cluster;
+pub use init::{init_cluster, init_cluster_with_transport};
 pub use metadata_applier::MetadataCommitApplier;
 pub use spsc_applier::SpscCommitApplier;
 pub use start_raft::start_raft;

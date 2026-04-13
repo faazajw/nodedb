@@ -38,6 +38,25 @@ pub async fn init_cluster(
         "cluster QUIC transport bound"
     );
 
+    init_cluster_with_transport(config, transport, data_dir).await
+}
+
+/// Initialize the cluster using a pre-bound QUIC transport.
+///
+/// Used by multi-node integration tests that need to learn a node's
+/// ephemeral port **before** building the seed list for peer nodes
+/// — by the time `init_cluster`'s own `NexarTransport::with_tuning`
+/// has run the port is known, but the same call wants it as input via
+/// `ClusterSettings.listen`. Tests pre-bind with
+/// `NexarTransport::new(node_id, "127.0.0.1:0")`, read the real
+/// `local_addr()`, patch it into the config, and call this function.
+///
+/// Production uses [`init_cluster`] above.
+pub async fn init_cluster_with_transport(
+    config: &ClusterSettings,
+    transport: Arc<nodedb_cluster::NexarTransport>,
+    data_dir: &std::path::Path,
+) -> crate::Result<ClusterHandle> {
     // 2. Open cluster catalog.
     let catalog_path = data_dir.join("cluster.redb");
     let catalog =
