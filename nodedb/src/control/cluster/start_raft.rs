@@ -40,13 +40,16 @@ pub fn start_raft(
 
     let data_applier = SpscCommitApplier::new(shared.clone());
 
-    // Production metadata applier: writes to the shared cache +
-    // bumps the applied-index watcher + broadcasts CatalogChangeEvent.
+    // Production metadata applier: writes to the shared cache,
+    // writes back to the `SystemCatalog` redb so every non-cache
+    // reader observes the change, bumps the applied-index watcher,
+    // and broadcasts `CatalogChangeEvent`.
     let metadata_applier: Arc<dyn nodedb_cluster::MetadataApplier> =
         Arc::new(MetadataCommitApplier::new(
             handle.metadata_cache.clone(),
             handle.applied_index_watcher.clone(),
             shared.catalog_change_tx.clone(),
+            shared.credentials.clone(),
         ));
 
     // LocalForwarder stays as the current forwarded-query executor
