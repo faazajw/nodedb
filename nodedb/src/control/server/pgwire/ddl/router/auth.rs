@@ -62,7 +62,14 @@ pub(super) async fn dispatch(
     if upper.starts_with("GRANT ") {
         return Some(super::super::grant::handle_grant(state, identity, parts));
     }
-    if upper.starts_with("REVOKE ") {
+    // `REVOKE API KEY`, `REVOKE SCOPE`, `REVOKE DELEGATION` are routed
+    // by the admin dispatcher — exclude them here so permission-grant
+    // revocations don't swallow them first.
+    if upper.starts_with("REVOKE ")
+        && !upper.starts_with("REVOKE API KEY")
+        && !upper.starts_with("REVOKE SCOPE")
+        && !upper.starts_with("REVOKE DELEGATION")
+    {
         return Some(super::super::grant::handle_revoke(state, identity, parts));
     }
 

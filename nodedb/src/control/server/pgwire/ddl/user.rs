@@ -177,10 +177,27 @@ pub fn alter_user(
                 sqlstate_error("42601", "password must be a single-quoted string")
             })?;
 
-            state
+            // Build the updated `StoredUser` locally (re-hashes
+            // with a fresh salt on the leader — followers can't
+            // reproduce the random salt) and replicate through
+            // raft. Applier on every node writes redb + upserts
+            // the in-memory cache.
+            let stored = state
                 .credentials
-                .update_password(username, &password)
+                .prepare_user_update(username, Some(&password), None)
                 .map_err(|e| sqlstate_error("XX000", &e.to_string()))?;
+            let entry =
+                crate::control::catalog_entry::CatalogEntry::PutUser(Box::new(stored.clone()));
+            let log_index = crate::control::metadata_proposer::propose_catalog_entry(state, &entry)
+                .map_err(|e| sqlstate_error("XX000", &format!("metadata propose: {e}")))?;
+            if log_index == 0
+                && let Some(catalog) = state.credentials.catalog()
+            {
+                catalog
+                    .put_user(&stored)
+                    .map_err(|e| sqlstate_error("XX000", &format!("catalog write: {e}")))?;
+                state.credentials.install_replicated_user(&stored);
+            }
 
             state.audit_record(
                 AuditEvent::PrivilegeChange,
@@ -203,10 +220,22 @@ pub fn alter_user(
 
             let role: Role = parse_role(parts[5]);
 
-            state
+            let stored = state
                 .credentials
-                .update_roles(username, vec![role.clone()])
+                .prepare_user_update(username, None, Some(vec![role.clone()]))
                 .map_err(|e| sqlstate_error("XX000", &e.to_string()))?;
+            let entry =
+                crate::control::catalog_entry::CatalogEntry::PutUser(Box::new(stored.clone()));
+            let log_index = crate::control::metadata_proposer::propose_catalog_entry(state, &entry)
+                .map_err(|e| sqlstate_error("XX000", &format!("metadata propose: {e}")))?;
+            if log_index == 0
+                && let Some(catalog) = state.credentials.catalog()
+            {
+                catalog
+                    .put_user(&stored)
+                    .map_err(|e| sqlstate_error("XX000", &format!("catalog write: {e}")))?;
+                state.credentials.install_replicated_user(&stored);
+            }
 
             state.audit_record(
                 AuditEvent::PrivilegeChange,

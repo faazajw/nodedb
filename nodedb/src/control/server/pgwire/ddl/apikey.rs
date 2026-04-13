@@ -60,18 +60,29 @@ pub fn create_api_key(
     // Parse optional WITH SCOPES 'scope1', 'scope2'.
     let key_scopes = parse_key_scopes(parts, state)?;
 
-    let catalog = state.credentials.catalog();
-    let token = state
-        .api_keys
-        .create_key(
-            target_username,
-            target_user.user_id,
-            target_user.tenant_id,
-            expires_secs,
-            key_scopes,
-            catalog.as_ref(),
-        )
-        .map_err(|e| sqlstate_error("XX000", &e.to_string()))?;
+    // Build the `StoredApiKey` on the proposer — generates key_id +
+    // secret + SHA-256 hash. Only the returned `token` contains the
+    // plaintext secret (shown once to the client). The hashed record
+    // replicates through raft; every node's applier writes redb +
+    // installs the record into the in-memory cache.
+    let (stored, token) = state.api_keys.prepare_key(
+        target_username,
+        target_user.user_id,
+        target_user.tenant_id,
+        expires_secs,
+        key_scopes,
+    );
+    let entry = crate::control::catalog_entry::CatalogEntry::PutApiKey(Box::new(stored.clone()));
+    let log_index = crate::control::metadata_proposer::propose_catalog_entry(state, &entry)
+        .map_err(|e| sqlstate_error("XX000", &format!("metadata propose: {e}")))?;
+    if log_index == 0
+        && let Some(catalog) = state.credentials.catalog()
+    {
+        catalog
+            .put_api_key(&stored)
+            .map_err(|e| sqlstate_error("XX000", &format!("catalog write: {e}")))?;
+        state.api_keys.install_replicated_key(&stored);
+    }
 
     state.audit_record(
         AuditEvent::PrivilegeChange,
@@ -117,11 +128,32 @@ pub fn revoke_api_key(
         require_admin(identity, "revoke API keys for other users")?;
     }
 
-    let catalog = state.credentials.catalog();
-    let revoked = state
-        .api_keys
-        .revoke_key(key_id, catalog.as_ref())
-        .map_err(|e| sqlstate_error("XX000", &e.to_string()))?;
+    // Pre-check existence locally so "key not found" doesn't touch raft.
+    let exists_before = state.api_keys.get_key(key_id).is_some();
+    if !exists_before {
+        return Err(sqlstate_error(
+            "42704",
+            &format!("API key '{key_id}' not found"),
+        ));
+    }
+
+    let entry = crate::control::catalog_entry::CatalogEntry::RevokeApiKey {
+        key_id: key_id.to_string(),
+    };
+    let log_index = crate::control::metadata_proposer::propose_catalog_entry(state, &entry)
+        .map_err(|e| sqlstate_error("XX000", &format!("metadata propose: {e}")))?;
+    let revoked = if log_index == 0 {
+        let catalog = state.credentials.catalog();
+        state
+            .api_keys
+            .revoke_key(key_id, catalog.as_ref())
+            .map_err(|e| sqlstate_error("XX000", &e.to_string()))?
+    } else {
+        // Cluster mode: trust the committed log index — the
+        // in-memory cache update runs in a spawned tokio task and
+        // may not be visible yet.
+        true
+    };
 
     if revoked {
         state.audit_record(
