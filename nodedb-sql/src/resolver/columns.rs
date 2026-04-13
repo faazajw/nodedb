@@ -153,7 +153,7 @@ impl TableScope {
     ) -> Result<()> {
         if let Some((name, alias)) = table_name_from_factor(factor) {
             let info = catalog
-                .get_collection(&name)
+                .get_collection(&name)?
                 .ok_or_else(|| SqlError::UnknownTable { name: name.clone() })?;
             self.add(ResolvedTable { name, alias, info })?;
         }

@@ -969,16 +969,19 @@ struct CteCatalog<'a> {
 }
 
 impl SqlCatalog for CteCatalog<'_> {
-    fn get_collection(&self, name: &str) -> Option<CollectionInfo> {
+    fn get_collection(
+        &self,
+        name: &str,
+    ) -> std::result::Result<Option<CollectionInfo>, SqlCatalogError> {
         // Check CTE names first.
         if self.cte_names.iter().any(|n| n == name) {
-            return Some(CollectionInfo {
+            return Ok(Some(CollectionInfo {
                 name: name.into(),
                 engine: EngineType::DocumentSchemaless,
                 columns: Vec::new(),
                 primary_key: Some("id".into()),
                 has_auto_tier: false,
-            });
+            }));
         }
         self.inner.get_collection(name)
     }
@@ -994,8 +997,11 @@ mod tests {
     struct TestCatalog;
 
     impl SqlCatalog for TestCatalog {
-        fn get_collection(&self, name: &str) -> Option<CollectionInfo> {
-            match name {
+        fn get_collection(
+            &self,
+            name: &str,
+        ) -> std::result::Result<Option<CollectionInfo>, SqlCatalogError> {
+            let info = match name {
                 "products" => Some(CollectionInfo {
                     name: "products".into(),
                     engine: EngineType::DocumentSchemaless,
@@ -1039,7 +1045,8 @@ mod tests {
                     has_auto_tier: false,
                 }),
                 _ => None,
-            }
+            };
+            Ok(info)
         }
     }
 

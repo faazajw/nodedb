@@ -18,8 +18,11 @@ use crate::helpers::*;
 struct TimeseriesCatalog;
 
 impl SqlCatalog for TimeseriesCatalog {
-    fn get_collection(&self, name: &str) -> Option<CollectionInfo> {
-        match name {
+    fn get_collection(
+        &self,
+        name: &str,
+    ) -> std::result::Result<Option<CollectionInfo>, nodedb_sql::SqlCatalogError> {
+        let info = match name {
             "dns_bench" => Some(CollectionInfo {
                 name: "dns_bench".into(),
                 engine: EngineType::Timeseries,
@@ -28,7 +31,8 @@ impl SqlCatalog for TimeseriesCatalog {
                 has_auto_tier: false,
             }),
             _ => None,
-        }
+        };
+        Ok(info)
     }
 }
 

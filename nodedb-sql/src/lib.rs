@@ -8,6 +8,7 @@
 //! SQL → parse → resolve → plan → optimize → SqlPlan
 //! ```
 
+pub mod catalog;
 pub mod engine_rules;
 pub mod error;
 pub mod functions;
@@ -18,6 +19,7 @@ pub mod planner;
 pub mod resolver;
 pub mod types;
 
+pub use catalog::{SqlCatalog, SqlCatalogError};
 pub use error::{Result, SqlError};
 pub use params::ParamValue;
 pub use types::*;

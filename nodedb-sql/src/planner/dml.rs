@@ -19,7 +19,7 @@ pub fn plan_insert(ins: &ast::Insert, catalog: &dyn SqlCatalog) -> Result<Vec<Sq
         }
     };
     let info = catalog
-        .get_collection(&table_name)
+        .get_collection(&table_name)?
         .ok_or_else(|| SqlError::UnknownTable {
             name: table_name.clone(),
         })?;
@@ -122,7 +122,7 @@ pub fn plan_upsert(ins: &ast::Insert, catalog: &dyn SqlCatalog) -> Result<Vec<Sq
         }
     };
     let info = catalog
-        .get_collection(&table_name)
+        .get_collection(&table_name)?
         .ok_or_else(|| SqlError::UnknownTable {
             name: table_name.clone(),
         })?;
@@ -203,7 +203,7 @@ pub fn plan_update(stmt: &ast::Statement, catalog: &dyn SqlCatalog) -> Result<Ve
 
     let table_name = extract_table_name_from_table_with_joins(&update.table)?;
     let info = catalog
-        .get_collection(&table_name)
+        .get_collection(&table_name)?
         .ok_or_else(|| SqlError::UnknownTable {
             name: table_name.clone(),
         })?;
@@ -261,7 +261,7 @@ pub fn plan_delete(stmt: &ast::Statement, catalog: &dyn SqlCatalog) -> Result<Ve
             }
         })?)?;
     let info = catalog
-        .get_collection(&table_name)
+        .get_collection(&table_name)?
         .ok_or_else(|| SqlError::UnknownTable {
             name: table_name.clone(),
         })?;

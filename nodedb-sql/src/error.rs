@@ -26,6 +26,23 @@ pub enum SqlError {
 
     #[error("missing required field '{field}' for {context}")]
     MissingField { field: String, context: String },
+
+    /// A descriptor the planner depends on is being drained by
+    /// an in-flight DDL. Callers (pgwire handlers) should retry
+    /// the whole statement after a short backoff. Propagated
+    /// from `SqlCatalogError::RetryableSchemaChanged`.
+    #[error("retryable schema change on {descriptor}")]
+    RetryableSchemaChanged { descriptor: String },
+}
+
+impl From<crate::catalog::SqlCatalogError> for SqlError {
+    fn from(e: crate::catalog::SqlCatalogError) -> Self {
+        match e {
+            crate::catalog::SqlCatalogError::RetryableSchemaChanged { descriptor } => {
+                Self::RetryableSchemaChanged { descriptor }
+            }
+        }
+    }
 }
 
 impl From<sqlparser::parser::ParserError> for SqlError {

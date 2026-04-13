@@ -459,14 +459,11 @@ pub enum SqlDataType {
 }
 
 // ── Catalog trait ──
-
-/// Trait for looking up collection metadata during planning.
-///
-/// Both Origin (via CredentialStore) and Lite (via redb catalog)
-/// implement this trait.
-pub trait SqlCatalog {
-    fn get_collection(&self, name: &str) -> Option<CollectionInfo>;
-}
+// The `SqlCatalog` trait itself and its error type live in
+// `crate::catalog` to keep this file under the 500-line limit.
+// Re-exported here so downstream modules that `use crate::types::*`
+// keep resolving `SqlCatalog` without changing their imports.
+pub use crate::catalog::{SqlCatalog, SqlCatalogError};
 
 /// Metadata about a collection for query planning.
 #[derive(Debug, Clone)]
