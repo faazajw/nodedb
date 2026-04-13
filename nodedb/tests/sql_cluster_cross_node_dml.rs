@@ -620,3 +620,53 @@ async fn function_create_visible_on_every_node() {
 
     cluster.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn materialized_view_create_visible_on_every_node() {
+    let cluster = TestCluster::spawn_three().await.expect("3-node cluster");
+
+    cluster
+        .exec_ddl_on_any_leader("CREATE COLLECTION orders (id BIGINT PRIMARY KEY, amount BIGINT)")
+        .await
+        .expect("create source collection");
+
+    cluster
+        .exec_ddl_on_any_leader(
+            "CREATE MATERIALIZED VIEW sales_total ON orders AS SELECT SUM(amount) FROM orders",
+        )
+        .await
+        .expect("create materialized view");
+
+    wait_for(
+        "all 3 nodes see the materialized view",
+        Duration::from_secs(5),
+        Duration::from_millis(50),
+        || {
+            cluster
+                .nodes
+                .iter()
+                .all(|n| n.has_materialized_view(1, "sales_total"))
+        },
+    )
+    .await;
+
+    cluster
+        .exec_ddl_on_any_leader("DROP MATERIALIZED VIEW sales_total")
+        .await
+        .expect("drop materialized view");
+
+    wait_for(
+        "all 3 nodes no longer see the materialized view",
+        Duration::from_secs(5),
+        Duration::from_millis(50),
+        || {
+            cluster
+                .nodes
+                .iter()
+                .all(|n| !n.has_materialized_view(1, "sales_total"))
+        },
+    )
+    .await;
+
+    cluster.shutdown().await;
+}

@@ -340,6 +340,17 @@ impl TestClusterNode {
         self.shared.credentials.get_user(username).is_some()
     }
 
+    /// Check whether a materialized view exists in this node's local
+    /// `SystemCatalog` redb (written by the applier on every node).
+    pub fn has_materialized_view(&self, tenant_id: u32, name: &str) -> bool {
+        self.shared
+            .credentials
+            .catalog()
+            .as_ref()
+            .and_then(|c| c.get_materialized_view(tenant_id, name).ok().flatten())
+            .is_some()
+    }
+
     /// Check whether a custom role exists in this node's in-memory
     /// `roles` cache.
     pub fn has_role(&self, name: &str) -> bool {
