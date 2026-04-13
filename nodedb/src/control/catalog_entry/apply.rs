@@ -245,5 +245,43 @@ pub fn apply_to(entry: &CatalogEntry, catalog: &SystemCatalog) {
                 );
             }
         }
+        CatalogEntry::PutApiKey(stored) => {
+            if let Err(e) = catalog.put_api_key(stored) {
+                warn!(
+                    key_id = %stored.key_id,
+                    username = %stored.username,
+                    error = %e,
+                    "catalog_entry: put_api_key failed"
+                );
+            }
+        }
+        CatalogEntry::RevokeApiKey { key_id } => {
+            // Load the existing record, flip `is_revoked`, put it
+            // back. `get_api_key` returns None on fresh followers —
+            // silent no-op matches the user/collection drop pattern.
+            match catalog.get_api_key(key_id) {
+                Ok(Some(mut stored)) => {
+                    stored.is_revoked = true;
+                    if let Err(e) = catalog.put_api_key(&stored) {
+                        warn!(
+                            key_id = %key_id,
+                            error = %e,
+                            "catalog_entry: revoke_api_key put failed"
+                        );
+                    }
+                }
+                Ok(None) => {
+                    debug!(
+                        key_id = %key_id,
+                        "catalog_entry: revoke on missing api_key (fresh follower)"
+                    );
+                }
+                Err(e) => warn!(
+                    key_id = %key_id,
+                    error = %e,
+                    "catalog_entry: revoke_api_key get failed"
+                ),
+            }
+        }
     }
 }

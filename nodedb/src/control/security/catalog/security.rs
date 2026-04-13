@@ -54,6 +54,28 @@ impl SystemCatalog {
         Ok(keys)
     }
 
+    /// Look up a single API key by id. Used by the replication
+    /// applier to implement `RevokeApiKey` without re-loading the
+    /// full key table.
+    pub fn get_api_key(&self, key_id: &str) -> crate::Result<Option<StoredApiKey>> {
+        let read_txn = self
+            .db
+            .begin_read()
+            .map_err(|e| catalog_err("read txn", e))?;
+        let table = read_txn
+            .open_table(API_KEYS)
+            .map_err(|e| catalog_err("open api_keys", e))?;
+        match table.get(key_id) {
+            Ok(Some(value)) => {
+                let key: StoredApiKey = zerompk::from_msgpack(value.value())
+                    .map_err(|e| catalog_err("deserialize api key", e))?;
+                Ok(Some(key))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(catalog_err("get api key", e)),
+        }
+    }
+
     /// Delete an API key by key_id.
     pub fn delete_api_key(&self, key_id: &str) -> crate::Result<()> {
         let write_txn = self

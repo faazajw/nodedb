@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::control::security::catalog::{
     StoredCollection,
-    auth_types::{StoredRole, StoredUser},
+    auth_types::{StoredApiKey, StoredRole, StoredUser},
     function_types::StoredFunction,
     procedure_types::StoredProcedure,
     sequence_types::{SequenceState, StoredSequence},
@@ -109,6 +109,18 @@ pub enum CatalogEntry {
     /// Delete a custom role. Does not cascade to grants that
     /// reference it (matching current local-only DROP semantics).
     DeleteRole { name: String },
+
+    // ── ApiKey ─────────────────────────────────────────────────────
+    /// Upsert an API key record. The leader builds the full
+    /// `StoredApiKey` (including SHA-256 secret_hash) via
+    /// `ApiKeyStore::prepare_key`; followers accept the pre-computed
+    /// record verbatim. The plaintext secret NEVER enters raft —
+    /// only the proposing client receives the token.
+    PutApiKey(Box<StoredApiKey>),
+    /// Revoke an API key — sets `is_revoked = true` in the cached
+    /// record and re-writes the redb row. Preserves the record for
+    /// audit trails.
+    RevokeApiKey { key_id: String },
 }
 
 impl CatalogEntry {
@@ -135,6 +147,8 @@ impl CatalogEntry {
             Self::DeactivateUser { .. } => "deactivate_user",
             Self::PutRole(_) => "put_role",
             Self::DeleteRole { .. } => "delete_role",
+            Self::PutApiKey(_) => "put_api_key",
+            Self::RevokeApiKey { .. } => "revoke_api_key",
         }
     }
 }

@@ -164,6 +164,12 @@ pub fn spawn_post_apply_side_effects(entry: CatalogEntry, shared: Arc<SharedStat
             CatalogEntry::DeleteRole { name } => {
                 shared.roles.install_replicated_drop_role(&name);
             }
+            CatalogEntry::PutApiKey(stored) => {
+                shared.api_keys.install_replicated_key(&stored);
+            }
+            CatalogEntry::RevokeApiKey { key_id } => {
+                shared.api_keys.install_replicated_revoke(&key_id);
+            }
         }
     });
 }
