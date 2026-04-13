@@ -70,6 +70,18 @@ pub enum CollectionAlter {
     RemoveWithOption {
         key: String,
     },
+    /// Catch-all for alters whose semantics are host-specific and
+    /// cannot be modeled as a fine-grained cache-side change. The
+    /// authoritative new state is entirely in the entry's
+    /// `host_payload`; the cache bumps the descriptor version but
+    /// does not mutate columns. The production applier decodes the
+    /// payload and overwrites the host's local record.
+    ///
+    /// Used today for enforcement alters (retention, legal_hold,
+    /// LVC, append_only, materialized_sum) that attach fields to
+    /// `StoredCollection` not represented on the replicated
+    /// `CollectionDescriptor`.
+    ReplaceHostRecord,
 }
 
 simple_action!(CollectionAction, CollectionDescriptor, CollectionAlter);

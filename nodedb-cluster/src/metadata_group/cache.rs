@@ -210,6 +210,12 @@ fn apply_collection(
                 CollectionAlter::RemoveWithOption { key } => {
                     existing.with_options.retain(|(k, _)| k != key);
                 }
+                CollectionAlter::ReplaceHostRecord => {
+                    // The authoritative new state lives in the
+                    // entry's host_payload — bump the version only.
+                    // The production applier decodes the payload and
+                    // overwrites the host's local record.
+                }
             }
             existing.header.version = existing.header.version.saturating_add(1);
         }
