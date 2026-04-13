@@ -340,6 +340,29 @@ impl TestClusterNode {
         self.shared.credentials.get_user(username).is_some()
     }
 
+    /// Check whether a tenant identity exists in this node's local
+    /// `SystemCatalog` redb (written by the `PutTenant` applier).
+    pub fn has_tenant(&self, tenant_id: u32) -> bool {
+        let Some(catalog) = self.shared.credentials.catalog() else {
+            return false;
+        };
+        match catalog.load_all_tenants() {
+            Ok(list) => list.iter().any(|t| t.tenant_id == tenant_id),
+            Err(_) => false,
+        }
+    }
+
+    /// Check whether an RLS policy exists in this node's local
+    /// `SystemCatalog` redb (written by the `PutRlsPolicy` applier).
+    pub fn has_rls_policy(&self, tenant_id: u32, collection: &str, name: &str) -> bool {
+        self.shared
+            .credentials
+            .catalog()
+            .as_ref()
+            .and_then(|c| c.get_rls_policy(tenant_id, collection, name).ok().flatten())
+            .is_some()
+    }
+
     /// Check whether a materialized view exists in this node's local
     /// `SystemCatalog` redb (written by the applier on every node).
     pub fn has_materialized_view(&self, tenant_id: u32, name: &str) -> bool {

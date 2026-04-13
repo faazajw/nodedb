@@ -622,6 +622,89 @@ async fn function_create_visible_on_every_node() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn tenant_create_visible_on_every_node() {
+    let cluster = TestCluster::spawn_three().await.expect("3-node cluster");
+
+    cluster
+        .exec_ddl_on_any_leader("CREATE TENANT acme ID 4242")
+        .await
+        .expect("create tenant");
+
+    wait_for(
+        "all 3 nodes see tenant 4242",
+        Duration::from_secs(5),
+        Duration::from_millis(50),
+        || cluster.nodes.iter().all(|n| n.has_tenant(4242)),
+    )
+    .await;
+
+    cluster
+        .exec_ddl_on_any_leader("DROP TENANT 4242")
+        .await
+        .expect("drop tenant");
+
+    wait_for(
+        "all 3 nodes no longer see tenant 4242",
+        Duration::from_secs(5),
+        Duration::from_millis(50),
+        || cluster.nodes.iter().all(|n| !n.has_tenant(4242)),
+    )
+    .await;
+
+    cluster.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn rls_policy_create_visible_on_every_node() {
+    let cluster = TestCluster::spawn_three().await.expect("3-node cluster");
+
+    cluster
+        .exec_ddl_on_any_leader("CREATE COLLECTION accounts (id BIGINT PRIMARY KEY, owner TEXT)")
+        .await
+        .expect("create source collection");
+
+    cluster
+        .exec_ddl_on_any_leader(
+            "CREATE RLS POLICY owner_only ON accounts FOR READ USING (owner = 'alice')",
+        )
+        .await
+        .expect("create rls policy");
+
+    wait_for(
+        "all 3 nodes see the RLS policy",
+        Duration::from_secs(5),
+        Duration::from_millis(50),
+        || {
+            cluster
+                .nodes
+                .iter()
+                .all(|n| n.has_rls_policy(1, "accounts", "owner_only"))
+        },
+    )
+    .await;
+
+    cluster
+        .exec_ddl_on_any_leader("DROP RLS POLICY owner_only ON accounts")
+        .await
+        .expect("drop rls policy");
+
+    wait_for(
+        "all 3 nodes no longer see the RLS policy",
+        Duration::from_secs(5),
+        Duration::from_millis(50),
+        || {
+            cluster
+                .nodes
+                .iter()
+                .all(|n| !n.has_rls_policy(1, "accounts", "owner_only"))
+        },
+    )
+    .await;
+
+    cluster.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn materialized_view_create_visible_on_every_node() {
     let cluster = TestCluster::spawn_three().await.expect("3-node cluster");
 
