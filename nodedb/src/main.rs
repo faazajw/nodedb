@@ -306,16 +306,25 @@ async fn main() -> anyhow::Result<()> {
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
-    // Start cluster Raft loop if in cluster mode.
-    if let Some(ref handle) = cluster_handle {
-        nodedb::control::cluster::start_raft(
-            handle,
-            Arc::clone(&shared),
-            &config.data_dir,
-            shutdown_rx.clone(),
-            &config.tuning.cluster_transport,
-        )?;
-    }
+    // Start cluster Raft loop if in cluster mode. The returned
+    // receiver flips to `true` after the metadata raft group has
+    // applied its first entry on this node — see
+    // `nodedb-cluster::RaftLoop::subscribe_ready`. We hold on to it
+    // and await it just before binding client-facing listeners so
+    // the first DDL after process start cannot race against an
+    // uninitialized metadata group.
+    let raft_ready_rx: Option<tokio::sync::watch::Receiver<bool>> =
+        if let Some(ref handle) = cluster_handle {
+            Some(nodedb::control::cluster::start_raft(
+                handle,
+                Arc::clone(&shared),
+                &config.data_dir,
+                shutdown_rx.clone(),
+                &config.tuning.cluster_transport,
+            )?)
+        } else {
+            None
+        };
 
     // Start response poller: routes Data Plane responses to waiting sessions.
     // Uses yield_now() instead of sleep() because Tokio's timer wheel has 1ms
@@ -521,6 +530,32 @@ async fn main() -> anyhow::Result<()> {
     let resp_tls_enabled = tls_flags.is_some_and(|t| t.resp);
     let ilp_tls_enabled = tls_flags.is_some_and(|t| t.ilp);
     let native_tls_enabled = tls_flags.is_some_and(|t| t.native);
+
+    // Boot-time readiness gate: in cluster mode, wait until the
+    // metadata raft group has applied its first entry on this node
+    // before opening any client-facing listener. This eliminates the
+    // restart-window race where the first DDL would observe
+    // `metadata propose: not leader` because election had not yet
+    // completed.
+    if let Some(mut ready_rx) = raft_ready_rx {
+        const RAFT_READY_TIMEOUT: Duration = Duration::from_secs(30);
+        match tokio::time::timeout(RAFT_READY_TIMEOUT, ready_rx.wait_for(|v| *v)).await {
+            Ok(Ok(_)) => {
+                info!("metadata raft group ready — opening client listeners");
+            }
+            Ok(Err(_)) => {
+                return Err(anyhow::anyhow!(
+                    "raft readiness watch dropped before signalling ready"
+                ));
+            }
+            Err(_) => {
+                return Err(anyhow::anyhow!(
+                    "raft readiness timeout after {RAFT_READY_TIMEOUT:?} — \
+                     metadata group failed to apply first entry"
+                ));
+            }
+        }
+    }
 
     // Run pgwire listener in a separate task.
     let shared_pg = Arc::clone(&shared);

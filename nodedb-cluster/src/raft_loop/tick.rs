@@ -178,6 +178,20 @@ impl<A: CommitApplier, F: RequestForwarder> RaftLoop<A, F> {
                             warn!(group_id, error = %e, "failed to advance applied index");
                         }
                     }
+
+                    // Boot-time readiness: the first time the metadata
+                    // group (0) applies any entry on this node — which
+                    // is the leader-election no-op or a replayed entry
+                    // — flip the ready watch. The host crate's
+                    // `start_raft` returns the receiver; `main.rs`
+                    // awaits it before binding client-facing
+                    // listeners. Idempotent: subsequent ticks are a
+                    // no-op once the latch is set.
+                    if group_id == crate::metadata_group::METADATA_GROUP_ID
+                        && !*self.ready_watch.borrow()
+                    {
+                        let _ = self.ready_watch.send(true);
+                    }
                 }
 
                 // Phase 5: install-snapshot dispatch for lagging peers.

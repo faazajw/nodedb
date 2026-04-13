@@ -87,6 +87,19 @@ pub struct RaftLoop<A: CommitApplier, F: RequestForwarder = crate::forward::Noop
     /// spawned just after `begin_shutdown`), and awaiting
     /// `receiver.changed()` is cancellable inside `tokio::select!`.
     pub(super) shutdown_watch: tokio::sync::watch::Sender<bool>,
+    /// Boot-time readiness signal. Flipped to `true` by
+    /// [`super::tick::do_tick`] after the first tick completes phase
+    /// 4 (apply committed entries) — i.e. once Raft has driven at
+    /// least one no-op or replayed entries past the persisted
+    /// applied watermark on this node.
+    ///
+    /// The host crate's `start_raft` returns `subscribe_ready()` to
+    /// `main.rs`, which awaits it before binding any client-facing
+    /// listener. This guarantees the first SQL DDL the operator
+    /// runs after process start cannot race against an
+    /// uninitialized metadata raft group, which previously surfaced
+    /// as `metadata propose: not leader` under fast restart loops.
+    pub(super) ready_watch: tokio::sync::watch::Sender<bool>,
 }
 
 impl<A: CommitApplier> RaftLoop<A> {
@@ -98,6 +111,7 @@ impl<A: CommitApplier> RaftLoop<A> {
     ) -> Self {
         let node_id = multi_raft.node_id();
         let (shutdown_watch, _) = tokio::sync::watch::channel(false);
+        let (ready_watch, _) = tokio::sync::watch::channel(false);
         Self {
             node_id,
             multi_raft: Arc::new(Mutex::new(multi_raft)),
@@ -110,6 +124,7 @@ impl<A: CommitApplier> RaftLoop<A> {
             vshard_handler: None,
             catalog: None,
             shutdown_watch,
+            ready_watch,
         }
     }
 }
@@ -125,6 +140,7 @@ impl<A: CommitApplier, F: RequestForwarder> RaftLoop<A, F> {
     ) -> Self {
         let node_id = multi_raft.node_id();
         let (shutdown_watch, _) = tokio::sync::watch::channel(false);
+        let (ready_watch, _) = tokio::sync::watch::channel(false);
         Self {
             node_id,
             multi_raft: Arc::new(Mutex::new(multi_raft)),
@@ -137,6 +153,7 @@ impl<A: CommitApplier, F: RequestForwarder> RaftLoop<A, F> {
             vshard_handler: None,
             catalog: None,
             shutdown_watch,
+            ready_watch,
         }
     }
 
@@ -153,6 +170,17 @@ impl<A: CommitApplier, F: RequestForwarder> RaftLoop<A, F> {
     /// the first.
     pub fn begin_shutdown(&self) {
         let _ = self.shutdown_watch.send(true);
+    }
+
+    /// Subscribe to the boot-time readiness signal.
+    ///
+    /// The returned receiver starts at `false` and flips to `true`
+    /// exactly once, after the first [`super::tick::do_tick`]
+    /// completes phase 4 (apply committed entries). Used by the
+    /// host crate to gate client-facing listener startup until the
+    /// metadata raft group has produced its first applied entry.
+    pub fn subscribe_ready(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.ready_watch.subscribe()
     }
 
     /// Set a handler for incoming VShardEnvelope messages.

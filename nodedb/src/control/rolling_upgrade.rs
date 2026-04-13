@@ -20,6 +20,19 @@
 
 use crate::version::WIRE_FORMAT_VERSION;
 
+/// Wire-format version that introduced the replicated catalog DDL
+/// path (`CatalogEntry` proposed via the metadata raft group).
+///
+/// Before this version, catalog DDL was applied directly on the
+/// originating node and never replicated. Mixing the two paths in a
+/// rolling upgrade window would silently diverge state across nodes,
+/// so [`crate::control::metadata_proposer::propose_catalog_entry`]
+/// gates on this constant via
+/// [`ClusterVersionState::can_activate_feature`] and falls back to
+/// the legacy direct-write path until every node in the cluster has
+/// caught up.
+pub const DISTRIBUTED_CATALOG_VERSION: u16 = 2;
+
 /// Cluster-wide version state.
 #[derive(Debug, Clone)]
 pub struct ClusterVersionState {
@@ -203,6 +216,19 @@ mod tests {
 
         state.report_version(3, 2); // Node 3 upgraded.
         assert!(state.can_activate_feature(2)); // All on v2 now.
+    }
+
+    #[test]
+    fn distributed_catalog_gated_on_min_version() {
+        let mut state = ClusterVersionState::new();
+        state.report_version(1, DISTRIBUTED_CATALOG_VERSION);
+        state.report_version(2, DISTRIBUTED_CATALOG_VERSION);
+        state.report_version(3, DISTRIBUTED_CATALOG_VERSION - 1);
+
+        assert!(!state.can_activate_feature(DISTRIBUTED_CATALOG_VERSION));
+
+        state.report_version(3, DISTRIBUTED_CATALOG_VERSION);
+        assert!(state.can_activate_feature(DISTRIBUTED_CATALOG_VERSION));
     }
 
     #[test]

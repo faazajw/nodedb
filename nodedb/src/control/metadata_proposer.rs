@@ -113,6 +113,28 @@ pub fn propose_catalog_entry_with_timeout(
         return Ok(0);
     };
 
+    // Rolling-upgrade gate: until every node in the cluster reports
+    // at least `DISTRIBUTED_CATALOG_VERSION`, fall back to the legacy
+    // direct-write path on the originating node. Mixing the
+    // replicated and direct paths during a partial upgrade would
+    // diverge catalog state across nodes — see
+    // `control/rolling_upgrade.rs`.
+    {
+        let vs = shared
+            .cluster_version_state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if !vs.can_activate_feature(crate::control::rolling_upgrade::DISTRIBUTED_CATALOG_VERSION) {
+            tracing::warn!(
+                min_version = vs.min_version,
+                required = crate::control::rolling_upgrade::DISTRIBUTED_CATALOG_VERSION,
+                "metadata propose: cluster in compat mode (mixed-version), \
+                 falling back to legacy direct-write path"
+            );
+            return Ok(0);
+        }
+    }
+
     let payload = catalog_entry::encode(entry)?;
     let metadata_entry = MetadataEntry::CatalogDdl { payload };
     let raw = encode_entry(&metadata_entry).map_err(|e| Error::Config {

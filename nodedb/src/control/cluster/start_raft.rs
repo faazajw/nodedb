@@ -24,7 +24,7 @@ pub fn start_raft(
     _data_dir: &std::path::Path,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
     transport_tuning: &ClusterTransportTuning,
-) -> crate::Result<()> {
+) -> crate::Result<tokio::sync::watch::Receiver<bool>> {
     // Move the MultiRaft constructed by `start_cluster` into this
     // function. Rebuilding it here from the routing table would lose
     // learner membership for joining nodes and would double-open
@@ -97,6 +97,12 @@ pub fn start_raft(
         tracing::warn!("metadata_raft already set — start_raft appears to have run twice");
     }
 
+    // Subscribe to the boot-time readiness watch BEFORE spawning the
+    // tick loop so we cannot miss the first transition. The receiver
+    // is returned to `main.rs`, which awaits it before binding any
+    // client-facing listener.
+    let ready_rx = raft_loop.subscribe_ready();
+
     // Start the Raft tick loop.
     let rl_run = raft_loop.clone();
     let sr_raft = shutdown_rx.clone();
@@ -142,5 +148,5 @@ pub fn start_raft(
 
     info!(node_id = handle.node_id, "raft loop and RPC server started");
 
-    Ok(())
+    Ok(ready_rx)
 }
