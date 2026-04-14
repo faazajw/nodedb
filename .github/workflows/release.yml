@@ -160,10 +160,7 @@ jobs:
                 echo "  $crate@$VERSION already published — skipping"
               else
                 echo "  Publishing $crate@$VERSION..."
-                # --no-verify: skip the local verify build, which re-resolves
-                # dependencies without the workspace [patch.crates-io] and fails
-                # on the yanked core2 0.4.0 pulled transitively by jieba-rs.
-                cargo publish -p "$crate" --allow-dirty --no-verify
+                cargo publish -p "$crate" --allow-dirty
                 need_wait+=("$crate:$VERSION")
               fi
             done
