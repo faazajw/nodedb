@@ -19,6 +19,6 @@ pub mod probe;
 pub mod restart;
 pub mod start;
 
-pub use config::{ClusterConfig, ClusterState};
+pub use config::{ClusterConfig, ClusterState, JoinRetryPolicy};
 pub use handle_join::handle_join_request;
 pub use start::start_cluster;

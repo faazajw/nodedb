@@ -306,7 +306,9 @@ impl SharedState {
     }
 
     /// Poll responses from all Data Plane cores and route them to waiting sessions.
-    pub fn poll_and_route_responses(&self) {
+    /// Returns the number of responses routed — callers use this for adaptive
+    /// backoff (zero ⇒ idle, sleep longer; non-zero ⇒ active, stay hot).
+    pub fn poll_and_route_responses(&self) -> usize {
         let responses = match self.dispatcher.lock() {
             Ok(mut d) => d.poll_responses(),
             Err(poisoned) => {
@@ -314,11 +316,13 @@ impl SharedState {
                 poisoned.into_inner().poll_responses()
             }
         };
+        let count = responses.len();
         for resp in responses {
             if !self.tracker.complete(resp) {
                 warn!("response for unknown or cancelled request");
             }
         }
+        count
     }
 
     /// Acquire (or re-confirm) a descriptor lease at the given

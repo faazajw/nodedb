@@ -40,7 +40,7 @@ pub enum ClusterLifecycleState {
     /// Joining an existing cluster. `attempt` counts from 0.
     Joining {
         /// Current join attempt (0-indexed). See
-        /// `bootstrap::join::next_backoff` for the backoff schedule.
+        /// `bootstrap::config::JoinRetryPolicy` for the backoff schedule.
         attempt: u32,
     },
     /// Cluster init finished successfully. `nodes` is the number of

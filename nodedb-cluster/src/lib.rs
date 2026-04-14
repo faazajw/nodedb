@@ -36,7 +36,7 @@ pub mod transport;
 pub mod vshard_handler;
 pub mod wire;
 
-pub use bootstrap::{ClusterConfig, ClusterState, start_cluster};
+pub use bootstrap::{ClusterConfig, ClusterState, JoinRetryPolicy, start_cluster};
 pub use catalog::ClusterCatalog;
 pub use cluster_info::{
     ClusterInfoSnapshot, ClusterObserver, GroupSnapshot, GroupStatusProvider, PeerSnapshot,

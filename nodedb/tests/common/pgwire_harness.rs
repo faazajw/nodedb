@@ -56,7 +56,10 @@ impl TestServer {
             let mut core =
                 CoreLoop::open(0, data_side.request_rx, data_side.response_tx, &core_dir).unwrap();
             core.set_event_producer(event_producer);
-            while core_stop_rx.try_recv().is_err() {
+            while matches!(
+                core_stop_rx.try_recv(),
+                Err(std::sync::mpsc::TryRecvError::Empty)
+            ) {
                 core.tick();
                 std::thread::sleep(Duration::from_millis(1));
             }
