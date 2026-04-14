@@ -73,6 +73,7 @@ pub async fn init_cluster_with_transport(
         replication_factor: config.replication_factor,
         data_dir: data_dir.to_path_buf(),
         force_bootstrap: config.force_bootstrap,
+        join_retry: join_retry_policy_from_env(),
     };
 
     let lifecycle = nodedb_cluster::ClusterLifecycleTracker::new();
@@ -104,4 +105,31 @@ pub async fn init_cluster_with_transport(
         node_id: config.node_id,
         multi_raft: Mutex::new(Some(state.multi_raft)),
     })
+}
+
+/// Build the join retry policy, honouring two optional environment
+/// variables for test/CI overrides:
+///
+/// - `NODEDB_JOIN_RETRY_MAX_ATTEMPTS` — total attempts (default 8)
+/// - `NODEDB_JOIN_RETRY_MAX_BACKOFF_SECS` — per-attempt ceiling
+///   (default 32 s)
+///
+/// Production deployments leave both unset and get the production
+/// schedule. The integration test harness sets both to small values
+/// so a join-retry path doesn't spend ~1 minute sleeping in CI.
+fn join_retry_policy_from_env() -> nodedb_cluster::JoinRetryPolicy {
+    let mut policy = nodedb_cluster::JoinRetryPolicy::default();
+    if let Ok(v) = std::env::var("NODEDB_JOIN_RETRY_MAX_ATTEMPTS")
+        && let Ok(n) = v.parse::<u32>()
+        && n > 0
+    {
+        policy.max_attempts = n;
+    }
+    if let Ok(v) = std::env::var("NODEDB_JOIN_RETRY_MAX_BACKOFF_SECS")
+        && let Ok(n) = v.parse::<u64>()
+        && n > 0
+    {
+        policy.max_backoff_secs = n;
+    }
+    policy
 }

@@ -20,7 +20,6 @@
 
 use std::collections::HashSet;
 use std::net::SocketAddr;
-use std::time::Duration;
 
 use tracing::{debug, info, warn};
 
@@ -35,38 +34,10 @@ use crate::transport::NexarTransport;
 
 use super::config::{ClusterConfig, ClusterState};
 
-/// Maximum number of outer retry attempts before `join()` gives up and
-/// returns the last concrete error to its caller. With the backoff
-/// schedule below this gives a total window of roughly 32 seconds.
-const MAX_JOIN_ATTEMPTS: u32 = 8;
-
 /// Maximum number of leader-redirect hops inside a single join
 /// attempt. The redirect chain starts at whichever seed we first
 /// contact; each hop costs a round-trip, so keep this small.
 const MAX_REDIRECTS_PER_ATTEMPT: u32 = 3;
-
-/// Exponential-backoff delay between join attempts, capped at 16 s.
-///
-/// Attempt 0 is immediate. Subsequent attempts sleep 500 ms, 1 s, 2 s,
-/// 4 s, 8 s, then 16 s for every further attempt. Total window for
-/// the default `MAX_JOIN_ATTEMPTS = 8` is roughly 32 s.
-///
-/// Pure so it can be unit-tested in isolation — no time-source
-/// dependency.
-pub(crate) fn next_backoff(attempt: u32) -> Duration {
-    if attempt == 0 {
-        return Duration::ZERO;
-    }
-    let secs_millis: u64 = match attempt {
-        1 => 500,
-        2 => 1_000,
-        3 => 2_000,
-        4 => 4_000,
-        5 => 8_000,
-        _ => 16_000,
-    };
-    Duration::from_millis(secs_millis)
-}
 
 /// Parse a `JoinResponse::error` string as a leader redirect hint.
 ///
@@ -90,8 +61,8 @@ pub(crate) fn parse_leader_hint(error: &str) -> Option<SocketAddr> {
 ///
 /// The loop has two layers:
 ///
-/// - **Outer**: up to `MAX_JOIN_ATTEMPTS` retry passes with
-///   exponential backoff. Handles the "bootstrapper not up yet"
+/// - **Outer**: retry passes with exponential backoff per
+///   `config.join_retry`. Handles the "bootstrapper not up yet"
 ///   startup race.
 /// - **Inner**: walk the seed list plus any leader-redirect hops for
 ///   this attempt. A successful `JoinResponse` short-circuits the
@@ -123,12 +94,13 @@ pub(super) async fn join(
         wire_version: crate::topology::CLUSTER_WIRE_FORMAT_VERSION,
     };
 
+    let policy = config.join_retry;
     let mut last_err: Option<ClusterError> = None;
 
-    for attempt in 0..MAX_JOIN_ATTEMPTS {
+    for attempt in 0..policy.max_attempts {
         lifecycle.to_joining(attempt);
 
-        let delay = next_backoff(attempt);
+        let delay = policy.backoff_for(attempt);
         if !delay.is_zero() {
             debug!(
                 node_id = config.node_id,
@@ -153,8 +125,9 @@ pub(super) async fn join(
         }
     }
 
+    let max_attempts = policy.max_attempts;
     let err = last_err.unwrap_or_else(|| ClusterError::Transport {
-        detail: format!("join exhausted {MAX_JOIN_ATTEMPTS} attempts with no concrete error"),
+        detail: format!("join exhausted {max_attempts} attempts with no concrete error"),
     });
     lifecycle.to_failed(err.to_string());
     Err(err)
@@ -351,6 +324,7 @@ fn apply_join_response(
 #[cfg(test)]
 mod tests {
     use super::super::bootstrap_fn::bootstrap;
+    use super::super::config::JoinRetryPolicy;
     use super::super::handle_join::handle_join_request;
     use super::*;
     use std::sync::{Arc, Mutex};
@@ -398,16 +372,43 @@ mod tests {
     }
 
     #[test]
-    fn next_backoff_schedule() {
-        assert_eq!(next_backoff(0), Duration::ZERO);
-        assert_eq!(next_backoff(1), Duration::from_millis(500));
-        assert_eq!(next_backoff(2), Duration::from_secs(1));
-        assert_eq!(next_backoff(3), Duration::from_secs(2));
-        assert_eq!(next_backoff(4), Duration::from_secs(4));
-        assert_eq!(next_backoff(5), Duration::from_secs(8));
-        assert_eq!(next_backoff(6), Duration::from_secs(16));
-        assert_eq!(next_backoff(7), Duration::from_secs(16));
-        assert_eq!(next_backoff(100), Duration::from_secs(16));
+    fn join_retry_policy_default_schedule() {
+        // Production default: 8 attempts, ceiling 32 s. Each delay is
+        // `32 s >> (8 - attempt)`, so the schedule halves down from
+        // the ceiling toward the first attempt.
+        let policy = JoinRetryPolicy::default();
+        assert_eq!(policy.backoff_for(0), Duration::ZERO);
+        assert_eq!(policy.backoff_for(1), Duration::from_millis(250));
+        assert_eq!(policy.backoff_for(2), Duration::from_millis(500));
+        assert_eq!(policy.backoff_for(3), Duration::from_secs(1));
+        assert_eq!(policy.backoff_for(4), Duration::from_secs(2));
+        assert_eq!(policy.backoff_for(5), Duration::from_secs(4));
+        assert_eq!(policy.backoff_for(6), Duration::from_secs(8));
+        assert_eq!(policy.backoff_for(7), Duration::from_secs(16));
+        assert_eq!(policy.backoff_for(8), Duration::from_secs(32));
+        // Out-of-range attempt → no backoff.
+        assert_eq!(policy.backoff_for(9), Duration::ZERO);
+    }
+
+    #[test]
+    fn join_retry_policy_test_schedule_is_subsecond() {
+        // A typical test config: still 8 attempts, but a 2 s ceiling
+        // produces a sub-5-second total backoff window.
+        let policy = JoinRetryPolicy {
+            max_attempts: 8,
+            max_backoff_secs: 2,
+        };
+        // First few attempts are floored to 1 ms (they round down
+        // below a millisecond in raw shifts).
+        let total: Duration = (0..=policy.max_attempts)
+            .map(|a| policy.backoff_for(a))
+            .sum();
+        assert!(
+            total < Duration::from_secs(5),
+            "test schedule too slow: {total:?}"
+        );
+        // Final attempt sleeps the full ceiling.
+        assert_eq!(policy.backoff_for(8), Duration::from_secs(2));
     }
 
     // ── End-to-end bootstrap + join flow over QUIC ────────────────
@@ -432,6 +433,7 @@ mod tests {
             replication_factor: 1,
             data_dir: _dir1.path().to_path_buf(),
             force_bootstrap: false,
+            join_retry: Default::default(),
         };
         let state1 = bootstrap(&config1, &catalog1).unwrap();
 
@@ -479,6 +481,7 @@ mod tests {
             replication_factor: 1,
             data_dir: _dir2.path().to_path_buf(),
             force_bootstrap: false,
+            join_retry: Default::default(),
         };
 
         let lifecycle = ClusterLifecycleTracker::new();

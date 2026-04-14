@@ -291,7 +291,7 @@ impl<A: CommitApplier, F: RequestForwarder> RaftLoop<A, F> {
     pub async fn propose_to_metadata_group_via_leader(&self, data: Vec<u8>) -> Result<u64> {
         // Phase 1: try local propose.
         match self.propose_to_metadata_group(data.clone()) {
-            Ok(idx) => return Ok(idx),
+            Ok(idx) => Ok(idx),
             Err(crate::error::ClusterError::Raft(nodedb_raft::RaftError::NotLeader {
                 leader_hint,
             })) => {

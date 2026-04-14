@@ -221,6 +221,7 @@ mod tests {
             replication_factor: 1,
             data_dir: std::env::temp_dir(),
             force_bootstrap: false,
+            join_retry: Default::default(),
         }
     }
 

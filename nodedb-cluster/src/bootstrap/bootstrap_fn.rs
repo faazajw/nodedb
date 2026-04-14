@@ -100,6 +100,7 @@ mod tests {
             replication_factor: 1,
             data_dir: _dir.path().to_path_buf(),
             force_bootstrap: false,
+            join_retry: Default::default(),
         };
 
         let state = bootstrap(&config, &catalog).unwrap();
