@@ -34,8 +34,17 @@ use super::consumer_helpers::{
     detect_sequence_gap, flush_watermark, maybe_flush_watermark, record_event,
 };
 
-/// How often to poll the ring buffer when empty (milliseconds).
-const EMPTY_POLL_INTERVAL: Duration = Duration::from_millis(1);
+/// Initial sleep when the ring buffer is empty. Adaptive backoff ramps
+/// up to `EMPTY_POLL_MAX` after `EMPTY_POLL_RAMP` consecutive empty polls
+/// so an idle Event Plane consumer does not wake every 1ms forever.
+const EMPTY_POLL_MIN: Duration = Duration::from_millis(1);
+/// Cap on the empty-poll sleep. 50ms keeps trigger / CDC dispatch latency
+/// bounded for the first event after an idle period while limiting idle
+/// CPU to ~20 wakes/sec per core.
+const EMPTY_POLL_MAX: Duration = Duration::from_millis(50);
+/// After this many consecutive empty polls (~32ms of idleness at 1ms),
+/// switch to the long sleep.
+const EMPTY_POLL_RAMP: u32 = 32;
 
 /// Maximum events to process per ring buffer drain before yielding.
 const DRAIN_BATCH_LIMIT: u32 = 1024;
@@ -137,6 +146,7 @@ async fn consumer_loop(config: ConsumerConfig, metrics: Arc<CoreMetrics>) {
 
     debug!(core_id, "event plane consumer started");
     let mut wal_retry_count: u32 = 0;
+    let mut empty_polls: u32 = 0;
 
     loop {
         if *shutdown.borrow() {
@@ -161,6 +171,7 @@ async fn consumer_loop(config: ConsumerConfig, metrics: Arc<CoreMetrics>) {
                 let batch_count = events.len();
 
                 if batch_count > 0 {
+                    empty_polls = 0;
                     dirty_watermark = true;
 
                     let mut trigger_collector =
@@ -329,8 +340,15 @@ async fn consumer_loop(config: ConsumerConfig, metrics: Arc<CoreMetrics>) {
                     &mut last_watermark_flush,
                 );
 
+                empty_polls = empty_polls.saturating_add(1);
+                let poll_sleep = if empty_polls < EMPTY_POLL_RAMP {
+                    EMPTY_POLL_MIN
+                } else {
+                    EMPTY_POLL_MAX
+                };
+
                 tokio::select! {
-                    _ = tokio::time::sleep(EMPTY_POLL_INTERVAL) => {}
+                    _ = tokio::time::sleep(poll_sleep) => {}
                     _ = shutdown.changed() => {
                         if dirty_watermark {
                             flush_watermark(&watermark_store, core_id, last_lsn);

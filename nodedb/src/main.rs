@@ -357,24 +357,46 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // Start response poller: routes Data Plane responses to
-    // waiting sessions. Uses `yield_now()` instead of `sleep()`
-    // because tokio's timer wheel has 1ms minimum granularity —
-    // sleep(100us) actually sleeps ~1ms, adding 1ms to every
-    // request's latency. `yield_now()` yields to the scheduler
-    // without a timer, polling on every scheduler cycle
-    // (microsecond-level).
+    // waiting sessions.
+    //
+    // Adaptive backoff strategy: under load we use `yield_now()`
+    // for microsecond-level responsiveness (tokio's timer wheel
+    // has 1ms granularity, so sleep(100us) actually sleeps ~1ms,
+    // adding 1ms to every request's latency). When the poller
+    // observes an idle streak we ramp the wait up so an idle
+    // server does not peg an entire tokio worker at 100% CPU.
+    //
+    // - Active (response just routed OR within the last ~256 yields):
+    //   yield_now() — sub-millisecond latency for bursts.
+    // - Idle for 256+ iterations: sleep 1ms (still responsive,
+    //   matches the timer wheel minimum).
+    // - Idle for 1024+ iterations (~1s of true idleness): sleep
+    //   10ms — bounds idle CPU to ~0.1% of one core.
     let shared_poller = Arc::clone(&shared);
     nodedb::control::shutdown::spawn_loop(
         &shared.loop_registry,
         &shared.shutdown,
         "response_poller",
         move |shutdown| async move {
+            let mut idle_iters: u32 = 0;
             loop {
                 if shutdown.is_cancelled() {
                     break;
                 }
-                shared_poller.poll_and_route_responses();
-                tokio::task::yield_now().await;
+                let routed = shared_poller.poll_and_route_responses();
+                if routed > 0 {
+                    idle_iters = 0;
+                    tokio::task::yield_now().await;
+                    continue;
+                }
+                idle_iters = idle_iters.saturating_add(1);
+                if idle_iters <= 256 {
+                    tokio::task::yield_now().await;
+                } else if idle_iters <= 1024 {
+                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                } else {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
             }
         },
     );
@@ -669,15 +691,19 @@ async fn main() -> anyhow::Result<()> {
         shared.cluster_transport.as_ref(),
         shared.cluster_topology.as_ref(),
     ) {
-        let topo_guard = topology.read().unwrap_or_else(|p| p.into_inner());
+        // Clone the topology snapshot so the read guard is dropped
+        // before awaiting — clippy::await_holding_lock.
+        let topo_snapshot = {
+            let guard = topology.read().unwrap_or_else(|p| p.into_inner());
+            guard.clone()
+        };
         let warm_report = nodedb::control::cluster::warm_known_peers(
             transport,
-            &topo_guard,
+            &topo_snapshot,
             shared.node_id,
             Duration::from_secs(2),
         )
         .await;
-        drop(topo_guard);
         if warm_report.attempted > 0 {
             info!(report = %warm_report, "peer cache warm-up complete");
             if !warm_report.is_complete() {
