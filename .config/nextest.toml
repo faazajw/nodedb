@@ -1,0 +1,79 @@
+# nextest configuration. Run with: cargo nextest run --all-features
+#
+# Why nextest over `cargo test`:
+#   - Each test runs in its own process → no in-process state contention.
+#     Integration tests that spawn 3-node clusters used to hang under
+#     `cargo test`'s default within-binary parallelism because multiple
+#     clusters in the same process exhausted ports / file descriptors.
+#   - Per-test timeouts make hangs fail fast instead of stalling CI.
+#   - Better failure output, retry support, and JUnit XML for CI.
+
+[profile.default]
+# Hard ceiling per test. Anything above this is a bug, not a slow test.
+slow-timeout = { period = "30s", terminate-after = 4 }
+
+# Use every available core for cheap unit tests. Heavy cluster tests
+# are kept from starving by `threads-required` overrides below — they
+# claim ALL slots so nothing else runs alongside them, regardless of
+# whether you're on a 24-core dev box or a 2-core CI runner.
+test-threads = "num-cpus"
+
+# Heavy cluster tests: each one brings up 3 servers + per-node Tokio
+# runtimes. Two things keep them stable across machine sizes:
+#
+#   1. `test-group = "cluster"` with `max-threads = 1` ensures at
+#      most ONE cluster test runs at a time (no two clusters share
+#      ports / file descriptors / thread pools).
+#   2. `threads-required = "num-test-threads"` makes the running
+#      cluster test claim every available test slot, which evicts
+#      every other test from the run-queue while it's executing.
+#      That's what prevents a 24-core dev box from scheduling 23
+#      unit tests alongside the cluster and starving its Raft
+#      heartbeats.
+#
+# The combined effect: cluster tests run strictly serially AND
+# strictly alone, and the rest of the suite gets full parallelism
+# the moment the cluster test finishes.
+[[profile.default.overrides]]
+filter = '''
+binary(/cluster/)
+| binary(/cross_node/)
+| binary(/_lease_/)
+| binary(descriptor_lease_drain)
+| binary(descriptor_lease_forwarding_and_renewal)
+| binary(descriptor_lease_planner_integration)
+| binary(descriptor_versioning_cross_node)
+| binary(prepared_cache_invalidation)
+| binary(sql_cluster_cross_node_dml)
+'''
+test-group = 'cluster'
+threads-required = 'num-test-threads'
+# Cluster tests bring up real Raft nodes and racy multi-node
+# convergence checks. They're flaky enough that one retry catches
+# legitimate startup jitter without hiding real regressions — a
+# genuinely broken test fails twice in a row.
+retries = { backoff = "fixed", count = 2, delay = "1s" }
+
+[test-groups]
+cluster = { max-threads = 1 }
+
+[profile.ci]
+# CI inherits the default profile (cluster group, threads-required,
+# slow-timeout) and adds:
+#   - more retries: CI runners are ~2× slower per-core than dev
+#     workstations, so the cluster tests' in-test `wait_for`
+#     budgets are proportionally tighter. Three retries (four total
+#     attempts) buys headroom for jitter without papering over real
+#     regressions — a genuinely broken test fails four times in a row.
+#   - JUnit XML: picked up by the workflow's artifact upload.
+#
+# NOTE: we deliberately do NOT bump `slow-timeout` here. The
+# slow-timeout only controls when nextest gives up on a stuck
+# *process*; it does NOT extend the test's internal `wait_for`
+# budgets. Once a `wait_for` panics, the test has already failed —
+# making nextest wait longer just wastes CI minutes on cleanup.
+retries = { backoff = "fixed", count = 3, delay = "2s" }
+fail-fast = false
+
+[profile.ci.junit]
+path = "junit.xml"
