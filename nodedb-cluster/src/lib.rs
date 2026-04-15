@@ -31,6 +31,7 @@ pub mod rebalance_scheduler;
 pub mod routing;
 pub mod rpc_codec;
 pub mod shard_split;
+pub mod swim;
 pub mod topology;
 pub mod transport;
 pub mod vshard_handler;
@@ -43,7 +44,7 @@ pub use cluster_info::{
 };
 pub use conf_change::{ConfChange, ConfChangeType};
 pub use error::{ClusterError, Result};
-pub use forward::{NoopForwarder, RequestForwarder};
+pub use forward::{NoopPlanExecutor, PlanExecutor};
 pub use ghost::{GhostStub, GhostTable};
 pub use health::{HealthConfig, HealthMonitor};
 pub use lifecycle_state::{ClusterLifecycleState, ClusterLifecycleTracker};
@@ -77,3 +78,4 @@ pub use lifecycle::{
 pub use rdma_transport::{RdmaConfig, RdmaTransport};
 pub use rebalance_scheduler::{NodeMetrics, RebalanceScheduler, RebalanceTrigger, SchedulerConfig};
 pub use shard_split::{SplitPlan, SplitStrategy, plan_graph_split, plan_vector_split};
+pub use swim::{Incarnation, Member, MemberState, MembershipList, SwimConfig, SwimError};
