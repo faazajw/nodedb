@@ -20,6 +20,7 @@
 //! It exposes the pure data model — member states, incarnation numbers, and
 //! the state-merge rule — that every later sub-batch builds on.
 
+pub mod bootstrap;
 pub mod config;
 pub mod detector;
 pub mod dissemination;
@@ -29,9 +30,10 @@ pub mod member;
 pub mod membership;
 pub mod wire;
 
+pub use bootstrap::{SwimHandle, spawn};
 pub use config::SwimConfig;
 pub use detector::{
-    FailureDetector, InMemoryTransport, ProbeScheduler, Transport, TransportFabric,
+    FailureDetector, InMemoryTransport, ProbeScheduler, Transport, TransportFabric, UdpTransport,
 };
 pub use dissemination::{DisseminationQueue, PendingUpdate, apply_and_disseminate};
 pub use error::SwimError;
