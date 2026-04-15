@@ -21,6 +21,7 @@
 //! the state-merge rule — that every later sub-batch builds on.
 
 pub mod config;
+pub mod detector;
 pub mod error;
 pub mod incarnation;
 pub mod member;
@@ -28,6 +29,9 @@ pub mod membership;
 pub mod wire;
 
 pub use config::SwimConfig;
+pub use detector::{
+    FailureDetector, InMemoryTransport, ProbeScheduler, Transport, TransportFabric,
+};
 pub use error::SwimError;
 pub use incarnation::Incarnation;
 pub use member::{Member, MemberState};
