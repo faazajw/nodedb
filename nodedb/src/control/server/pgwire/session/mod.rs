@@ -1,5 +1,6 @@
 mod cursor;
 pub mod cursor_spill;
+pub mod ddl_buffer;
 mod live;
 mod params;
 pub mod read_consistency;
