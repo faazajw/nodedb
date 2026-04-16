@@ -30,6 +30,7 @@ pub mod reachability;
 pub mod readiness;
 pub mod rebalance;
 pub mod rebalance_scheduler;
+pub mod rebalancer;
 pub mod routing;
 pub mod routing_liveness;
 pub mod rpc_codec;
@@ -65,6 +66,11 @@ pub use reachability::{
     NoopProber, ReachabilityDriver, ReachabilityDriverConfig, ReachabilityProber, TransportProber,
 };
 pub use rebalance::{RebalancePlan, compute_plan, plan_to_requests};
+pub use rebalancer::{
+    AlwaysReadyGate, ElectionGate, LoadMetrics, LoadMetricsProvider, LoadWeights,
+    MigrationDispatcher, RebalancerLoop, RebalancerLoopConfig, RebalancerPlanConfig,
+    compute_load_based_plan, normalized_score,
+};
 pub use routing::RoutingTable;
 pub use routing_liveness::{NodeIdResolver, RoutingLivenessHook};
 pub use rpc_codec::RaftRpc;
