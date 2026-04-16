@@ -92,7 +92,35 @@ impl MmapVectorSegment {
             u32::from_le(*ptr) as usize
         };
 
-        let expected = HEADER_SIZE + count * dim * 4;
+        // Reject dim=0 with nonzero count: get_vector would compute offset=HEADER_SIZE
+        // for every ID, aliasing header bytes as vector data.
+        if dim == 0 && count > 0 {
+            unsafe {
+                libc::munmap(base as *mut libc::c_void, file_size);
+            }
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "mmap segment has dim=0 with nonzero count",
+            ));
+        }
+
+        // Use checked arithmetic to prevent usize overflow on crafted headers.
+        let data_bytes = dim
+            .checked_mul(count)
+            .and_then(|dc| dc.checked_mul(4))
+            .and_then(|bytes| bytes.checked_add(HEADER_SIZE));
+        let expected = match data_bytes {
+            Some(v) => v,
+            None => {
+                unsafe {
+                    libc::munmap(base as *mut libc::c_void, file_size);
+                }
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("mmap segment header overflow: dim={dim}, count={count}"),
+                ));
+            }
+        };
         if file_size < expected {
             unsafe {
                 libc::munmap(base as *mut libc::c_void, file_size);
@@ -121,7 +149,12 @@ impl MmapVectorSegment {
         if idx >= self.count {
             return None;
         }
-        let offset = self.data_offset + idx * self.dim * 4;
+        let byte_len = self.dim.checked_mul(4)?;
+        let offset = self.data_offset.checked_add(idx.checked_mul(byte_len)?)?;
+        let end = offset.checked_add(byte_len)?;
+        if end > self.mmap_size {
+            return None;
+        }
         unsafe {
             let ptr = self.base.add(offset) as *const f32;
             Some(std::slice::from_raw_parts(ptr, self.dim))
@@ -134,9 +167,24 @@ impl MmapVectorSegment {
         if idx >= self.count {
             return;
         }
-        let offset = self.data_offset + idx * self.dim * 4;
+        let byte_len = match self.dim.checked_mul(4) {
+            Some(v) => v,
+            None => return,
+        };
+        let Some(idx_bytes) = idx.checked_mul(byte_len) else {
+            return;
+        };
+        let Some(offset) = self.data_offset.checked_add(idx_bytes) else {
+            return;
+        };
+        if offset
+            .checked_add(byte_len)
+            .is_none_or(|e| e > self.mmap_size)
+        {
+            return;
+        }
         let page_start = offset & !(4095);
-        let len = (self.dim * 4 + 4095) & !(4095);
+        let len = (byte_len + 4095) & !(4095);
         unsafe {
             libc::madvise(
                 self.base.add(page_start) as *mut libc::c_void,
@@ -248,5 +296,100 @@ mod tests {
         let seg = MmapVectorSegment::create(&path, 3, &[]).unwrap();
         assert_eq!(seg.count(), 0);
         assert!(seg.get_vector(0).is_none());
+    }
+
+    #[test]
+    fn overflow_dim_count_rejected() {
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("overflow.vseg");
+
+        // dim=0x40000001, count=0x40000001: count * dim * 4 overflows usize on 64-bit
+        // (0x40000001 * 0x40000001 * 4 = 0x4000000280000004, which wraps to a small value).
+        let dim: u32 = 0x40000001;
+        let count: u32 = 0x40000001;
+
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)
+            .unwrap();
+        f.write_all(&dim.to_le_bytes()).unwrap();
+        f.write_all(&count.to_le_bytes()).unwrap();
+        // No actual vector data — just a 8-byte header.
+        drop(f);
+
+        let result = MmapVectorSegment::open(&path);
+        assert!(
+            result.is_err(),
+            "expected Err for overflow-inducing dim/count, got Ok"
+        );
+    }
+
+    #[test]
+    fn truncated_file_rejected() {
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("truncated.vseg");
+
+        // Header claims dim=3, count=100 but only 8 bytes of actual data.
+        let dim: u32 = 3;
+        let count: u32 = 100;
+
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)
+            .unwrap();
+        f.write_all(&dim.to_le_bytes()).unwrap();
+        f.write_all(&count.to_le_bytes()).unwrap();
+        drop(f);
+
+        let result = MmapVectorSegment::open(&path);
+        match result {
+            Err(e) => assert_eq!(
+                e.kind(),
+                std::io::ErrorKind::InvalidData,
+                "expected InvalidData, got {:?}",
+                e.kind()
+            ),
+            Ok(_) => panic!("expected Err for truncated file, got Ok"),
+        }
+    }
+
+    #[test]
+    fn zero_dim_with_nonzero_count_rejected() {
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("zerodim.vseg");
+
+        // dim=0, count=1000: expected size = HEADER_SIZE + 0 = 8, so the size
+        // check passes, but get_vector would read header bytes as vector data.
+        // dim=0 must be rejected outright.
+        let dim: u32 = 0;
+        let count: u32 = 1000;
+
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)
+            .unwrap();
+        f.write_all(&dim.to_le_bytes()).unwrap();
+        f.write_all(&count.to_le_bytes()).unwrap();
+        // Write enough padding so the file passes a naive size check.
+        f.write_all(&[0u8; 64]).unwrap();
+        drop(f);
+
+        let result = MmapVectorSegment::open(&path);
+        assert!(
+            result.is_err(),
+            "expected Err for dim=0 with nonzero count, got Ok"
+        );
     }
 }

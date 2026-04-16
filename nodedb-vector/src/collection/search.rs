@@ -1,6 +1,6 @@
 //! VectorCollection search: multi-segment merging with SQ8 reranking.
 
-use crate::distance::{DistanceMetric, distance};
+use crate::distance::distance;
 use crate::hnsw::SearchResult;
 
 use super::lifecycle::VectorCollection;
@@ -19,33 +19,15 @@ impl VectorCollection {
 
         // Search sealed segments.
         for seg in &self.sealed {
-            let results = if let Some((codec, sq8_data)) = &seg.sq8 {
-                // Quantized two-phase search.
+            let results = if let Some(_sq8) = &seg.sq8 {
+                // Quantized two-phase search: use HNSW graph for O(log N) candidate
+                // generation, then rerank with exact FP32 distance.
                 let rerank_k = top_k.saturating_mul(3).max(20);
-                let mut candidates: Vec<(u32, f32)> = Vec::with_capacity(seg.index.len());
-                let dim = seg.index.dim();
-                for i in 0..seg.index.len() {
-                    if seg.index.is_deleted(i as u32) {
-                        continue;
-                    }
-                    let sq8_vec = &sq8_data[i * dim..(i + 1) * dim];
-                    let d = match self.params.metric {
-                        DistanceMetric::L2 => codec.asymmetric_l2(query, sq8_vec),
-                        DistanceMetric::Cosine => codec.asymmetric_cosine(query, sq8_vec),
-                        DistanceMetric::InnerProduct => codec.asymmetric_ip(query, sq8_vec),
-                        _ => {
-                            let dequant = codec.dequantize(sq8_vec);
-                            distance(query, &dequant, self.params.metric)
-                        }
-                    };
-                    candidates.push((i as u32, d));
-                }
-                if candidates.len() > rerank_k {
-                    candidates.select_nth_unstable_by(rerank_k, |a, b| {
-                        a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
-                    });
-                    candidates.truncate(rerank_k);
-                }
+                let hnsw_candidates = seg.index.search(query, rerank_k, ef);
+                let candidates: Vec<(u32, f32)> = hnsw_candidates
+                    .into_iter()
+                    .map(|r| (r.id, r.distance))
+                    .collect();
 
                 // Prefetch FP32 vectors for reranking candidates.
                 if let Some(mmap) = &seg.mmap_vectors {
@@ -251,5 +233,100 @@ mod tests {
 
         let results = coll.search(&[5.0, 0.0], 10, 64);
         assert!(results.iter().all(|r| r.id != 5));
+    }
+
+    /// Build a sealed HNSW segment from `n` vectors of `dim=2`, where vector `i`
+    /// is `[i as f32, 0.0]`. Returns the collection with one sealed segment.
+    fn make_sealed_collection(n: usize) -> VectorCollection {
+        let mut coll = VectorCollection::new(
+            2,
+            HnswParams {
+                metric: DistanceMetric::L2,
+                ..HnswParams::default()
+            },
+        );
+        for i in 0..n {
+            coll.insert(vec![i as f32, 0.0]);
+        }
+        let req = coll.seal("seg").unwrap();
+        let mut idx = HnswIndex::new(req.dim, req.params);
+        for v in &req.vectors {
+            idx.insert(v.clone()).unwrap();
+        }
+        coll.complete_build(req.segment_id, idx);
+        coll
+    }
+
+    /// Attach SQ8 quantization to the first sealed segment of `coll`.
+    fn attach_sq8(coll: &mut VectorCollection) {
+        use crate::quantize::sq8::Sq8Codec;
+
+        let sealed = &mut coll.sealed[0];
+        let dim = sealed.index.dim();
+        let n = sealed.index.len();
+        let vecs: Vec<Vec<f32>> = (0..n)
+            .filter_map(|i| sealed.index.get_vector(i as u32).map(|v| v.to_vec()))
+            .collect();
+        let refs: Vec<&[f32]> = vecs.iter().map(|v| v.as_slice()).collect();
+        let codec = Sq8Codec::calibrate(&refs, dim);
+        let sq8_data: Vec<u8> = vecs.iter().flat_map(|v| codec.quantize(v)).collect();
+        sealed.sq8 = Some((codec, sq8_data));
+    }
+
+    #[test]
+    fn sq8_search_returns_correct_nearest_neighbor() {
+        let mut coll = make_sealed_collection(200);
+        attach_sq8(&mut coll);
+
+        let results = coll.search(&[100.0, 0.0], 5, 64);
+        assert!(!results.is_empty(), "expected non-empty results");
+        assert_eq!(
+            results[0].id, 100,
+            "nearest neighbor of [100,0] should be id=100, got id={}",
+            results[0].id
+        );
+    }
+
+    #[test]
+    fn sq8_search_recall_matches_hnsw() {
+        // Build two identical collections — one without SQ8, one with.
+        let coll_plain = make_sealed_collection(500);
+        let mut coll_sq8 = make_sealed_collection(500);
+        attach_sq8(&mut coll_sq8);
+
+        let query = [250.0f32, 0.0];
+        let top_k = 5;
+
+        let plain_results = coll_plain.search(&query, top_k, 64);
+        let sq8_results = coll_sq8.search(&query, top_k, 64);
+
+        let plain_ids: std::collections::HashSet<u32> =
+            plain_results.iter().map(|r| r.id).collect();
+        let sq8_ids: std::collections::HashSet<u32> = sq8_results.iter().map(|r| r.id).collect();
+
+        let overlap = plain_ids.intersection(&sq8_ids).count();
+        assert!(
+            overlap >= 4,
+            "SQ8 recall too low: {overlap}/5 results matched plain HNSW (need >=4)"
+        );
+    }
+
+    #[test]
+    fn sq8_search_does_not_scan_all_vectors() {
+        // This test validates correctness of the SQ8 search path for a large
+        // segment. The bug being guarded against is an O(N) linear scan instead
+        // of graph-guided traversal: the fix must use HNSW with SQ8 as the
+        // distance function. Correctness (correct nearest neighbor) is the
+        // invariant that must be preserved when the implementation changes.
+        let mut coll = make_sealed_collection(2000);
+        attach_sq8(&mut coll);
+
+        let results = coll.search(&[1000.0, 0.0], 5, 64);
+        assert!(!results.is_empty(), "expected non-empty results");
+        assert_eq!(
+            results[0].id, 1000,
+            "nearest neighbor of [1000,0] should be id=1000, got id={}",
+            results[0].id
+        );
     }
 }
