@@ -21,7 +21,9 @@ impl HnswIndex {
             return Vec::new();
         }
 
-        let ef = ef.max(k);
+        /// Maximum beam width to prevent runaway search cost.
+        const MAX_EF: usize = 8192;
+        let ef = ef.max(k).min(MAX_EF);
         let Some(ep) = self.entry_point else {
             return Vec::new();
         };
