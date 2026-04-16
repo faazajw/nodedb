@@ -17,6 +17,60 @@ pub use super::wal_dispatch::wal_append_if_write;
 
 static DISPATCH_COUNTER: AtomicU64 = AtomicU64::new(1_000_000);
 
+#[derive(Debug)]
+pub(crate) enum DispatchCollectError {
+    OverBudget { bytes: usize },
+    ChannelClosed,
+}
+
+/// Drain a dispatched request's bounded response channel, enforcing a
+/// total-payload byte ceiling across streamed partials.
+///
+/// Returns the final Response (non-streaming: pass-through; streaming:
+/// concatenated payload) or an error if the channel closed without a
+/// final chunk or if the accumulated payload would exceed the ceiling.
+pub(crate) async fn collect_bounded_response(
+    rx: &mut tokio::sync::mpsc::Receiver<Response>,
+    max_result_bytes: usize,
+) -> Result<Response, DispatchCollectError> {
+    let mut combined_payload: Vec<u8> = Vec::new();
+    let mut final_response_meta: Option<Response> = None;
+    let mut final_streaming = false;
+
+    loop {
+        let Some(resp) = rx.recv().await else { break };
+        if resp.partial {
+            combined_payload.extend_from_slice(&resp.payload);
+            if combined_payload.len() > max_result_bytes {
+                return Err(DispatchCollectError::OverBudget {
+                    bytes: combined_payload.len(),
+                });
+            }
+        } else if combined_payload.is_empty() {
+            return Ok(resp);
+        } else {
+            combined_payload.extend_from_slice(&resp.payload);
+            if combined_payload.len() > max_result_bytes {
+                return Err(DispatchCollectError::OverBudget {
+                    bytes: combined_payload.len(),
+                });
+            }
+            final_response_meta = Some(resp);
+            final_streaming = true;
+            break;
+        }
+    }
+
+    if final_streaming {
+        let meta = final_response_meta.expect("final_streaming ⇒ meta set");
+        return Ok(Response {
+            payload: Payload::from_vec(combined_payload),
+            ..meta
+        });
+    }
+    Err(DispatchCollectError::ChannelClosed)
+}
+
 /// Current wall-clock time as milliseconds since Unix epoch.
 ///
 /// Returns 0 if the system clock is before the epoch (should never happen
@@ -96,44 +150,36 @@ pub async fn dispatch_to_data_plane_with_source(
 
     // Collect response(s). For non-streaming queries, exactly one arrives.
     // For streaming queries, multiple partial chunks arrive before the final.
-    // The mpsc channel is unbounded but safe: Data Plane sends at most
-    // ceil(rows / STREAM_CHUNK_SIZE) partial messages, typically <100 chunks
-    // for even large scans. The timeout bounds total wait time.
+    // The mpsc channel is bounded (see `RequestTracker::register`); here we
+    // additionally cap the *total* accumulated payload so a runaway scan
+    // can't pin Control-Plane RAM — any query whose combined result
+    // exceeds `tuning.network.max_query_result_bytes` is cancelled with
+    // a typed `ExecutionLimitExceeded` error.
+    let max_result_bytes = shared.tuning.network.max_query_result_bytes as usize;
     let response = tokio::time::timeout(
         Duration::from_secs(shared.tuning.network.default_deadline_secs),
-        async {
-            let mut combined_payload: Vec<u8> = Vec::new();
-            let mut final_response: Option<Response> = None;
-
-            while let Some(resp) = rx.recv().await {
-                if resp.partial {
-                    // Partial chunk: accumulate payload.
-                    combined_payload.extend_from_slice(&resp.payload);
-                } else {
-                    // Final response.
-                    if combined_payload.is_empty() {
-                        // Non-streaming: return directly.
-                        final_response = Some(resp);
-                    } else {
-                        // Streaming: append final payload and return combined.
-                        combined_payload.extend_from_slice(&resp.payload);
-                        final_response = Some(Response {
-                            payload: Payload::from_vec(combined_payload),
-                            ..resp
-                        });
-                    }
-                    break;
-                }
-            }
-
-            final_response.ok_or(())
-        },
+        collect_bounded_response(&mut rx, max_result_bytes),
     )
     .await
-    .map_err(|_| crate::Error::DeadlineExceeded { request_id })?
-    .map_err(|_| crate::Error::Dispatch {
-        detail: "response channel closed".into(),
-    })?;
+    .map_err(|_| crate::Error::DeadlineExceeded { request_id })?;
+
+    let response = match response {
+        Ok(r) => r,
+        Err(DispatchCollectError::OverBudget { bytes }) => {
+            shared.tracker.cancel(&request_id);
+            return Err(crate::Error::ExecutionLimitExceeded {
+                detail: format!(
+                    "query result exceeded max_query_result_bytes \
+                     ({bytes} > {max_result_bytes} bytes)"
+                ),
+            });
+        }
+        Err(DispatchCollectError::ChannelClosed) => {
+            return Err(crate::Error::Dispatch {
+                detail: "response channel closed".into(),
+            });
+        }
+    };
 
     // Publish change events for successful writes.
     if response.status == crate::bridge::envelope::Status::Ok
@@ -311,4 +357,88 @@ fn is_timeseries_cdc_enabled(shared: &SharedState, tenant_id: TenantId, collecti
     }
     // Not timeseries or catalog unavailable — allow publishing.
     true
+}
+
+#[cfg(test)]
+mod collect_budget_tests {
+    use super::*;
+    use crate::bridge::envelope::{Payload, Status};
+    use crate::types::Lsn;
+    use tokio::sync::mpsc;
+
+    fn partial(bytes: usize) -> Response {
+        Response {
+            request_id: RequestId::new(1),
+            status: Status::Partial,
+            attempt: 1,
+            partial: true,
+            payload: Payload::from_vec(vec![0u8; bytes]),
+            watermark_lsn: Lsn::ZERO,
+            error_code: None,
+        }
+    }
+
+    fn final_resp(bytes: usize) -> Response {
+        Response {
+            request_id: RequestId::new(1),
+            status: Status::Ok,
+            attempt: 1,
+            partial: false,
+            payload: Payload::from_vec(vec![0u8; bytes]),
+            watermark_lsn: Lsn::ZERO,
+            error_code: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn non_streaming_single_response_passes_through() {
+        let (tx, mut rx) = mpsc::channel(4);
+        tx.send(final_resp(100)).await.unwrap();
+        drop(tx);
+        let resp = collect_bounded_response(&mut rx, 1024).await.unwrap();
+        assert_eq!(resp.payload.len(), 100);
+    }
+
+    #[tokio::test]
+    async fn streaming_under_budget_concatenates() {
+        let (tx, mut rx) = mpsc::channel(4);
+        tx.send(partial(100)).await.unwrap();
+        tx.send(partial(200)).await.unwrap();
+        tx.send(final_resp(50)).await.unwrap();
+        drop(tx);
+        let resp = collect_bounded_response(&mut rx, 1024).await.unwrap();
+        assert_eq!(resp.payload.len(), 350);
+    }
+
+    #[tokio::test]
+    async fn streaming_over_budget_on_partial_aborts() {
+        let (tx, mut rx) = mpsc::channel(4);
+        tx.send(partial(600)).await.unwrap();
+        tx.send(partial(600)).await.unwrap();
+        drop(tx);
+        let err = collect_bounded_response(&mut rx, 1000).await.unwrap_err();
+        match err {
+            DispatchCollectError::OverBudget { bytes } => assert!(bytes > 1000),
+            DispatchCollectError::ChannelClosed => panic!("expected OverBudget, got ChannelClosed"),
+        }
+    }
+
+    #[tokio::test]
+    async fn streaming_over_budget_on_final_chunk_aborts() {
+        let (tx, mut rx) = mpsc::channel(4);
+        tx.send(partial(500)).await.unwrap();
+        tx.send(final_resp(600)).await.unwrap();
+        drop(tx);
+        let err = collect_bounded_response(&mut rx, 1000).await.unwrap_err();
+        assert!(matches!(err, DispatchCollectError::OverBudget { .. }));
+    }
+
+    #[tokio::test]
+    async fn channel_closed_without_final_is_explicit_error() {
+        let (tx, mut rx) = mpsc::channel(4);
+        tx.send(partial(10)).await.unwrap();
+        drop(tx);
+        let err = collect_bounded_response(&mut rx, 1024).await.unwrap_err();
+        assert!(matches!(err, DispatchCollectError::ChannelClosed));
+    }
 }

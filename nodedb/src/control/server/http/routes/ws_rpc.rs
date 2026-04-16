@@ -30,7 +30,7 @@ use sonic_rs;
 use tracing::debug;
 
 use super::super::auth::AppState;
-use crate::control::change_stream::ChangeEvent;
+use crate::control::change_stream::{ChangeEvent, LiveSubscriptionSet};
 use crate::control::gateway::GatewayErrorMap;
 use crate::control::gateway::core::QueryContext;
 use crate::control::state::SharedState;
@@ -69,6 +69,11 @@ async fn handle_ws_connection(socket: WebSocket, state: AppState) {
     // Session ID is set only after successful auth inside process_message.
     let mut authenticated_session_id: Option<String> = None;
 
+    // Connection-scoped live-subscription tasks. Dropping this set on
+    // connection exit aborts every forwarder, which drops each captured
+    // `Subscription` so `active_subscriptions` returns to 0.
+    let mut live_set = LiveSubscriptionSet::new();
+
     while let Some(Ok(msg)) = receiver.next().await {
         match msg {
             Message::Text(text) => {
@@ -79,6 +84,7 @@ async fn handle_ws_connection(socket: WebSocket, state: AppState) {
                     trace_id,
                     &text,
                     &live_tx,
+                    &mut live_set,
                 )
                 .await;
 
@@ -110,6 +116,11 @@ async fn handle_ws_connection(socket: WebSocket, state: AppState) {
     if let Some(sid) = &authenticated_session_id {
         save_ws_session(&shared, sid);
     }
+
+    // Drop the live-subscription set BEFORE closing the channel. Aborting
+    // each forwarder drops its `Subscription`, whose `Drop` decrements
+    // `active_subscriptions`, so leaked counters can't outlive the socket.
+    drop(live_set);
 
     drop(live_tx);
     let _ = send_handle.await;
@@ -165,6 +176,7 @@ async fn process_message(
     trace_id: u64,
     text: &str,
     live_tx: &tokio::sync::mpsc::Sender<String>,
+    live_set: &mut LiveSubscriptionSet,
 ) -> (String, Option<String>) {
     let req: serde_json::Value = match sonic_rs::from_str(text) {
         Ok(v) => v,
@@ -278,7 +290,10 @@ async fn process_message(
             let sub_id = sub.id;
             let live_tx = live_tx.clone();
 
-            tokio::spawn(async move {
+            // The forwarder owns the `Subscription`; aborting the task on
+            // disconnect drops the Subscription, whose `Drop` decrements
+            // `active_subscriptions`. No detached leak.
+            live_set.spawn_task(async move {
                 while let Ok(event) = sub.recv_filtered().await {
                     let notification = format_live_notification(sub_id, &event);
                     if let Err(e) = live_tx.send(notification).await {

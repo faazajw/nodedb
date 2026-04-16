@@ -179,7 +179,13 @@ impl Gateway {
         };
 
         let deadline_ms = default_deadline_ms(&self.shared);
+        // Gateway-level byte ceiling: per-route `dispatch_to_data_plane`
+        // already caps each shard's payload; this additionally caps the
+        // scatter-gather *sum* so an N-shard fan-out can't accumulate
+        // N × cap across routes.
+        let max_total_bytes = self.shared.tuning.network.max_query_result_bytes as usize;
         let mut all_payloads: Vec<Vec<u8>> = Vec::new();
+        let mut accumulated_bytes: usize = 0;
 
         for route in routes {
             let decision = route.decision.clone();
@@ -222,7 +228,18 @@ impl Gateway {
                 e
             })?;
 
-            all_payloads.extend(payloads);
+            for p in payloads {
+                accumulated_bytes = accumulated_bytes.saturating_add(p.len());
+                if accumulated_bytes > max_total_bytes {
+                    return Err(Error::ExecutionLimitExceeded {
+                        detail: format!(
+                            "scatter-gather result exceeded max_query_result_bytes \
+                             ({accumulated_bytes} > {max_total_bytes} bytes)"
+                        ),
+                    });
+                }
+                all_payloads.push(p);
+            }
         }
 
         // For broadcast scans, fuse all shard payloads into one.

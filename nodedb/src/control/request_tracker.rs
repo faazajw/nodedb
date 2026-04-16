@@ -6,6 +6,14 @@ use tokio::sync::mpsc;
 use crate::bridge::envelope::Response;
 use crate::types::RequestId;
 
+/// Per-request channel capacity. A streaming scan produces at most
+/// `ceil(rows / STREAM_CHUNK_SIZE)` partials — a few hundred for the
+/// largest realistic queries. Capacity here bounds how many chunks can
+/// sit in RAM while the Control-Plane session's TCP write buffer is
+/// stalled; once full, `complete` returns false so the Data Plane can
+/// observe backpressure instead of silently growing RSS.
+pub const REQUEST_CHANNEL_CAPACITY: usize = 256;
+
 /// Routes Data Plane responses back to the waiting Control Plane session.
 ///
 /// Each dispatched request registers an mpsc sender here. The background
@@ -18,7 +26,7 @@ use crate::types::RequestId;
 ///   removed from the map.
 #[derive(Default)]
 pub struct RequestTracker {
-    pending: Mutex<HashMap<RequestId, mpsc::UnboundedSender<Response>>>,
+    pending: Mutex<HashMap<RequestId, mpsc::Sender<Response>>>,
 }
 
 impl RequestTracker {
@@ -28,19 +36,20 @@ impl RequestTracker {
         }
     }
 
-    fn lock_pending(&self) -> MutexGuard<'_, HashMap<RequestId, mpsc::UnboundedSender<Response>>> {
+    fn lock_pending(&self) -> MutexGuard<'_, HashMap<RequestId, mpsc::Sender<Response>>> {
         match self.pending.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         }
     }
 
-    /// Register a pending request. Returns a receiver the session awaits.
+    /// Register a pending request. Returns a bounded receiver the session awaits.
     ///
     /// For non-streaming requests, exactly one response arrives.
     /// For streaming requests, multiple partial responses arrive before the final one.
-    pub fn register(&self, id: RequestId) -> mpsc::UnboundedReceiver<Response> {
-        let (tx, rx) = mpsc::unbounded_channel();
+    /// Channel capacity applies backpressure when the session is slow.
+    pub fn register(&self, id: RequestId) -> mpsc::Receiver<Response> {
+        let (tx, rx) = mpsc::channel(REQUEST_CHANNEL_CAPACITY);
         self.lock_pending().insert(id, tx);
         rx
     }
@@ -52,22 +61,32 @@ impl RequestTracker {
     /// - If `response.partial` is false: sends the final chunk and
     ///   removes the request from the map.
     ///
-    /// Returns `false` if the request was already cancelled/timed out.
+    /// Returns `false` if the request was cancelled, timed out, or the
+    /// session buffer is full (backpressure signal — the Data Plane should
+    /// stop producing further chunks for this request).
     pub fn complete(&self, response: Response) -> bool {
         let is_final = !response.partial;
         let mut pending = self.lock_pending();
 
         if is_final {
-            // Final response: remove from map and send.
             if let Some(tx) = pending.remove(&response.request_id) {
-                tx.send(response).is_ok()
+                tx.try_send(response).is_ok()
             } else {
                 false
             }
         } else {
-            // Partial response: send but keep in map.
-            if let Some(tx) = pending.get(&response.request_id) {
-                tx.send(response).is_ok()
+            let request_id = response.request_id;
+            if let Some(tx) = pending.get(&request_id) {
+                match tx.try_send(response) {
+                    Ok(()) => true,
+                    Err(_) => {
+                        // Full channel (session stalled) or closed (cancelled):
+                        // evict the pending entry so the Data Plane stops
+                        // producing further chunks for this request.
+                        pending.remove(&request_id);
+                        false
+                    }
+                }
             } else {
                 false
             }
@@ -128,8 +147,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn register_and_complete() {
+    #[tokio::test]
+    async fn register_and_complete() {
         let tracker = RequestTracker::new();
         let mut rx = tracker.register(RequestId::new(1));
         assert_eq!(tracker.in_flight(), 1);
@@ -137,7 +156,7 @@ mod tests {
         assert!(tracker.complete(make_response(1)));
         assert_eq!(tracker.in_flight(), 0);
 
-        let resp = rx.try_recv().unwrap();
+        let resp = rx.recv().await.unwrap();
         assert_eq!(resp.request_id, RequestId::new(1));
     }
 
@@ -156,27 +175,39 @@ mod tests {
         assert_eq!(tracker.in_flight(), 0);
     }
 
-    #[test]
-    fn streaming_partial_then_final() {
+    #[tokio::test]
+    async fn streaming_partial_then_final() {
         let tracker = RequestTracker::new();
         let mut rx = tracker.register(RequestId::new(10));
 
-        // Send two partial chunks.
         assert!(tracker.complete(make_partial(10, "chunk1")));
-        assert_eq!(tracker.in_flight(), 1); // Still in map.
+        assert_eq!(tracker.in_flight(), 1);
         assert!(tracker.complete(make_partial(10, "chunk2")));
-        assert_eq!(tracker.in_flight(), 1); // Still in map.
+        assert_eq!(tracker.in_flight(), 1);
 
-        // Send final response.
         assert!(tracker.complete(make_response(10)));
-        assert_eq!(tracker.in_flight(), 0); // Removed.
+        assert_eq!(tracker.in_flight(), 0);
 
-        // All three responses should be receivable.
-        let r1 = rx.try_recv().unwrap();
+        let r1 = rx.recv().await.unwrap();
         assert!(r1.partial);
-        let r2 = rx.try_recv().unwrap();
+        let r2 = rx.recv().await.unwrap();
         assert!(r2.partial);
-        let r3 = rx.try_recv().unwrap();
+        let r3 = rx.recv().await.unwrap();
         assert!(!r3.partial);
+    }
+
+    #[test]
+    fn full_channel_signals_backpressure() {
+        let tracker = RequestTracker::new();
+        let _rx = tracker.register(RequestId::new(7));
+        let mut rejected = 0usize;
+        for i in 0u32..(REQUEST_CHANNEL_CAPACITY as u32 * 2) {
+            if !tracker.complete(make_partial(7, &format!("chunk-{i}"))) {
+                rejected += 1;
+            }
+        }
+        assert!(rejected > 0);
+        // Entry was evicted on first full-channel hit.
+        assert_eq!(tracker.in_flight(), 0);
     }
 }
