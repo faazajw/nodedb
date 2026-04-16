@@ -67,6 +67,19 @@ impl NodeDbPgHandler {
             }
         }
 
+        if key == super::super::session::read_consistency::PARAM_KEY
+            && super::super::session::read_consistency::parse_value(&value).is_none()
+        {
+            return Err(PgWireError::UserError(Box::new(ErrorInfo::new(
+                "ERROR".to_owned(),
+                "22023".to_owned(),
+                format!(
+                    "invalid value for {}: '{value}'. Valid: strong, bounded_staleness:<secs>, eventual",
+                    super::super::session::read_consistency::PARAM_KEY
+                ),
+            ))));
+        }
+
         if key == "nodedb.tenant_id" && value.parse::<u32>().is_err() {
             return Err(PgWireError::UserError(Box::new(ErrorInfo::new(
                 "ERROR".to_owned(),

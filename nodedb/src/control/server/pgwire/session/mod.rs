@@ -2,6 +2,7 @@ mod cursor;
 pub mod cursor_spill;
 mod live;
 mod params;
+pub mod read_consistency;
 mod state;
 mod store;
 pub mod temp_tables;
