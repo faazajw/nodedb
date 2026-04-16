@@ -189,6 +189,12 @@ pub struct SharedState {
     /// Change stream bus: broadcasts committed mutations to subscribers.
     pub change_stream: crate::control::change_stream::ChangeStream,
 
+    /// Shared HTTP client for all outbound emitters (alert webhooks, SIEM
+    /// webhooks, OTEL exporter). Constructing `reqwest::Client` allocates
+    /// a connection pool, DNS resolver, TLS config, and rustls session
+    /// cache — every emitter clones this Arc rather than rebuilding.
+    pub http_client: Arc<reqwest::Client>,
+
     /// In-memory trigger registry for fast lookup during DML.
     pub trigger_registry: crate::control::trigger::TriggerRegistry,
 

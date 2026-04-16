@@ -1,7 +1,7 @@
 //! SIEM export: CDC stream for audit_log + auth_events, webhook with HMAC.
 
 use std::collections::VecDeque;
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
@@ -23,10 +23,17 @@ pub struct SiemConfig {
     /// Maximum events to buffer before dropping oldest.
     #[serde(default = "default_buffer_size")]
     pub buffer_size: usize,
+    /// Per-request timeout (seconds) for the webhook POST.
+    #[serde(default = "default_webhook_timeout_secs")]
+    pub webhook_timeout_secs: u64,
 }
 
 fn default_buffer_size() -> usize {
     10_000
+}
+
+fn default_webhook_timeout_secs() -> u64 {
+    10
 }
 
 impl Default for SiemConfig {
@@ -36,6 +43,7 @@ impl Default for SiemConfig {
             webhook_url: String::new(),
             webhook_hmac_secret: String::new(),
             buffer_size: default_buffer_size(),
+            webhook_timeout_secs: default_webhook_timeout_secs(),
         }
     }
 }
@@ -43,6 +51,10 @@ impl Default for SiemConfig {
 /// SIEM export adapter: buffers events for CDC streaming and webhook delivery.
 pub struct SiemExporter {
     config: SiemConfig,
+    /// Shared HTTP client — constructed once at startup and reused across
+    /// every webhook flush so we don't rebuild the connection pool and
+    /// TLS session cache per call.
+    client: Arc<reqwest::Client>,
     /// Buffered audit events for CDC consumers.
     audit_buffer: RwLock<VecDeque<AuditEntry>>,
     /// Buffered auth events for CDC consumers.
@@ -51,9 +63,15 @@ pub struct SiemExporter {
 
 impl SiemExporter {
     pub fn new(config: SiemConfig) -> Self {
+        Self::with_client(config, Arc::new(reqwest::Client::new()))
+    }
+
+    /// Construct with an existing shared HTTP client.
+    pub fn with_client(config: SiemConfig, client: Arc<reqwest::Client>) -> Self {
         let cap = config.buffer_size;
         Self {
             config,
+            client,
             audit_buffer: RwLock::new(VecDeque::with_capacity(cap.min(10_000))),
             auth_buffer: RwLock::new(VecDeque::with_capacity(cap.min(10_000))),
         }
@@ -125,34 +143,28 @@ impl SiemExporter {
 
         let (body, signature) = self.build_webhook_payload(&all);
 
-        match reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
-            .build()
-        {
-            Ok(client) => {
-                let mut req = client
-                    .post(&self.config.webhook_url)
-                    .header("Content-Type", "application/json")
-                    .body(body);
+        let mut req = self
+            .client
+            .post(&self.config.webhook_url)
+            .header("Content-Type", "application/json")
+            .timeout(std::time::Duration::from_secs(
+                self.config.webhook_timeout_secs,
+            ))
+            .body(body);
 
-                if !signature.is_empty() {
-                    req = req.header("X-NodeDB-Signature", &signature);
-                }
+        if !signature.is_empty() {
+            req = req.header("X-NodeDB-Signature", &signature);
+        }
 
-                match req.send().await {
-                    Ok(resp) if resp.status().is_success() => {
-                        info!(events = all.len(), "SIEM webhook delivered");
-                    }
-                    Ok(resp) => {
-                        warn!(status = %resp.status(), "SIEM webhook delivery failed");
-                    }
-                    Err(e) => {
-                        warn!(error = %e, "SIEM webhook request failed");
-                    }
-                }
+        match req.send().await {
+            Ok(resp) if resp.status().is_success() => {
+                info!(events = all.len(), "SIEM webhook delivered");
+            }
+            Ok(resp) => {
+                warn!(status = %resp.status(), "SIEM webhook delivery failed");
             }
             Err(e) => {
-                warn!(error = %e, "SIEM webhook client construction failed");
+                warn!(error = %e, "SIEM webhook request failed");
             }
         }
     }

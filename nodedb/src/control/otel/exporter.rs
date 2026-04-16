@@ -201,10 +201,15 @@ pub struct SpanExport<'a> {
     pub status_ok: bool,
 }
 
-/// Export a single trace span to an OTLP collector.
+/// Export a single trace span to an OTLP collector using the shared
+/// `reqwest::Client` held on `SharedState`.
 ///
 /// Call this from the request tracker when a bridge round-trip completes.
-pub async fn export_span(params: &SpanExport<'_>) {
+pub async fn export_span(
+    client: &reqwest::Client,
+    timeout: std::time::Duration,
+    params: &SpanExport<'_>,
+) {
     let SpanExport {
         endpoint,
         trace_id,
@@ -264,10 +269,24 @@ pub async fn export_span(params: &SpanExport<'_>) {
     }
 
     let url = format!("{}/v1/traces", endpoint.trim_end_matches('/'));
-    let _ = reqwest::Client::new()
-        .post(&url)
+    export_trace_with_client(client, timeout, &url, &buf).await;
+}
+
+/// Public OTLP trace export using a caller-provided shared client.
+///
+/// The `SharedState` holds a single `Arc<reqwest::Client>` that alert,
+/// SIEM, and OTEL emitters all reuse — no per-call client construction.
+pub async fn export_trace_with_client(
+    client: &reqwest::Client,
+    timeout: std::time::Duration,
+    url: &str,
+    spans_proto_bytes: &[u8],
+) {
+    let _ = client
+        .post(url)
         .header("content-type", "application/x-protobuf")
-        .body(buf)
+        .timeout(timeout)
+        .body(spans_proto_bytes.to_vec())
         .send()
         .await;
 }

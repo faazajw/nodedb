@@ -10,6 +10,13 @@ use crate::types::TenantId;
 use super::SharedState;
 
 impl SharedState {
+    /// Shared HTTP client reused by every outbound emitter. Cloning the
+    /// Arc is cheap — the client itself owns a connection pool, DNS
+    /// resolver, and TLS session cache that every caller benefits from.
+    pub fn http_client(&self) -> &std::sync::Arc<reqwest::Client> {
+        &self.http_client
+    }
+
     /// Cluster-wide version view derived on demand from the live
     /// `cluster_topology` snapshot. Replaces the old
     /// `cluster_version_state` shadow map — every call walks the

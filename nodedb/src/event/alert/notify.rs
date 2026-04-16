@@ -52,7 +52,8 @@ pub async fn dispatch_notifications(
                 notify_topic(state, alert.tenant_id, name, &event);
             }
             NotifyTarget::Webhook { url } => {
-                notify_webhook(url, &event).await;
+                let timeout = Duration::from_secs(state.tuning.scheduler.webhook_timeout_secs);
+                notify_webhook_with_client(state.http_client(), url, &event, timeout).await;
             }
             NotifyTarget::InsertInto { table, columns } => {
                 notify_insert(state, alert.tenant_id, &alert.owner, table, columns, &event).await;
@@ -92,21 +93,18 @@ fn notify_topic(state: &SharedState, tenant_id: u32, topic_name: &str, event: &A
     }
 }
 
-/// HTTP POST alert event to a webhook URL.
+/// HTTP POST alert event to a webhook URL using a shared `reqwest::Client`.
 ///
-/// Retries with exponential backoff (3 attempts, 100ms base).
-async fn notify_webhook(url: &str, event: &AlertEvent) {
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            warn!(alert = event.alert_name, error = %e, "failed to build HTTP client");
-            return;
-        }
-    };
-
+/// Retries with exponential backoff (3 attempts, 100ms base). Reusing the
+/// client avoids re-building the connection pool / TLS session cache per
+/// notification — `CREATE ALERT` rules firing at high rate would otherwise
+/// cause a SYN flood and TLS-handshake-dominated CPU.
+pub async fn notify_webhook_with_client(
+    client: &reqwest::Client,
+    url: &str,
+    event: &AlertEvent,
+    per_request_timeout: Duration,
+) {
     let body = match sonic_rs::to_string(event) {
         Ok(b) => b,
         Err(e) => {
@@ -120,6 +118,7 @@ async fn notify_webhook(url: &str, event: &AlertEvent) {
         match client
             .post(url)
             .header("Content-Type", "application/json")
+            .timeout(per_request_timeout)
             .body(body.clone())
             .send()
             .await
