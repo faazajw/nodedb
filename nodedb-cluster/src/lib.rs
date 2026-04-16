@@ -68,8 +68,8 @@ pub use reachability::{
 pub use rebalance::{RebalancePlan, compute_plan, plan_to_requests};
 pub use rebalancer::{
     AlwaysReadyGate, ElectionGate, LoadMetrics, LoadMetricsProvider, LoadWeights,
-    MigrationDispatcher, RebalancerLoop, RebalancerLoopConfig, RebalancerPlanConfig,
-    compute_load_based_plan, normalized_score,
+    MigrationDispatcher, RebalancerKickHook, RebalancerLoop, RebalancerLoopConfig,
+    RebalancerPlanConfig, compute_load_based_plan, normalized_score,
 };
 pub use routing::RoutingTable;
 pub use routing_liveness::{NodeIdResolver, RoutingLivenessHook};

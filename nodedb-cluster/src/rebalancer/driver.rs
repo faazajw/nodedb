@@ -27,7 +27,7 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use tokio::sync::watch;
+use tokio::sync::{Notify, watch};
 use tokio::time::{MissedTickBehavior, interval};
 use tracing::{debug, info, warn};
 
@@ -96,6 +96,12 @@ pub struct RebalancerLoop {
     gate: Arc<dyn ElectionGate>,
     routing: Arc<RwLock<RoutingTable>>,
     topology: Arc<RwLock<ClusterTopology>>,
+    /// Membership-change notification. When any caller (a SWIM
+    /// subscriber, a manual admin trigger, etc.) calls
+    /// [`notify`](Notify::notify_one) on this handle, the run loop
+    /// wakes up immediately and runs an extra sweep instead of
+    /// waiting for the next 30 s tick.
+    kick: Arc<Notify>,
 }
 
 impl RebalancerLoop {
@@ -114,7 +120,15 @@ impl RebalancerLoop {
             gate,
             routing,
             topology,
+            kick: Arc::new(Notify::new()),
         }
+    }
+
+    /// Return a handle that callers can use to trigger an immediate
+    /// sweep. Cloning the `Arc<Notify>` is cheap; every clone
+    /// shares the same waker.
+    pub fn kick_handle(&self) -> Arc<Notify> {
+        Arc::clone(&self.kick)
     }
 
     /// Run the driver until `shutdown` flips to `true`.
@@ -134,6 +148,10 @@ impl RebalancerLoop {
                     }
                 }
                 _ = tick.tick() => {
+                    self.sweep_once().await;
+                }
+                _ = self.kick.notified() => {
+                    debug!("rebalancer: membership-change kick received");
                     self.sweep_once().await;
                 }
             }

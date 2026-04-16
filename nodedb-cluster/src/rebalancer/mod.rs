@@ -22,11 +22,13 @@
 //! 30 s cadence, complementing the overload path.
 
 pub mod driver;
+pub mod elastic;
 pub mod metrics;
 pub mod plan;
 
 pub use driver::{
     AlwaysReadyGate, ElectionGate, MigrationDispatcher, RebalancerLoop, RebalancerLoopConfig,
 };
+pub use elastic::RebalancerKickHook;
 pub use metrics::{LoadMetrics, LoadMetricsProvider, LoadWeights, normalized_score};
 pub use plan::{RebalancerPlanConfig, compute_load_based_plan};
