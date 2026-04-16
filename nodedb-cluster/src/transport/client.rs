@@ -245,15 +245,23 @@ impl NexarTransport {
                 .ok_or(ClusterError::NodeUnreachable { node_id: target })?
         };
 
-        // Connect.
-        let conn = self
+        // Connect — bounded by rpc_timeout so a hung QUIC handshake
+        // (peer not yet serving) doesn't block for the full 30s idle timeout.
+        let connecting = self
             .listener
             .endpoint()
             .connect_with(self.client_config.clone(), addr, SNI_HOSTNAME)
             .map_err(|e| ClusterError::Transport {
                 detail: format!("connect to node {target} at {addr}: {e}"),
-            })?
+            })?;
+        let conn = tokio::time::timeout(self.rpc_timeout, connecting)
             .await
+            .map_err(|_| ClusterError::Transport {
+                detail: format!(
+                    "handshake timeout ({}ms) with node {target} at {addr}",
+                    self.rpc_timeout.as_millis()
+                ),
+            })?
             .map_err(|e| ClusterError::Transport {
                 detail: format!("handshake with node {target} at {addr}: {e}"),
             })?;

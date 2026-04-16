@@ -151,12 +151,36 @@ impl HealthMonitor {
         }
     }
 
-    /// Handle a successful pong — reset failure count, mark node Active if needed.
-    fn handle_pong(&self, peer_id: u64, _pong: &PongResponse) -> bool {
+    /// Handle a successful pong — reset failure count, mark node Active
+    /// if needed, and push topology if the peer is behind.
+    fn handle_pong(&self, peer_id: u64, pong: &PongResponse) -> bool {
         // Reset failure count.
         {
             let mut failures = self.ping_failures.lock().unwrap_or_else(|p| p.into_inner());
             failures.remove(&peer_id);
+        }
+
+        // Push topology to peers with a stale version. This closes
+        // the convergence gap when the fire-and-forget broadcast
+        // during the join flow is lost (e.g. peer QUIC server not
+        // yet accepting at that instant).
+        let our_version = {
+            let topo = self.topology.read().unwrap_or_else(|p| p.into_inner());
+            topo.version()
+        };
+        if pong.topology_version < our_version {
+            debug!(
+                peer_id,
+                peer_version = pong.topology_version,
+                our_version,
+                "peer has stale topology, pushing update"
+            );
+            let transport = self.transport.clone();
+            let topology = self.topology.clone();
+            let self_id = self.node_id;
+            tokio::spawn(async move {
+                broadcast_topology_to_peer(self_id, peer_id, &topology, &transport).await;
+            });
         }
 
         // If node was not Active, mark it Active.
@@ -261,6 +285,34 @@ pub fn broadcast_topology(
                 debug!(peer_id, error = %e, "topology broadcast failed");
             }
         });
+    }
+}
+
+/// Send a topology update to a single peer that has a stale version.
+async fn broadcast_topology_to_peer(
+    _self_node_id: u64,
+    peer_id: u64,
+    topology: &RwLock<ClusterTopology>,
+    transport: &NexarTransport,
+) {
+    let update = {
+        let topo = topology.read().unwrap_or_else(|p| p.into_inner());
+        RaftRpc::TopologyUpdate(TopologyUpdate {
+            version: topo.version(),
+            nodes: topo
+                .all_nodes()
+                .map(|n| JoinNodeInfo {
+                    node_id: n.node_id,
+                    addr: n.addr.clone(),
+                    state: n.state.as_u8(),
+                    raft_groups: n.raft_groups.clone(),
+                    wire_version: n.wire_version,
+                })
+                .collect(),
+        })
+    };
+    if let Err(e) = transport.send_rpc(peer_id, update).await {
+        debug!(peer_id, error = %e, "targeted topology push failed");
     }
 }
 
