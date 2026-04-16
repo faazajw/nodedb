@@ -85,7 +85,7 @@ impl MutationEngine {
         }
 
         // Generate WAL record BEFORE applying the mutation.
-        let row_data = encode_row_for_wal(values);
+        let row_data = encode_row_for_wal(values)?;
         let wal = ColumnarWalRecord::InsertRow {
             collection: self.collection.clone(),
             row_data,
@@ -308,6 +308,13 @@ impl MutationEngine {
             return None;
         }
         self.memtable.get_row(row_idx)
+    }
+
+    /// The segment ID that will be assigned to the next flushed segment.
+    ///
+    /// Use this to obtain the ID to pass to `on_memtable_flushed`.
+    pub fn next_segment_id(&self) -> u32 {
+        self.next_segment_id
     }
 
     /// Whether a segment should be compacted based on its delete ratio.
