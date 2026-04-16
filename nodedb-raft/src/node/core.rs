@@ -5,6 +5,7 @@
 //! replication) live in [`super::internal`]. RPC handlers live in
 //! [`super::rpc`].
 
+use std::collections::HashSet;
 use std::time::Instant;
 
 use crate::error::{RaftError, Result};
@@ -61,7 +62,7 @@ pub struct RaftNode<S: LogStorage> {
     /// When the next heartbeat should be sent (leader only).
     pub(super) heartbeat_deadline: Instant,
     /// Votes received in current election.
-    pub(super) votes_received: Vec<u64>,
+    pub(super) votes_received: HashSet<u64>,
     /// Pending ready output.
     pub(super) ready: Ready,
     /// Known leader ID (0 = unknown).
@@ -89,7 +90,7 @@ impl<S: LogStorage> RaftNode<S> {
             leader_state: None,
             election_deadline: now + config.election_timeout_max,
             heartbeat_deadline: now,
-            votes_received: Vec::new(),
+            votes_received: HashSet::new(),
             ready: Ready::default(),
             leader_id: 0,
             config,

@@ -35,7 +35,8 @@ pub(super) fn bootstrap(config: &ClusterConfig, catalog: &ClusterCatalog) -> Res
     );
 
     // Create MultiRaft with all groups (single-node, no peers).
-    let mut multi_raft = MultiRaft::new(config.node_id, routing.clone(), config.data_dir.clone());
+    let mut multi_raft = MultiRaft::new(config.node_id, routing.clone(), config.data_dir.clone())
+        .with_election_timeout(config.election_timeout_min, config.election_timeout_max);
     for group_id in routing.group_ids() {
         multi_raft.add_group(group_id, vec![])?;
     }
@@ -81,6 +82,7 @@ fn generate_cluster_id() -> u64 {
 mod tests {
     use super::*;
     use crate::catalog::ClusterCatalog;
+    use std::time::Duration;
 
     fn temp_catalog() -> (tempfile::TempDir, ClusterCatalog) {
         let dir = tempfile::tempdir().unwrap();
@@ -102,6 +104,8 @@ mod tests {
             force_bootstrap: false,
             join_retry: Default::default(),
             swim_udp_addr: None,
+            election_timeout_min: Duration::from_millis(150),
+            election_timeout_max: Duration::from_millis(300),
         };
 
         let state = bootstrap(&config, &catalog).unwrap();
