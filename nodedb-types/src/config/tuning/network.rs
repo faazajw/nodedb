@@ -223,10 +223,10 @@ fn default_raft_tick_interval_ms() -> u64 {
     10
 }
 fn default_election_timeout_min_secs() -> u64 {
-    60
+    2
 }
 fn default_election_timeout_max_secs() -> u64 {
-    120
+    5
 }
 fn default_rpc_timeout_secs() -> u64 {
     5

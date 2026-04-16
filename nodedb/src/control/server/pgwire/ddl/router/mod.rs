@@ -1,4 +1,5 @@
 mod admin;
+mod ast;
 mod auth;
 mod collaborative;
 mod dsl;
@@ -26,6 +27,18 @@ pub async fn dispatch(
     identity: &AuthenticatedIdentity,
     sql: &str,
 ) -> Option<PgWireResult<Vec<Response>>> {
+    // AST-typed fast path: parse once, handle IF [NOT] EXISTS at the
+    // dispatch level, then fall through to legacy handlers for the
+    // actual execution. This is the incremental migration path —
+    // once every legacy handler has been ported to accept a typed
+    // NodedbStatement, the string-prefix routers below can be
+    // removed entirely.
+    if let Some(stmt) = nodedb_sql::ddl_ast::parse(sql)
+        && let Some(r) = ast::try_dispatch(state, identity, &stmt)
+    {
+        return Some(r);
+    }
+
     let upper = sql.to_uppercase();
     let parts: Vec<&str> = sql.split_whitespace().collect();
 

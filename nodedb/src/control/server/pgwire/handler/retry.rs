@@ -18,8 +18,8 @@
 //!
 //! ## Retry budget
 //!
-//! Three attempts total with 50ms, 100ms, 200ms backoff between
-//! them — roughly 350ms of tolerance for a drain to complete.
+//! Five attempts total with 50/100/200/400 ms backoff between
+//! them — roughly 750ms of tolerance for a drain to complete.
 //! The `DEFAULT_DRAIN_TIMEOUT` from `metadata_proposer` is 35s,
 //! so in practice either drain completes within our retry budget
 //! (the proposer is actively draining and is probably close to
@@ -31,13 +31,17 @@ use std::time::Duration;
 use crate::error::Error;
 
 /// Maximum number of attempts (including the initial call).
-const MAX_ATTEMPTS: usize = 3;
+const MAX_ATTEMPTS: usize = 5;
 
 /// Backoff durations BETWEEN attempts. `BACKOFFS[i]` is the sleep
 /// duration before attempt `i + 1`. Length must be
 /// `MAX_ATTEMPTS - 1`.
-const BACKOFFS: [Duration; MAX_ATTEMPTS - 1] =
-    [Duration::from_millis(50), Duration::from_millis(100)];
+const BACKOFFS: [Duration; MAX_ATTEMPTS - 1] = [
+    Duration::from_millis(50),
+    Duration::from_millis(100),
+    Duration::from_millis(200),
+    Duration::from_millis(400),
+];
 
 /// Run `op` up to `MAX_ATTEMPTS` times. Retries only on
 /// `Error::RetryableSchemaChanged`. Any other error (including

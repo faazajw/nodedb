@@ -166,7 +166,7 @@ impl<S: LogStorage> RaftNode<S> {
     }
 
     /// Handle RequestVote response (candidate only).
-    pub fn handle_request_vote_response(&mut self, _peer: u64, resp: &RequestVoteResponse) {
+    pub fn handle_request_vote_response(&mut self, peer: u64, resp: &RequestVoteResponse) {
         if resp.term > self.hard_state.current_term {
             self.become_follower(resp.term);
             return;
@@ -177,7 +177,7 @@ impl<S: LogStorage> RaftNode<S> {
         }
 
         if resp.vote_granted {
-            self.votes_received.push(resp.term);
+            self.votes_received.insert(peer);
             let vote_count = self.votes_received.len() + 1; // +1 for self-vote
 
             if vote_count >= self.config.quorum() {

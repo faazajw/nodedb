@@ -223,6 +223,8 @@ mod tests {
             force_bootstrap: false,
             join_retry: Default::default(),
             swim_udp_addr: None,
+            election_timeout_min: Duration::from_millis(150),
+            election_timeout_max: Duration::from_millis(300),
         }
     }
 

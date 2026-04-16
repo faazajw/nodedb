@@ -112,7 +112,7 @@ pub fn start_raft(
     // Start the RPC server (accepts inbound QUIC connections).
     let transport_serve = handle.transport.clone();
     let rl_handler = raft_loop.clone();
-    let sr_serve = shutdown_rx;
+    let sr_serve = shutdown_rx.clone();
     tokio::spawn(async move {
         if let Err(e) = transport_serve.serve(rl_handler, sr_serve).await {
             tracing::error!(error = %e, "raft RPC server failed");
@@ -137,6 +137,27 @@ pub fn start_raft(
             "cluster version view derived from topology"
         );
     }
+
+    // Start the health monitor (periodic pings, failure detection,
+    // topology re-broadcast). Without this, topology updates are
+    // only propagated via the fire-and-forget broadcast during the
+    // join flow — if that single broadcast is lost (peer QUIC server
+    // not yet accepting), the peer never converges.
+    let health_config = nodedb_cluster::HealthConfig {
+        ping_interval: Duration::from_secs(transport_tuning.health_ping_interval_secs),
+        failure_threshold: transport_tuning.health_failure_threshold,
+    };
+    let health_monitor = Arc::new(nodedb_cluster::HealthMonitor::new(
+        handle.node_id,
+        handle.transport.clone(),
+        handle.topology.clone(),
+        handle.catalog.clone(),
+        health_config,
+    ));
+    let sr_health = shutdown_rx;
+    tokio::spawn(async move {
+        health_monitor.run(sr_health).await;
+    });
 
     info!(node_id = handle.node_id, "raft loop and RPC server started");
 

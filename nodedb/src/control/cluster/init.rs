@@ -38,7 +38,7 @@ pub async fn init_cluster(
         "cluster QUIC transport bound"
     );
 
-    init_cluster_with_transport(config, transport, data_dir).await
+    init_cluster_with_transport(config, transport, data_dir, transport_tuning).await
 }
 
 /// Initialize the cluster using a pre-bound QUIC transport.
@@ -56,13 +56,15 @@ pub async fn init_cluster_with_transport(
     config: &ClusterSettings,
     transport: Arc<nodedb_cluster::NexarTransport>,
     data_dir: &std::path::Path,
+    transport_tuning: &ClusterTransportTuning,
 ) -> crate::Result<ClusterHandle> {
     // 2. Open cluster catalog.
     let catalog_path = data_dir.join("cluster.redb");
-    let catalog =
+    let catalog = Arc::new(
         nodedb_cluster::ClusterCatalog::open(&catalog_path).map_err(|e| crate::Error::Config {
             detail: format!("cluster catalog: {e}"),
-        })?;
+        })?,
+    );
 
     // 3. Bootstrap, join, or restart.
     let cluster_config = nodedb_cluster::ClusterConfig {
@@ -75,6 +77,12 @@ pub async fn init_cluster_with_transport(
         force_bootstrap: config.force_bootstrap,
         join_retry: join_retry_policy_from_env(),
         swim_udp_addr: None,
+        election_timeout_min: std::time::Duration::from_secs(
+            transport_tuning.election_timeout_min_secs,
+        ),
+        election_timeout_max: std::time::Duration::from_secs(
+            transport_tuning.election_timeout_max_secs,
+        ),
     };
 
     let lifecycle = nodedb_cluster::ClusterLifecycleTracker::new();
@@ -105,6 +113,7 @@ pub async fn init_cluster_with_transport(
         applied_index_watcher,
         node_id: config.node_id,
         multi_raft: Mutex::new(Some(state.multi_raft)),
+        catalog,
     })
 }
 

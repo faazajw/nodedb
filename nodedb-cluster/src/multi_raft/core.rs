@@ -77,8 +77,8 @@ impl MultiRaft {
             node_id,
             groups: HashMap::new(),
             routing,
-            election_timeout_min: Duration::from_millis(150),
-            election_timeout_max: Duration::from_millis(300),
+            election_timeout_min: Duration::from_secs(2),
+            election_timeout_max: Duration::from_secs(5),
             heartbeat_interval: Duration::from_millis(50),
             data_dir,
         }

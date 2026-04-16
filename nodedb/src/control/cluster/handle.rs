@@ -33,4 +33,8 @@ pub struct ClusterHandle {
     /// stays `Clone` while still guaranteeing single-transfer
     /// semantics at runtime.
     pub multi_raft: Mutex<Option<nodedb_cluster::MultiRaft>>,
+    /// Cluster catalog (redb-backed topology + routing persistence).
+    /// Shared with the `HealthMonitor` for persisting topology changes
+    /// on failure detection and recovery.
+    pub catalog: Arc<nodedb_cluster::ClusterCatalog>,
 }

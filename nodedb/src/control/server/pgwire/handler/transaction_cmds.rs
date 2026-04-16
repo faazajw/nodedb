@@ -18,6 +18,7 @@ impl NodeDbPgHandler {
             let next = self.state.wal.next_lsn();
             crate::types::Lsn::new(next.as_u64().saturating_sub(1))
         };
+        crate::control::server::pgwire::session::ddl_buffer::activate();
         self.sessions.begin(addr, snapshot_lsn).map_err(|msg| {
             PgWireError::UserError(Box::new(ErrorInfo::new(
                 "ERROR".to_owned(),
@@ -171,6 +172,35 @@ impl NodeDbPgHandler {
             }
         }
 
+        // Flush any buffered DDL entries as a single atomic batch.
+        if let Some(payloads) = crate::control::server::pgwire::session::ddl_buffer::take()
+            && !payloads.is_empty()
+        {
+            use nodedb_cluster::{MetadataEntry, encode_entry};
+            let sub_entries: Vec<MetadataEntry> = payloads
+                .into_iter()
+                .map(|p| MetadataEntry::CatalogDdl { payload: p })
+                .collect();
+            let batch = MetadataEntry::Batch {
+                entries: sub_entries,
+            };
+            if let Some(handle) = self.state.metadata_raft.get() {
+                let raw = encode_entry(&batch).map_err(|e| {
+                    PgWireError::UserError(Box::new(ErrorInfo::new(
+                        "ERROR".to_owned(),
+                        "XX000".to_owned(),
+                        format!("DDL batch encode: {e}"),
+                    )))
+                })?;
+                handle.propose(raw).map_err(|e| {
+                    PgWireError::UserError(Box::new(ErrorInfo::new(
+                        "ERROR".to_owned(),
+                        "XX000".to_owned(),
+                        format!("DDL batch propose: {e}"),
+                    )))
+                })?;
+            }
+        }
         // Close non-WITH-HOLD cursors on transaction end.
         self.sessions.close_non_hold_cursors(addr);
         Ok(vec![Response::Execution(Tag::new("COMMIT"))])
@@ -182,6 +212,7 @@ impl NodeDbPgHandler {
         identity: &AuthenticatedIdentity,
         addr: &std::net::SocketAddr,
     ) -> PgWireResult<Vec<Response>> {
+        crate::control::server::pgwire::session::ddl_buffer::discard();
         let reservations = self.sessions.rollback(addr).unwrap_or_default();
         for handle in &reservations {
             let key = &handle.sequence_key;

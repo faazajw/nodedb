@@ -176,6 +176,15 @@ pub fn propose_catalog_entry_with_timeout(
     }
 
     let payload = catalog_entry::encode(entry)?;
+
+    // DDL transaction buffer: if a transactional DDL session is
+    // active on this thread (BEGIN ... COMMIT), buffer the payload
+    // instead of proposing immediately. The buffered entries will
+    // be proposed as a single MetadataEntry::Batch at COMMIT time.
+    if crate::control::server::pgwire::session::ddl_buffer::try_buffer(payload.clone()) {
+        return Ok(0);
+    }
+
     let metadata_entry = MetadataEntry::CatalogDdl { payload };
     let raw = encode_entry(&metadata_entry).map_err(|e| Error::Config {
         detail: format!("metadata entry encode: {e}"),

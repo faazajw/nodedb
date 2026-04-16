@@ -91,6 +91,10 @@ pub struct ClusterConfig {
     /// [`crate::spawn_swim`] after the cluster is up and feed the
     /// seed list from `seed_nodes`.
     pub swim_udp_addr: Option<SocketAddr>,
+    /// Raft election timeout range. Controls how long a follower waits
+    /// before starting an election after losing contact with the leader.
+    pub election_timeout_min: Duration,
+    pub election_timeout_max: Duration,
 }
 
 /// Result of cluster startup — everything needed to run the Raft loop.

@@ -35,7 +35,8 @@ pub(super) fn restart(
     // as a learner on restart; dropping the group entirely would
     // leave the node permanently without any copy of it and
     // silently broken.
-    let mut multi_raft = MultiRaft::new(config.node_id, routing.clone(), config.data_dir.clone());
+    let mut multi_raft = MultiRaft::new(config.node_id, routing.clone(), config.data_dir.clone())
+        .with_election_timeout(config.election_timeout_min, config.election_timeout_max);
     for (group_id, info) in routing.group_members() {
         let is_voter = info.members.contains(&config.node_id);
         let is_learner = info.learners.contains(&config.node_id);
@@ -91,6 +92,7 @@ mod tests {
     use super::super::bootstrap_fn::bootstrap;
     use super::*;
     use crate::catalog::ClusterCatalog;
+    use std::time::Duration;
 
     fn temp_catalog() -> (tempfile::TempDir, ClusterCatalog) {
         let dir = tempfile::tempdir().unwrap();
@@ -112,6 +114,8 @@ mod tests {
             force_bootstrap: false,
             join_retry: Default::default(),
             swim_udp_addr: None,
+            election_timeout_min: Duration::from_millis(150),
+            election_timeout_max: Duration::from_millis(300),
         };
 
         // Bootstrap first.

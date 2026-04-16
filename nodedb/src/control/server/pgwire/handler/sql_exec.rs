@@ -217,6 +217,9 @@ impl NodeDbPgHandler {
             && !upper.starts_with("SHOW PEER")
             && !upper.starts_with("SHOW NODES")
             && !upper.starts_with("SHOW NODE ")
+            && !upper.starts_with("SHOW RANGES")
+            && !upper.starts_with("SHOW ROUTING")
+            && !upper.starts_with("SHOW SCHEMA VERSION")
             && !upper.starts_with("SHOW COLLECTIONS")
             && !upper.starts_with("SHOW AUDIT")
             && !upper.starts_with("SHOW PERMISSIONS")
@@ -281,6 +284,13 @@ impl NodeDbPgHandler {
                 addr,
                 sql_trimmed,
             );
+        }
+
+        // pg_catalog virtual tables — intercept before the normal planner.
+        if let Some(result) =
+            super::super::pg_catalog::try_pg_catalog(&self.state, identity, &upper)
+        {
+            return result;
         }
 
         if let Some(result) = super::super::ddl::dispatch(&self.state, identity, sql_trimmed).await
