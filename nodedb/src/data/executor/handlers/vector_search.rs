@@ -359,6 +359,6 @@ fn effective_ef(ef_search: usize, top_k: usize) -> usize {
     if ef_search > 0 {
         ef_search.max(top_k).min(MAX_EF_SEARCH)
     } else {
-        top_k.saturating_mul(4).max(64).min(MAX_EF_SEARCH)
+        top_k.saturating_mul(4).clamp(64, MAX_EF_SEARCH)
     }
 }

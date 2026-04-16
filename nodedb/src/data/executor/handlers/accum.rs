@@ -118,9 +118,9 @@ impl AggAccum {
         use nodedb_query::msgpack_scan::aggregate_helpers as ah;
         match self {
             AggAccum::Count { n } => {
-                if agg.field == "*" && agg.expr.is_none() {
-                    *n += 1;
-                } else if ah::extract_non_null(doc, &agg.field, agg.expr.as_ref()).is_some() {
+                if (agg.field == "*" && agg.expr.is_none())
+                    || ah::extract_non_null(doc, &agg.field, agg.expr.as_ref()).is_some()
+                {
                     *n += 1;
                 }
             }
@@ -168,10 +168,10 @@ impl AggAccum {
                 }
             }
             AggAccum::CountDistinct { seen } => {
-                if let Some(bytes) = ah::extract_bytes(doc, &agg.field, agg.expr.as_ref()) {
-                    if bytes != [0xc0u8] {
-                        seen.insert(bytes);
-                    }
+                if let Some(bytes) = ah::extract_bytes(doc, &agg.field, agg.expr.as_ref())
+                    && bytes != [0xc0u8]
+                {
+                    seen.insert(bytes);
                 }
             }
             AggAccum::Welford { n, mean, m2 } => {
@@ -184,10 +184,10 @@ impl AggAccum {
                 }
             }
             AggAccum::Hll { hll } => {
-                if let Some(bytes) = ah::extract_bytes(doc, &agg.field, agg.expr.as_ref()) {
-                    if bytes != [0xc0u8] {
-                        hll.add(fnv1a(&bytes));
-                    }
+                if let Some(bytes) = ah::extract_bytes(doc, &agg.field, agg.expr.as_ref())
+                    && bytes != [0xc0u8]
+                {
+                    hll.add(fnv1a(&bytes));
                 }
             }
             AggAccum::TDigest { digest } => {
@@ -198,45 +198,43 @@ impl AggAccum {
             }
             AggAccum::TopK { ss, .. } => {
                 let actual = field_after_colon(&agg.field);
-                if let Some(bytes) = ah::extract_bytes(doc, actual, agg.expr.as_ref()) {
-                    if bytes != [0xc0u8] {
-                        ss.add(fnv1a(&bytes));
-                    }
+                if let Some(bytes) = ah::extract_bytes(doc, actual, agg.expr.as_ref())
+                    && bytes != [0xc0u8]
+                {
+                    ss.add(fnv1a(&bytes));
                 }
             }
             AggAccum::ArrayAgg { values } => {
-                if values.len() < ARRAY_AGG_CAP {
-                    if let Some(v) = ah::extract_value(doc, &agg.field, agg.expr.as_ref()) {
-                        if !v.is_null() {
-                            values.push(v);
-                        }
-                    }
+                if values.len() < ARRAY_AGG_CAP
+                    && let Some(v) = ah::extract_value(doc, &agg.field, agg.expr.as_ref())
+                    && !v.is_null()
+                {
+                    values.push(v);
                 }
             }
             AggAccum::ArrayAggDistinct { seen, values } => {
-                if values.len() < ARRAY_AGG_CAP {
-                    if let Some(bytes) = ah::extract_bytes(doc, &agg.field, agg.expr.as_ref()) {
-                        if bytes != [0xc0u8] && seen.insert(bytes) {
-                            if let Some(v) = ah::extract_value(doc, &agg.field, agg.expr.as_ref()) {
-                                values.push(v);
-                            }
-                        }
-                    }
+                if values.len() < ARRAY_AGG_CAP
+                    && let Some(bytes) = ah::extract_bytes(doc, &agg.field, agg.expr.as_ref())
+                    && bytes != [0xc0u8]
+                    && seen.insert(bytes)
+                    && let Some(v) = ah::extract_value(doc, &agg.field, agg.expr.as_ref())
+                {
+                    values.push(v);
                 }
             }
             AggAccum::PercentileCont { values, .. } => {
-                if values.len() < ARRAY_AGG_CAP {
-                    let actual = field_after_colon(&agg.field);
-                    if let Some(v) = ah::extract_f64(doc, actual, agg.expr.as_ref()) {
-                        values.push(v);
-                    }
+                let actual = field_after_colon(&agg.field);
+                if values.len() < ARRAY_AGG_CAP
+                    && let Some(v) = ah::extract_f64(doc, actual, agg.expr.as_ref())
+                {
+                    values.push(v);
                 }
             }
             AggAccum::StringAgg { parts } => {
-                if parts.len() < ARRAY_AGG_CAP {
-                    if let Some(s) = ah::extract_str(doc, &agg.field, agg.expr.as_ref()) {
-                        parts.push(s);
-                    }
+                if parts.len() < ARRAY_AGG_CAP
+                    && let Some(s) = ah::extract_str(doc, &agg.field, agg.expr.as_ref())
+                {
+                    parts.push(s);
                 }
             }
         }
