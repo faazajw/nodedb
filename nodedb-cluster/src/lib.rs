@@ -29,6 +29,7 @@ pub mod readiness;
 pub mod rebalance;
 pub mod rebalance_scheduler;
 pub mod routing;
+pub mod routing_liveness;
 pub mod rpc_codec;
 pub mod shard_split;
 pub mod swim;
@@ -56,6 +57,7 @@ pub use multi_raft::{GroupStatus, MultiRaft};
 pub use raft_loop::{CommitApplier, RaftLoop, VShardEnvelopeHandler};
 pub use rebalance::{RebalancePlan, compute_plan, plan_to_requests};
 pub use routing::RoutingTable;
+pub use routing_liveness::{NodeIdResolver, RoutingLivenessHook};
 pub use rpc_codec::RaftRpc;
 pub use topology::{ClusterTopology, NodeInfo, NodeState};
 pub use transport::{NexarTransport, RaftRpcHandler};
@@ -78,7 +80,8 @@ pub use lifecycle::{
 pub use rdma_transport::{RdmaConfig, RdmaTransport};
 pub use rebalance_scheduler::{NodeMetrics, RebalanceScheduler, RebalanceTrigger, SchedulerConfig};
 pub use shard_split::{SplitPlan, SplitStrategy, plan_graph_split, plan_vector_split};
+pub use swim::bootstrap::spawn_with_subscribers as spawn_swim_with_subscribers;
 pub use swim::{
-    Incarnation, Member, MemberState, MembershipList, SwimConfig, SwimError, SwimHandle,
-    UdpTransport, spawn as spawn_swim,
+    Incarnation, Member, MemberState, MembershipList, MembershipSubscriber, SwimConfig, SwimError,
+    SwimHandle, UdpTransport, spawn as spawn_swim,
 };
