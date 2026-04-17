@@ -86,6 +86,23 @@ pub struct JwtAuthConfig {
     /// When true, JWT tokens with permissions not matching defined scopes are denied.
     #[serde(default)]
     pub enforce_scopes: bool,
+
+    /// SSRF relaxation: allow `http://` scheme for JWKS URLs whose host
+    /// is in [`Self::allow_jwks_hosts`]. Off by default.
+    #[serde(default)]
+    pub allow_http_jwks: bool,
+
+    /// SSRF relaxation: hostnames that may resolve to addresses inside
+    /// [`Self::allow_jwks_cidrs`]. Exact-match, lowercase. IP literals
+    /// remain forbidden regardless of this list.
+    #[serde(default)]
+    pub allow_jwks_hosts: Vec<String>,
+
+    /// SSRF relaxation: CIDR ranges that [`Self::allow_jwks_hosts`] are
+    /// permitted to resolve into, in addition to global unicast.
+    /// Example: `["10.42.0.0/16"]` for an in-cluster Keycloak.
+    #[serde(default)]
+    pub allow_jwks_cidrs: Vec<String>,
 }
 
 /// Configuration for a single JWT identity provider.
@@ -107,9 +124,12 @@ pub struct JwtProviderConfig {
 }
 
 impl JwtProviderConfig {
-    /// Validate provider config. Fail-closed: empty `issuer` is rejected,
-    /// `jwks_url` must be syntactically safe (https + DNS host).
-    pub fn validate(&self) -> crate::Result<()> {
+    /// Validate provider config against a [`JwksPolicy`]. Fail-closed:
+    /// empty `issuer` is rejected; `jwks_url` must pass the policy.
+    pub fn validate(
+        &self,
+        policy: &crate::control::security::jwks::url::JwksPolicy,
+    ) -> crate::Result<()> {
         if self.name.trim().is_empty() {
             return Err(crate::Error::Config {
                 detail: "auth.jwt provider must have a non-empty name".into(),
@@ -125,21 +145,38 @@ impl JwtProviderConfig {
                 ),
             });
         }
-        crate::control::security::jwks::url::validate_jwks_url(&self.jwks_url).map_err(|e| {
-            crate::Error::Config {
+        policy
+            .check_url(&self.jwks_url)
+            .map_err(|e| crate::Error::Config {
                 detail: format!("auth.jwt provider '{}' has unsafe jwks_url: {e}", self.name),
-            }
-        })?;
+            })?;
         Ok(())
     }
 }
 
 impl JwtAuthConfig {
+    /// Build the effective [`JwksPolicy`] from the allow-list fields.
+    pub fn jwks_policy(
+        &self,
+    ) -> Result<
+        crate::control::security::jwks::url::JwksPolicy,
+        crate::control::security::jwks::url::UrlValidationError,
+    > {
+        crate::control::security::jwks::url::JwksPolicy::from_parts(
+            self.allow_http_jwks,
+            &self.allow_jwks_hosts,
+            &self.allow_jwks_cidrs,
+        )
+    }
+
     /// Validate all providers. Called from the server-config loader so
     /// misconfiguration fails startup rather than silently bypassing auth.
     pub fn validate(&self) -> crate::Result<()> {
+        let policy = self.jwks_policy().map_err(|e| crate::Error::Config {
+            detail: format!("auth.jwt allow-list is invalid: {e}"),
+        })?;
         for p in &self.providers {
-            p.validate()?;
+            p.validate(&policy)?;
         }
         Ok(())
     }
@@ -176,6 +213,9 @@ impl Default for JwtAuthConfig {
             status_claim: None,
             blocked_statuses: Vec::new(),
             enforce_scopes: false,
+            allow_http_jwks: false,
+            allow_jwks_hosts: Vec::new(),
+            allow_jwks_cidrs: Vec::new(),
         }
     }
 }

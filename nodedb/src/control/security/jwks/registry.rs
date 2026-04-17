@@ -22,6 +22,7 @@ pub struct JwksRegistry {
     providers: Vec<JwtProviderConfig>,
     cache: Arc<JwksCache>,
     config: JwtAuthConfig,
+    policy: Arc<super::url::JwksPolicy>,
     /// Background refresh task handle.
     _refresh_handle: Option<tokio::task::JoinHandle<()>>,
 }
@@ -33,13 +34,18 @@ impl JwksRegistry {
     /// and spawns the periodic refresh task.
     pub async fn init(config: JwtAuthConfig) -> Self {
         let cache = Arc::new(JwksCache::new(config.jwks_cache_path.clone()));
+        // Policy construction is infallible here because ServerConfig
+        // validation already ran at startup; fall back to strict on the
+        // unlikely internal error path so runtime never opens up.
+        let policy = Arc::new(config.jwks_policy().unwrap_or_default());
 
         // Load disk cache first (offline fallback).
         cache.load_from_disk();
 
         // Fetch from all providers (best-effort — failures use disk cache).
         for provider in &config.providers {
-            super::fetch::fetch_and_cache(&provider.name, &provider.jwks_url, &cache).await;
+            super::fetch::fetch_and_cache(&provider.name, &provider.jwks_url, &cache, &policy)
+                .await;
         }
 
         // Spawn periodic refresh.
@@ -53,6 +59,7 @@ impl JwksRegistry {
                 pairs,
                 cache.clone(),
                 config.jwks_refresh_secs,
+                policy.clone(),
             ))
         } else {
             None
@@ -62,6 +69,7 @@ impl JwksRegistry {
             providers: config.providers.clone(),
             cache,
             config,
+            policy,
             _refresh_handle: refresh_handle,
         }
     }
@@ -239,7 +247,13 @@ impl JwksRegistry {
         }
 
         self.cache.mark_refetch_attempted(&provider.name);
-        super::fetch::fetch_and_cache(&provider.name, &provider.jwks_url, &self.cache).await;
+        super::fetch::fetch_and_cache(
+            &provider.name,
+            &provider.jwks_url,
+            &self.cache,
+            &self.policy,
+        )
+        .await;
 
         self.cache
             .get(&provider.name, kid)

@@ -24,6 +24,7 @@ use nodedb::config::auth::{JwtAuthConfig, JwtProviderConfig};
 use nodedb::control::security::jwks::cache::JwksCache;
 use nodedb::control::security::jwks::fetch::fetch_and_cache;
 use nodedb::control::security::jwks::registry::JwksRegistry;
+use nodedb::control::security::jwks::url::JwksPolicy;
 use nodedb::control::security::jwt::JwtError;
 
 // ── helpers ────────────────────────────────────────────────────────────
@@ -269,6 +270,139 @@ fn server_config_rejects_ip_literal_jwks_host() {
     }
 }
 
+// ── 2b. Allow-list relaxations ───────────────────────────────────────
+
+#[test]
+fn config_accepts_http_jwks_when_allow_http_and_host_listed() {
+    // Self-hosted dev / in-cluster IdP: an explicit allow-list for the
+    // hostname unlocks http:// for THAT host only.
+    let toml = r#"
+data_dir         = "/tmp/nodedb-security-test"
+data_plane_cores = 1
+memory_limit     = 1073741824
+
+[engines]
+vector_budget_fraction     = 0.30
+sparse_budget_fraction     = 0.15
+crdt_budget_fraction       = 0.10
+timeseries_budget_fraction = 0.10
+query_budget_fraction      = 0.20
+
+[auth]
+mode                     = "password"
+superuser_name           = "admin"
+superuser_password       = "test-password"
+min_password_length      = 8
+max_failed_logins        = 5
+lockout_duration_secs    = 300
+idle_timeout_secs        = 3600
+max_connections_per_user = 0
+password_expiry_days     = 0
+audit_retention_days     = 0
+
+[auth.jwt]
+allow_http_jwks  = true
+allow_jwks_hosts = ["keycloak.internal"]
+allow_jwks_cidrs = ["10.42.0.0/16"]
+
+[[auth.jwt.providers]]
+name     = "prod"
+jwks_url = "http://keycloak.internal/jwks.json"
+issuer   = "https://auth.example.com/"
+"#;
+    let mut f = tempfile::NamedTempFile::new().unwrap();
+    f.write_all(toml.as_bytes()).unwrap();
+    ServerConfig::from_file(f.path()).expect("allow-listed http host must pass config validation");
+}
+
+#[test]
+fn config_rejects_http_jwks_for_non_allowlisted_host_even_when_allow_http() {
+    // allow_http_jwks is scoped — a URL whose host isn't in the list
+    // still fails. This is the property that keeps the relaxation narrow.
+    let toml = r#"
+data_dir         = "/tmp/nodedb-security-test"
+data_plane_cores = 1
+memory_limit     = 1073741824
+
+[engines]
+vector_budget_fraction     = 0.30
+sparse_budget_fraction     = 0.15
+crdt_budget_fraction       = 0.10
+timeseries_budget_fraction = 0.10
+query_budget_fraction      = 0.20
+
+[auth]
+mode                     = "password"
+superuser_name           = "admin"
+superuser_password       = "test-password"
+min_password_length      = 8
+max_failed_logins        = 5
+lockout_duration_secs    = 300
+idle_timeout_secs        = 3600
+max_connections_per_user = 0
+password_expiry_days     = 0
+audit_retention_days     = 0
+
+[auth.jwt]
+allow_http_jwks  = true
+allow_jwks_hosts = ["keycloak.internal"]
+
+[[auth.jwt.providers]]
+name     = "prod"
+jwks_url = "http://evil.example.com/jwks.json"
+issuer   = "https://auth.example.com/"
+"#;
+    let mut f = tempfile::NamedTempFile::new().unwrap();
+    f.write_all(toml.as_bytes()).unwrap();
+    assert!(
+        ServerConfig::from_file(f.path()).is_err(),
+        "http:// must stay rejected for hosts outside allow_jwks_hosts"
+    );
+}
+
+#[test]
+fn config_rejects_ip_literal_jwks_even_with_allow_list() {
+    // Literals are never allowed, regardless of CIDR allow-list.
+    let toml = r#"
+data_dir         = "/tmp/nodedb-security-test"
+data_plane_cores = 1
+memory_limit     = 1073741824
+
+[engines]
+vector_budget_fraction     = 0.30
+sparse_budget_fraction     = 0.15
+crdt_budget_fraction       = 0.10
+timeseries_budget_fraction = 0.10
+query_budget_fraction      = 0.20
+
+[auth]
+mode                     = "password"
+superuser_name           = "admin"
+superuser_password       = "test-password"
+min_password_length      = 8
+max_failed_logins        = 5
+lockout_duration_secs    = 300
+idle_timeout_secs        = 3600
+max_connections_per_user = 0
+password_expiry_days     = 0
+audit_retention_days     = 0
+
+[auth.jwt]
+allow_jwks_cidrs = ["0.0.0.0/0"]
+
+[[auth.jwt.providers]]
+name     = "prod"
+jwks_url = "https://10.0.0.5/jwks.json"
+issuer   = "https://auth.example.com/"
+"#;
+    let mut f = tempfile::NamedTempFile::new().unwrap();
+    f.write_all(toml.as_bytes()).unwrap();
+    assert!(
+        ServerConfig::from_file(f.path()).is_err(),
+        "IP-literal JWKS URL must be rejected even with a permissive CIDR list"
+    );
+}
+
 // ── 3. SSRF: fetch path must not connect to bad URLs ──────────────────
 
 #[tokio::test]
@@ -278,7 +412,7 @@ async fn fetch_does_not_connect_to_http_url() {
     // counting listener and assert zero inbound connections were made.
     let (url, counter) = spawn_counting_listener();
     let cache = JwksCache::new(None);
-    let keys = fetch_and_cache("prod", &url, &cache).await;
+    let keys = fetch_and_cache("prod", &url, &cache, &JwksPolicy::strict()).await;
     // Give any leaked connect a moment to land.
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(keys, 0, "must not parse keys from a refused URL");
@@ -315,7 +449,7 @@ async fn fetch_does_not_connect_to_ip_literal_imds() {
         SocketAddr::from((Ipv4Addr::LOCALHOST, port))
     );
     let cache = JwksCache::new(None);
-    let keys = fetch_and_cache("prod", &url, &cache).await;
+    let keys = fetch_and_cache("prod", &url, &cache, &JwksPolicy::strict()).await;
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(keys, 0);
     assert_eq!(
@@ -339,7 +473,7 @@ async fn fetch_caps_redirect_hops() {
     // not revalidated. We pin "no more than 4 total connections".
     let (url, counter) = spawn_redirect_loop().await;
     let cache = JwksCache::new(None);
-    let keys = fetch_and_cache("prod", &url, &cache).await;
+    let keys = fetch_and_cache("prod", &url, &cache, &JwksPolicy::strict()).await;
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(keys, 0);
     let n = counter.load(Ordering::SeqCst);
@@ -379,7 +513,7 @@ async fn parse_error_log_does_not_leak_response_body() {
     {
         let _guard = set_default(subscriber);
         let cache = JwksCache::new(None);
-        let _ = fetch_and_cache("prod", &url, &cache).await;
+        let _ = fetch_and_cache("prod", &url, &cache, &JwksPolicy::strict()).await;
     }
 
     let captured = String::from_utf8(buf.lock().unwrap().clone()).unwrap();

@@ -15,9 +15,7 @@ use tracing::{debug, info, warn};
 
 use super::cache::JwksCache;
 use super::key::{JwksResponse, VerificationKey, parse_jwk};
-use super::url::{
-    UrlValidationError, validate_jwks_url, validate_parsed_url, validate_resolved_addrs,
-};
+use super::url::{JwksPolicy, UrlValidationError};
 
 const MAX_REDIRECTS: usize = 3;
 
@@ -25,8 +23,13 @@ const MAX_REDIRECTS: usize = 3;
 ///
 /// Returns the number of keys successfully parsed.
 /// On HTTP or parse failure, logs a warning and returns 0 (cache unchanged).
-pub async fn fetch_and_cache(provider_name: &str, jwks_url: &str, cache: &JwksCache) -> usize {
-    match fetch_jwks(jwks_url).await {
+pub async fn fetch_and_cache(
+    provider_name: &str,
+    jwks_url: &str,
+    cache: &JwksCache,
+    policy: &JwksPolicy,
+) -> usize {
+    match fetch_jwks(jwks_url, policy).await {
         Ok(keys) => {
             let count = keys.len();
             if count > 0 {
@@ -62,32 +65,47 @@ pub async fn fetch_and_cache(provider_name: &str, jwks_url: &str, cache: &JwksCa
 }
 
 /// Fetch and parse JWKS from a URL, with full SSRF defense.
-async fn fetch_jwks(url: &str) -> Result<Vec<VerificationKey>, JwksFetchError> {
+async fn fetch_jwks(
+    url: &str,
+    policy: &JwksPolicy,
+) -> Result<Vec<VerificationKey>, JwksFetchError> {
     debug!(url = %url, "fetching JWKS");
 
-    // 1. Syntactic validation (scheme + not-IP-literal).
-    validate_jwks_url(url).map_err(JwksFetchError::UrlValidation)?;
+    // 1. Syntactic validation (scheme + not-IP-literal, respecting policy).
+    policy
+        .check_url(url)
+        .map_err(JwksFetchError::UrlValidation)?;
 
-    // 2. Resolve host and validate every address.
+    // 2. Resolve host and validate every address against the policy.
     let parsed = reqwest::Url::parse(url)
         .map_err(|_| JwksFetchError::UrlValidation(UrlValidationError::Malformed))?;
     let host = parsed
         .host_str()
-        .ok_or(JwksFetchError::UrlValidation(UrlValidationError::NoHost))?;
+        .ok_or(JwksFetchError::UrlValidation(UrlValidationError::NoHost))?
+        .to_owned();
     let port = parsed.port_or_known_default().unwrap_or(443);
-    let addrs = resolve_host(host, port).await?;
-    validate_resolved_addrs(&addrs.iter().map(|a| a.ip()).collect::<Vec<_>>())
+    let addrs = resolve_host(&host, port).await?;
+    let ips: Vec<_> = addrs.iter().map(|a| a.ip()).collect();
+    policy
+        .check_resolved(&host, &ips)
         .map_err(JwksFetchError::UrlValidation)?;
 
-    // 3. Build a reqwest client that enforces the per-hop URL check and
-    //    caps redirect depth.
+    // Pin the first resolved SocketAddr so reqwest uses the IP we
+    // validated instead of re-resolving. This closes the DNS-rebinding
+    // window between our validation and reqwest's own resolution.
+    let pinned = addrs[0];
+
+    // 3. Build a reqwest client that enforces per-hop URL check, caps
+    //    redirect depth, and uses the pinned IP for the target host.
+    let policy_for_redirect = policy.clone();
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
-        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+        .resolve(&host, pinned)
+        .redirect(reqwest::redirect::Policy::custom(move |attempt| {
             if attempt.previous().len() >= MAX_REDIRECTS {
                 return attempt.error(redirect_limit_err());
             }
-            if validate_parsed_url(attempt.url()).is_err() {
+            if policy_for_redirect.check_parsed(attempt.url()).is_err() {
                 return attempt.stop();
             }
             attempt.follow()
@@ -198,6 +216,7 @@ pub fn spawn_refresh_task(
     providers: Vec<(String, String)>, // (name, jwks_url) pairs
     cache: std::sync::Arc<JwksCache>,
     refresh_interval_secs: u64,
+    policy: std::sync::Arc<JwksPolicy>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut interval =
@@ -208,7 +227,7 @@ pub fn spawn_refresh_task(
         loop {
             interval.tick().await;
             for (name, url) in &providers {
-                fetch_and_cache(name, url, &cache).await;
+                fetch_and_cache(name, url, &cache, &policy).await;
             }
         }
     })
