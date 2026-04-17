@@ -19,7 +19,6 @@ pub mod graph_rag;
 pub mod insert_select;
 pub mod join;
 pub mod kv;
-pub mod materialized_view;
 pub mod point;
 pub mod purge;
 pub mod recursive;

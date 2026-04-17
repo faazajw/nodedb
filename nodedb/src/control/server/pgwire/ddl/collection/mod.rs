@@ -18,7 +18,7 @@ pub use alter::{
     alter_collection_alter_column_type, alter_collection_drop_column, alter_collection_enforcement,
     alter_collection_rename_column, alter_table_add_column,
 };
-pub use create::{create_collection, dispatch_register_if_needed};
+pub use create::{create_collection, dispatch_register_from_stored, dispatch_register_if_needed};
 pub use describe::{describe_collection, show_collections};
 pub use drop::drop_collection;
 pub use index::{create_index, drop_index, show_indexes};

@@ -67,6 +67,24 @@ pub fn drop_materialized_view(
             .map_err(|e| sqlstate_error("XX000", &e.to_string()))?;
     }
 
+    // Also drop the view's target collection created by CREATE MATERIALIZED VIEW.
+    // The target lives as a normal collection to support INSERT...SELECT refresh
+    // and SELECT reads; leaving it behind would leak storage and shadow any
+    // later CREATE COLLECTION with the same name.
+    if let Some(catalog) = state.credentials.catalog()
+        && matches!(
+            catalog.get_collection(tenant_id.as_u32(), &name),
+            Ok(Some(_))
+        )
+    {
+        let coll_entry = crate::control::catalog_entry::CatalogEntry::DeactivateCollection {
+            tenant_id: tenant_id.as_u32(),
+            name: name.clone(),
+        };
+        let _ = crate::control::metadata_proposer::propose_catalog_entry(state, &coll_entry)
+            .map_err(|e| sqlstate_error("XX000", &format!("metadata propose: {e}")))?;
+    }
+
     tracing::info!(view = name, "materialized view dropped");
 
     Ok(vec![Response::Execution(Tag::new(

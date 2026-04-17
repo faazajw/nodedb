@@ -1,12 +1,26 @@
-//! `REFRESH MATERIALIZED VIEW` — dispatches a Data Plane meta
-//! operation that scans the source collection and writes rows
-//! into the view's target.
+//! `REFRESH MATERIALIZED VIEW` — re-materialize the view target by
+//! executing the view's stored `SELECT` and writing each computed row
+//! to the target collection.
+//!
+//! The refresh runs entirely in the Control Plane:
+//!
+//!   1. Plan the stored `SELECT` through `nodedb-sql`.
+//!   2. Dispatch each produced `PhysicalTask` and collect the rows.
+//!   3. Clear the target (`DELETE FROM <view>`).
+//!   4. Write each collected row back with `INSERT INTO <view> (cols)
+//!      VALUES (...)` through the same SQL pipeline.
+//!
+//! Decoupling the scan from the insert is what makes projection,
+//! `WHERE`, `GROUP BY`/aggregates, and JOIN work uniformly — the Data
+//! Plane never needs a specialised refresh opcode; every engine
+//! feature reachable by a normal `SELECT` is reachable by refresh.
 
 use pgwire::api::results::{Response, Tag};
 use pgwire::error::PgWireResult;
 
 use crate::control::security::identity::AuthenticatedIdentity;
 use crate::control::state::SharedState;
+use crate::data::executor::response_codec::decode_payload_to_json;
 
 use super::super::super::types::sqlstate_error;
 
@@ -25,7 +39,6 @@ pub async fn refresh_materialized_view(
     let name = parts[3].to_lowercase();
     let tenant_id = identity.tenant_id;
 
-    // Look up view definition to get source collection.
     let view = if let Some(catalog) = state.credentials.catalog() {
         match catalog.get_materialized_view(tenant_id.as_u32(), &name) {
             Ok(Some(v)) => v,
@@ -41,25 +54,188 @@ pub async fn refresh_materialized_view(
         return Err(sqlstate_error("XX000", "catalog unavailable"));
     };
 
-    // Dispatch refresh to Data Plane: scan source → write to target.
-    let plan = crate::bridge::envelope::PhysicalPlan::Meta(
-        crate::bridge::physical_plan::MetaOp::RefreshMaterializedView {
-            view_name: name.clone(),
-            source_collection: view.source.clone(),
-        },
-    );
+    // 1) Run the stored SELECT and collect every row.
+    let rows = execute_select(state, tenant_id, &view.query_sql).await?;
 
-    super::super::sync_dispatch::dispatch_async(
-        state,
-        tenant_id,
-        &view.source,
-        plan,
-        std::time::Duration::from_secs(30),
-    )
-    .await
-    .map_err(|e| sqlstate_error("XX000", &format!("refresh failed: {e}")))?;
+    // 2) Clear the target so rows no longer selected by the SELECT
+    //    (narrowed WHERE, dropped JOIN match, deleted source row,
+    //    regrouped aggregate) disappear from the view.
+    dispatch_sql(state, tenant_id, &format!("DELETE FROM {}", view.name)).await?;
+
+    // 3) Re-insert every row produced by the SELECT.
+    //
+    //    Rows produced by aggregate/join paths do not carry a document
+    //    `id`; the schemaless target collection needs a unique primary
+    //    key per row, otherwise successive rows overwrite each other
+    //    under the same default id. Synthesize a deterministic id from
+    //    the row index when the SELECT output has no `id` column.
+    for (idx, row) in rows.iter().enumerate() {
+        let mut row = row.clone();
+        if !row.contains_key("id") {
+            row.insert(
+                "id".to_string(),
+                serde_json::Value::String(format!("mv_{idx}")),
+            );
+        }
+        let insert_sql = build_insert_sql(&view.name, &row)?;
+        dispatch_sql(state, tenant_id, &insert_sql).await?;
+    }
+
+    tracing::info!(
+        view = view.name,
+        rows = rows.len(),
+        "materialized view refreshed"
+    );
 
     Ok(vec![Response::Execution(Tag::new(
         "REFRESH MATERIALIZED VIEW",
     ))])
+}
+
+/// Plan and execute a `SELECT` via the standard SQL pipeline, collect
+/// the result rows as `serde_json::Map` objects. Response payloads may
+/// come back as wrapped scan rows (`{id, data: {...}}`) or as flat
+/// aggregate/join rows — both are normalised to the logical row map.
+async fn execute_select(
+    state: &SharedState,
+    tenant_id: nodedb_types::TenantId,
+    sql: &str,
+) -> PgWireResult<Vec<serde_json::Map<String, serde_json::Value>>> {
+    let query_ctx = crate::control::planner::context::QueryContext::for_state(state);
+    let tasks = query_ctx
+        .plan_sql(sql, tenant_id)
+        .await
+        .map_err(|e| sqlstate_error("XX000", &format!("plan '{sql}': {e}")))?;
+
+    let mut rows: Vec<serde_json::Map<String, serde_json::Value>> = Vec::new();
+    for task in tasks {
+        let response = crate::control::server::dispatch_utils::dispatch_to_data_plane(
+            state,
+            tenant_id,
+            task.vshard_id,
+            task.plan,
+            0,
+        )
+        .await
+        .map_err(|e| sqlstate_error("XX000", &format!("dispatch: {e}")))?;
+
+        let payload = response.payload.as_ref();
+        if payload.is_empty() {
+            continue;
+        }
+        let json = decode_payload_to_json(payload);
+        if json.is_empty() {
+            continue;
+        }
+        let parsed: serde_json::Value = sonic_rs::from_str(&json)
+            .map_err(|e| sqlstate_error("XX000", &format!("decode scan payload: {e}")))?;
+
+        collect_rows(parsed, &mut rows);
+    }
+    Ok(rows)
+}
+
+/// Normalise a decoded response into row maps. Handles arrays of rows,
+/// scan wrappers, and single-object responses uniformly.
+fn collect_rows(
+    value: serde_json::Value,
+    out: &mut Vec<serde_json::Map<String, serde_json::Value>>,
+) {
+    match value {
+        serde_json::Value::Array(arr) => {
+            for v in arr {
+                collect_rows(v, out);
+            }
+        }
+        serde_json::Value::Object(mut obj) => {
+            // Scan-path rows are wrapped `{id, data: {...}}`; we want the
+            // `data` payload as the logical row. If `data` is itself an
+            // object, unwrap; otherwise keep the outer map (aggregates,
+            // joins emit flat row objects directly).
+            if obj.len() == 2
+                && obj.contains_key("id")
+                && matches!(obj.get("data"), Some(serde_json::Value::Object(_)))
+            {
+                if let Some(serde_json::Value::Object(inner)) = obj.remove("data") {
+                    out.push(inner);
+                }
+            } else {
+                out.push(obj);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Build `INSERT INTO <target> (col1, col2, ...) VALUES (lit1, lit2, ...)`
+/// from a row map. Preserves insertion order of JSON map keys.
+fn build_insert_sql(
+    target: &str,
+    row: &serde_json::Map<String, serde_json::Value>,
+) -> PgWireResult<String> {
+    if row.is_empty() {
+        return Err(sqlstate_error(
+            "XX000",
+            "materialized view SELECT produced an empty row (no columns)",
+        ));
+    }
+    let mut cols: Vec<String> = Vec::with_capacity(row.len());
+    let mut vals: Vec<String> = Vec::with_capacity(row.len());
+    for (k, v) in row {
+        // Double-quote column identifiers so reserved words and names
+        // with special characters survive the INSERT round-trip.
+        cols.push(format!("\"{}\"", k.replace('"', "\"\"")));
+        vals.push(json_value_to_sql_literal(v)?);
+    }
+    Ok(format!(
+        "INSERT INTO {} ({}) VALUES ({})",
+        target,
+        cols.join(", "),
+        vals.join(", ")
+    ))
+}
+
+fn json_value_to_sql_literal(v: &serde_json::Value) -> PgWireResult<String> {
+    Ok(match v {
+        serde_json::Value::Null => "NULL".into(),
+        serde_json::Value::Bool(b) => if *b { "TRUE" } else { "FALSE" }.into(),
+        serde_json::Value::Number(n) => n.to_string(),
+        serde_json::Value::String(s) => format!("'{}'", s.replace('\'', "''")),
+        serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
+            let s = sonic_rs::to_string(v)
+                .map_err(|e| sqlstate_error("XX000", &format!("encode nested value: {e}")))?;
+            format!("'{}'", s.replace('\'', "''"))
+        }
+    })
+}
+
+async fn dispatch_sql(
+    state: &SharedState,
+    tenant_id: nodedb_types::TenantId,
+    sql: &str,
+) -> PgWireResult<()> {
+    let query_ctx = crate::control::planner::context::QueryContext::for_state(state);
+    let tasks = query_ctx
+        .plan_sql(sql, tenant_id)
+        .await
+        .map_err(|e| sqlstate_error("42P20", &format!("plan '{sql}': {e}")))?;
+    for task in tasks {
+        crate::control::server::dispatch_utils::wal_append_if_write(
+            &state.wal,
+            tenant_id,
+            task.vshard_id,
+            &task.plan,
+        )
+        .map_err(|e| sqlstate_error("58030", &format!("wal append: {e}")))?;
+        crate::control::server::dispatch_utils::dispatch_to_data_plane(
+            state,
+            tenant_id,
+            task.vshard_id,
+            task.plan,
+            0,
+        )
+        .await
+        .map_err(|e| sqlstate_error("08006", &format!("dispatch: {e}")))?;
+    }
+    Ok(())
 }

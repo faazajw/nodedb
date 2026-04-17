@@ -159,9 +159,9 @@ pub(super) async fn dispatch(
 
     // Materialized views (HTAP).
     if upper.starts_with("CREATE MATERIALIZED VIEW ") {
-        return Some(super::super::materialized_view::create_materialized_view(
-            state, identity, sql,
-        ));
+        return Some(
+            super::super::materialized_view::create_materialized_view(state, identity, sql).await,
+        );
     }
     if upper.starts_with("DROP MATERIALIZED VIEW ") {
         return Some(super::super::materialized_view::drop_materialized_view(

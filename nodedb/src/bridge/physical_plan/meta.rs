@@ -70,14 +70,6 @@ pub enum MetaOp {
         indexes: Vec<u8>,
     },
 
-    /// Refresh a materialized view: scan source collection, write to target.
-    RefreshMaterializedView {
-        /// View name (also the target collection name).
-        view_name: String,
-        /// Source collection to scan.
-        source_collection: String,
-    },
-
     /// Pre-computed response payload. The Data Plane echoes it back without
     /// touching any engine. Used for constant queries (SELECT 1 AS value).
     RawResponse { payload: Vec<u8> },

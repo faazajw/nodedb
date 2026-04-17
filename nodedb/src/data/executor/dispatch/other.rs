@@ -295,11 +295,6 @@ impl CoreLoop {
                 schema_json,
             }) => self.execute_convert_collection(task, tid, collection, target_type, schema_json),
 
-            PhysicalPlan::Meta(MetaOp::RefreshMaterializedView {
-                view_name,
-                source_collection,
-            }) => self.execute_refresh_materialized_view(task, tid, view_name, source_collection),
-
             PhysicalPlan::Meta(MetaOp::PurgeTenant { tenant_id }) => {
                 self.execute_purge_tenant(task, *tenant_id)
             }
