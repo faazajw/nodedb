@@ -9,14 +9,17 @@
 //! - 4-6 chars: max distance 1
 //! - 7+ chars: max distance 2
 
-/// Compute Levenshtein edit distance between two strings.
+/// Compute Levenshtein edit distance between two strings, measured in
+/// Unicode scalar values (chars) not bytes. Byte iteration would count a
+/// single multi-byte codepoint substitution as multiple edits and bucket
+/// non-ASCII queries incorrectly.
 ///
-/// Uses the two-row matrix approach: O(min(a,b)) space, O(a*b) time.
+/// Uses the two-row DP: O(min(a,b)) space, O(a*b) time.
 pub fn levenshtein(a: &str, b: &str) -> usize {
-    let a_bytes = a.as_bytes();
-    let b_bytes = b.as_bytes();
-    let a_len = a_bytes.len();
-    let b_len = b_bytes.len();
+    let a_chars: Vec<char> = a.chars().collect();
+    let b_chars: Vec<char> = b.chars().collect();
+    let a_len = a_chars.len();
+    let b_len = b_chars.len();
 
     if a_len == 0 {
         return b_len;
@@ -25,26 +28,29 @@ pub fn levenshtein(a: &str, b: &str) -> usize {
         return a_len;
     }
 
-    // Optimize: always iterate over the shorter string for rows.
-    if a_len > b_len {
-        return levenshtein(b, a);
-    }
+    // Iterate the shorter string as the inner dimension.
+    let (short, long) = if a_len <= b_len {
+        (&a_chars[..], &b_chars[..])
+    } else {
+        (&b_chars[..], &a_chars[..])
+    };
+    let s_len = short.len();
 
-    let mut prev_row: Vec<usize> = (0..=a_len).collect();
-    let mut curr_row: Vec<usize> = vec![0; a_len + 1];
+    let mut prev_row: Vec<usize> = (0..=s_len).collect();
+    let mut curr_row: Vec<usize> = vec![0; s_len + 1];
 
-    for (j, b_byte) in b_bytes.iter().enumerate() {
+    for (j, l_ch) in long.iter().enumerate() {
         curr_row[0] = j + 1;
-        for (i, a_byte) in a_bytes.iter().enumerate() {
-            let cost = if a_byte == b_byte { 0 } else { 1 };
-            curr_row[i + 1] = (prev_row[i + 1] + 1) // deletion
-                .min(curr_row[i] + 1) // insertion
-                .min(prev_row[i] + cost); // substitution
+        for (i, s_ch) in short.iter().enumerate() {
+            let cost = if s_ch == l_ch { 0 } else { 1 };
+            curr_row[i + 1] = (prev_row[i + 1] + 1)
+                .min(curr_row[i] + 1)
+                .min(prev_row[i] + cost);
         }
         std::mem::swap(&mut prev_row, &mut curr_row);
     }
 
-    prev_row[a_len]
+    prev_row[s_len]
 }
 
 /// Maximum allowed edit distance for a given token length.
@@ -68,27 +74,38 @@ pub fn fuzzy_match<'a>(
     query_term: &str,
     index_terms: impl Iterator<Item = &'a str>,
 ) -> Vec<(&'a str, usize)> {
-    let max_dist = max_distance_for_length(query_term.len());
+    let q_char_len = query_term.chars().count();
+    let max_dist = max_distance_for_length(q_char_len);
     if max_dist == 0 {
         return Vec::new();
     }
 
-    let mut matches: Vec<(&str, usize)> = index_terms
-        .filter_map(|term| {
-            // Quick length check — edit distance can't be less than
-            // the length difference.
-            let len_diff = query_term.len().abs_diff(term.len());
-            if len_diff > max_dist {
-                return None;
-            }
+    // Length-bucket prefilter: group candidates by character length, then
+    // visit only buckets within the distance window. Edit distance is at
+    // least |len(a) - len(b)|, so terms outside [q-d .. q+d] cannot match.
+    // This bounds the number of expensive O(L²) levenshtein calls to the
+    // candidates in the relevant buckets, avoiding whole-dictionary scans
+    // on large term indexes.
+    use std::collections::HashMap;
+    let mut buckets: HashMap<usize, Vec<&'a str>> = HashMap::new();
+    for term in index_terms {
+        buckets.entry(term.chars().count()).or_default().push(term);
+    }
+
+    let low = q_char_len.saturating_sub(max_dist);
+    let high = q_char_len.saturating_add(max_dist);
+    let mut matches: Vec<(&'a str, usize)> = Vec::new();
+    for len in low..=high {
+        let Some(bucket) = buckets.get(&len) else {
+            continue;
+        };
+        for term in bucket {
             let dist = levenshtein(query_term, term);
             if dist > 0 && dist <= max_dist {
-                Some((term, dist))
-            } else {
-                None
+                matches.push((*term, dist));
             }
-        })
-        .collect();
+        }
+    }
 
     matches.sort_by_key(|&(_, d)| d);
     matches
@@ -155,5 +172,51 @@ mod tests {
         let index = ["cat", "bat", "car"];
         let matches = fuzzy_match("cat", index.iter().copied());
         assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn levenshtein_counts_unicode_codepoints_not_bytes() {
+        // Spec: edit distance must be measured in characters (scalar values),
+        // not UTF-8 bytes. Substituting one 2-byte codepoint is one edit.
+        assert_eq!(
+            levenshtein("café", "cafe"),
+            1,
+            "substituting é→e is one edit, not two"
+        );
+        assert_eq!(
+            levenshtein("naïve", "naive"),
+            1,
+            "substituting ï→i is one edit, not two"
+        );
+        assert_eq!(
+            levenshtein("über", "uber"),
+            1,
+            "substituting ü→u is one edit, not two"
+        );
+    }
+
+    #[test]
+    fn levenshtein_cjk_single_substitution() {
+        // Spec: CJK characters are 3 bytes each in UTF-8. One-character
+        // substitution in a 3-char string must be distance 1, not 3.
+        assert_eq!(
+            levenshtein("日本語", "日本国"),
+            1,
+            "one CJK substitution is one edit, not three"
+        );
+    }
+
+    #[test]
+    fn fuzzy_match_finds_unicode_one_edit() {
+        // Spec: a single-character typo in non-ASCII input must match the
+        // canonical term at distance 1 and be returned.
+        let index = ["café", "database", "cafeteria"];
+        let matches = fuzzy_match("cafe", index.iter().copied());
+        // "café" differs from "cafe" by one character → should match at dist 1.
+        // `len("cafe")` is 4 chars; `max_distance_for_length(4) == 1`.
+        assert!(
+            matches.iter().any(|(t, d)| *t == "café" && *d == 1),
+            "expected fuzzy_match('cafe') to include ('café', 1), got {matches:?}"
+        );
     }
 }

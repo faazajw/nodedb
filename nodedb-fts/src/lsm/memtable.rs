@@ -42,8 +42,14 @@ pub struct Memtable {
     total_postings: RefCell<usize>,
     /// Incremental stats: (doc_count, total_token_sum).
     stats: RefCell<(u32, u64)>,
-    /// Fieldnorm array: doc_id → SmallFloat-encoded length.
+    /// Fieldnorm array: doc_id → SmallFloat-encoded length (used by BM25).
     fieldnorms: RefCell<Vec<u8>>,
+    /// Exact-length sidecar: doc_id → original u32 token count. Used to
+    /// decrement `stats.total_token_sum` symmetrically with the exact
+    /// increment in `record_doc`. Storing the original length here keeps
+    /// the smallfloat array lossy (space-efficient for ranking) while
+    /// making corpus-stat accounting exact.
+    fieldnorms_exact: RefCell<Vec<u32>>,
     /// Spill configuration.
     config: MemtableConfig,
 }
@@ -55,6 +61,7 @@ impl Memtable {
             total_postings: RefCell::new(0),
             stats: RefCell::new((0, 0)),
             fieldnorms: RefCell::new(Vec::new()),
+            fieldnorms_exact: RefCell::new(Vec::new()),
             config,
         }
     }
@@ -72,12 +79,19 @@ impl Memtable {
         stats.0 += 1;
         stats.1 += doc_len as u64;
 
-        let mut norms = self.fieldnorms.borrow_mut();
         let idx = doc_id as usize;
-        if idx >= norms.len() {
-            norms.resize(idx + 1, 0);
+        {
+            let mut norms = self.fieldnorms.borrow_mut();
+            if idx >= norms.len() {
+                norms.resize(idx + 1, 0);
+            }
+            norms[idx] = smallfloat::encode(doc_len);
         }
-        norms[idx] = smallfloat::encode(doc_len);
+        let mut exact = self.fieldnorms_exact.borrow_mut();
+        if idx >= exact.len() {
+            exact.resize(idx + 1, 0);
+        }
+        exact[idx] = doc_len;
     }
 
     /// Remove a document's postings from all terms.
@@ -92,10 +106,15 @@ impl Memtable {
         });
         *self.total_postings.borrow_mut() -= removed;
 
-        // Decrement stats using fieldnorm to recover doc length.
-        let norms = self.fieldnorms.borrow();
-        if let Some(&norm) = norms.get(doc_id as usize) {
-            let doc_len = smallfloat::decode(norm);
+        // Decrement stats using the exact-length sidecar so the subtraction
+        // matches the exact-length increment in record_doc. Using the
+        // smallfloat-decoded length here would drift upward on churn.
+        let mut exact = self.fieldnorms_exact.borrow_mut();
+        if let Some(slot) = exact.get_mut(doc_id as usize)
+            && *slot > 0
+        {
+            let doc_len = *slot;
+            *slot = 0;
             let mut stats = self.stats.borrow_mut();
             stats.0 = stats.0.saturating_sub(1);
             stats.1 = stats.1.saturating_sub(doc_len as u64);
@@ -141,6 +160,7 @@ impl Memtable {
         *self.total_postings.borrow_mut() = 0;
         *self.stats.borrow_mut() = (0, 0);
         self.fieldnorms.borrow_mut().clear();
+        self.fieldnorms_exact.borrow_mut().clear();
         std::mem::take(&mut *map)
     }
 
@@ -163,6 +183,7 @@ impl Memtable {
         // but the memtable tracks them globally. Reset to be safe.
         *self.stats.borrow_mut() = (0, 0);
         self.fieldnorms.borrow_mut().clear();
+        self.fieldnorms_exact.borrow_mut().clear();
     }
 
     /// Number of unique terms.
@@ -267,6 +288,78 @@ mod tests {
         assert!(!mt.should_flush());
         mt.insert("term", make_posting(4, 1));
         assert!(mt.should_flush());
+    }
+
+    #[test]
+    fn stats_invariant_under_insert_delete_churn() {
+        // Spec: after any sequence of (record_doc, remove_doc) calls, the
+        // memtable's corpus stats — specifically `total_token_sum` that feeds
+        // BM25 `avg_doc_len` — must equal the stats of a memtable freshly
+        // populated with only the currently-live documents.
+        //
+        // Today `remove_doc` subtracts `smallfloat::decode(encoded_len)` from
+        // the exact-length sum. Because `decode(encode(L)) <= L`, every churn
+        // cycle leaves positive residue in `total_token_sum`. After N cycles
+        // of the same doc, the residue compounds and silently skews BM25.
+        let churn = Memtable::new(MemtableConfig::default());
+        let doc_id = 0u32;
+        let doc_len = 137u32; // not smallfloat-representable exactly
+        for _ in 0..500 {
+            churn.record_doc(doc_id, doc_len);
+            churn.remove_doc(doc_id);
+        }
+        // After equal numbers of record / remove, the memtable should be empty
+        // from a stats standpoint: zero docs, zero tokens.
+        let fresh = Memtable::new(MemtableConfig::default());
+        assert_eq!(
+            churn.stats(),
+            fresh.stats(),
+            "stats drifted after insert/delete churn: churn={:?} fresh={:?}",
+            churn.stats(),
+            fresh.stats()
+        );
+    }
+
+    #[test]
+    fn stats_invariant_churn_then_single_live_doc() {
+        // Spec: churn on one doc, then leave a single live doc. Stats must
+        // exactly match a memtable that only ever saw that single live doc.
+        let churn = Memtable::new(MemtableConfig::default());
+        for _ in 0..200 {
+            churn.record_doc(0, 400);
+            churn.remove_doc(0);
+        }
+        churn.record_doc(0, 250);
+
+        let fresh = Memtable::new(MemtableConfig::default());
+        fresh.record_doc(0, 250);
+
+        assert_eq!(
+            churn.stats(),
+            fresh.stats(),
+            "stats diverged from fresh baseline: churn={:?} fresh={:?}",
+            churn.stats(),
+            fresh.stats()
+        );
+    }
+
+    #[test]
+    fn stats_total_token_sum_never_exceeds_live_doc_length() {
+        // Regression guard on the specific failure mode: `total_token_sum`
+        // growing beyond the sum of live document lengths. If this fails,
+        // BM25 `avg_doc_len` is inflated and ranking is silently skewed.
+        let mt = Memtable::new(MemtableConfig::default());
+        for _ in 0..100 {
+            mt.record_doc(0, 777);
+            mt.remove_doc(0);
+        }
+        mt.record_doc(0, 777);
+        let (count, total) = mt.stats();
+        assert_eq!(count, 1);
+        assert_eq!(
+            total, 777,
+            "total_token_sum drifted: got {total}, expected 777 for a single 777-token live doc"
+        );
     }
 
     #[test]
