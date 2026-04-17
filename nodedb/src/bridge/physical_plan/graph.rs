@@ -42,9 +42,7 @@ pub enum GraphOp {
     /// Batched edge insert: many `(src, label, dst)` triples with a
     /// shared set of properties. Used by `CREATE GRAPH INDEX` and other
     /// bulk-edge writers to avoid O(N) serial RPCs.
-    EdgePutBatch {
-        edges: Vec<BatchEdge>,
-    },
+    EdgePutBatch { edges: Vec<BatchEdge> },
 
     /// Delete a graph edge.
     EdgeDelete {
@@ -55,9 +53,7 @@ pub enum GraphOp {
 
     /// Batched edge delete: used to revert a partial `EdgePutBatch` on
     /// failure so the DDL leaves no stranded edges.
-    EdgeDeleteBatch {
-        edges: Vec<BatchEdge>,
-    },
+    EdgeDeleteBatch { edges: Vec<BatchEdge> },
 
     /// Graph hop traversal: BFS from start nodes via label, bounded by depth.
     Hop {

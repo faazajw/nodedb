@@ -422,7 +422,8 @@ mod tests {
     fn large_graph_bfs() {
         let mut csr = CsrIndex::new();
         for i in 0..999 {
-            csr.add_edge(&format!("n{i}"), "NEXT", &format!("n{}", i + 1)).unwrap();
+            csr.add_edge(&format!("n{i}"), "NEXT", &format!("n{}", i + 1))
+                .unwrap();
         }
         csr.compact();
 

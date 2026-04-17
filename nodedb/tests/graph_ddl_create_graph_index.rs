@@ -35,9 +35,7 @@ async fn create_graph_index_batches_edge_dispatch() {
     // Seed 300 parent→child docs forming a flat tree under 'ceo'.
     const N: usize = 300;
     for i in 0..N {
-        let sql = format!(
-            "INSERT INTO orgs {{ id: 'emp_{i}', parent: 'ceo', name: 'emp_{i}' }}"
-        );
+        let sql = format!("INSERT INTO orgs {{ id: 'emp_{i}', parent: 'ceo', name: 'emp_{i}' }}");
         server.exec(&sql).await.unwrap();
     }
 
@@ -158,9 +156,7 @@ async fn tree_sum_batches_dispatch_on_wide_trees() {
 
     let start = Instant::now();
     let rows = server
-        .query_text(
-            "SELECT TREE_SUM(amount, reports, 'root', 'wide_tree') FROM wide_tree LIMIT 1",
-        )
+        .query_text("SELECT TREE_SUM(amount, reports, 'root', 'wide_tree') FROM wide_tree LIMIT 1")
         .await
         .unwrap_or_default();
     let elapsed = start.elapsed();

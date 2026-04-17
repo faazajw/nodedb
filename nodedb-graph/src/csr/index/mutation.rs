@@ -10,12 +10,7 @@ impl CsrIndex {
     /// exhausted. Production callers should always surface this to the
     /// client; silently ignoring it reproduces the silent-wrap bug the
     /// `u32` widening was meant to fix.
-    pub fn add_edge(
-        &mut self,
-        src: &str,
-        label: &str,
-        dst: &str,
-    ) -> Result<(), crate::GraphError> {
+    pub fn add_edge(&mut self, src: &str, label: &str, dst: &str) -> Result<(), crate::GraphError> {
         self.add_edge_internal(src, label, dst, 1.0, false)
     }
 

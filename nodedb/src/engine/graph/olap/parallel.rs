@@ -193,7 +193,8 @@ mod tests {
     fn make_snapshot() -> Arc<CsrSnapshot> {
         let mut csr = CsrIndex::new();
         for i in 0..100 {
-            csr.add_edge(&format!("n{i}"), "L", &format!("n{}", (i + 1) % 100)).unwrap();
+            csr.add_edge(&format!("n{i}"), "L", &format!("n{}", (i + 1) % 100))
+                .unwrap();
         }
         Arc::new(CsrSnapshot::from_csr(&mut csr))
     }

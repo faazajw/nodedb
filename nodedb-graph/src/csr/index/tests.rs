@@ -85,7 +85,8 @@ fn compact_handles_deletes() {
 fn label_interning_reduces_memory() {
     let mut csr = CsrIndex::new();
     for i in 0..100 {
-        csr.add_edge(&format!("n{i}"), "FOLLOWS", &format!("n{}", i + 1)).unwrap();
+        csr.add_edge(&format!("n{i}"), "FOLLOWS", &format!("n{}", i + 1))
+            .unwrap();
     }
     assert_eq!(csr.id_to_label.len(), 1);
     assert_eq!(csr.id_to_label[0], "FOLLOWS");
@@ -253,11 +254,8 @@ fn edge_label_ids_survive_compaction() {
     // compaction actually touches the label table.
     const N: usize = 512;
     for i in 0..N {
-        csr.add_edge(
-            &format!("src_{i}"),
-            &format!("L_{i}"),
-            &format!("dst_{i}"),
-        ).unwrap();
+        csr.add_edge(&format!("src_{i}"), &format!("L_{i}"), &format!("dst_{i}"))
+            .unwrap();
     }
 
     let before: Vec<u32> = (0..N)

@@ -29,10 +29,7 @@ const MAX_EDGE_LABEL_BYTES: usize = 256;
 /// input — a complement to the `u32` widening of the label id space.
 fn validate_edge_label(label: &str) -> PgWireResult<()> {
     if label.is_empty() {
-        return Err(sqlstate_error(
-            "42601",
-            "edge TYPE label must not be empty",
-        ));
+        return Err(sqlstate_error("42601", "edge TYPE label must not be empty"));
     }
     if label.len() > MAX_EDGE_LABEL_BYTES {
         return Err(sqlstate_error(
@@ -43,10 +40,7 @@ fn validate_edge_label(label: &str) -> PgWireResult<()> {
             ),
         ));
     }
-    if label
-        .chars()
-        .any(|c| c.is_control() || c == '\u{007F}')
-    {
+    if label.chars().any(|c| c.is_control() || c == '\u{007F}') {
         return Err(sqlstate_error(
             "42601",
             "edge TYPE label must not contain control characters",

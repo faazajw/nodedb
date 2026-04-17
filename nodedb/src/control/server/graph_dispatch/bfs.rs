@@ -109,9 +109,7 @@ pub async fn cross_core_bfs_with_options(
                         // Mid-hop max_visited check — prevents a single
                         // wide hop from pushing far past the configured
                         // cap before the between-hop check fires.
-                        if all_discovered.len() + local_hop_results.len()
-                            >= options.max_visited
-                        {
+                        if all_discovered.len() + local_hop_results.len() >= options.max_visited {
                             break;
                         }
                     }

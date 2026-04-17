@@ -147,7 +147,11 @@ impl CoreLoop {
         tid: u32,
         edges: &[crate::bridge::physical_plan::BatchEdge],
     ) -> Response {
-        debug!(core = self.core_id, count = edges.len(), "edge delete batch");
+        debug!(
+            core = self.core_id,
+            count = edges.len(),
+            "edge delete batch"
+        );
         for edge in edges {
             let scoped_src = scoped_node(tid, &edge.src_id);
             let scoped_dst = scoped_node(tid, &edge.dst_id);

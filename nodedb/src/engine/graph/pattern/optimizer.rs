@@ -148,10 +148,12 @@ mod tests {
         let mut csr = CsrIndex::new();
         // KNOWS: 100 edges (dense), CREATED: 5 edges (sparse)
         for i in 0..100 {
-            csr.add_edge(&format!("p{i}"), "KNOWS", &format!("p{}", (i + 1) % 100)).unwrap();
+            csr.add_edge(&format!("p{i}"), "KNOWS", &format!("p{}", (i + 1) % 100))
+                .unwrap();
         }
         for i in 0..5 {
-            csr.add_edge(&format!("p{i}"), "CREATED", &format!("doc{i}")).unwrap();
+            csr.add_edge(&format!("p{i}"), "CREATED", &format!("doc{i}"))
+                .unwrap();
         }
         csr.compact();
         csr

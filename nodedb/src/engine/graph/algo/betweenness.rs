@@ -227,7 +227,8 @@ mod tests {
     fn betweenness_with_sampling() {
         let mut csr = CsrIndex::new();
         for i in 0..20 {
-            csr.add_edge(&format!("n{i}"), "L", &format!("n{}", i + 1)).unwrap();
+            csr.add_edge(&format!("n{i}"), "L", &format!("n{}", i + 1))
+                .unwrap();
         }
         csr.compact();
 

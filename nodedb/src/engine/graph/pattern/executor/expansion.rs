@@ -262,8 +262,7 @@ mod tests {
         );
         let results = expansion.results;
 
-        let dsts: std::collections::HashSet<u32> =
-            results.iter().map(|(d, _)| *d).collect();
+        let dsts: std::collections::HashSet<u32> = results.iter().map(|(d, _)| *d).collect();
         assert!(
             dsts.contains(&csr.node_id("a").unwrap()),
             "*0..k must include the source node at depth 0; got dsts {dsts:?}"
@@ -294,8 +293,7 @@ mod tests {
         );
         let results = expansion.results;
 
-        let dsts: std::collections::HashSet<u32> =
-            results.iter().map(|(d, _)| *d).collect();
+        let dsts: std::collections::HashSet<u32> = results.iter().map(|(d, _)| *d).collect();
         let c = csr.node_id("c").unwrap();
         let expected: std::collections::HashSet<u32> = [c].into_iter().collect();
         assert_eq!(

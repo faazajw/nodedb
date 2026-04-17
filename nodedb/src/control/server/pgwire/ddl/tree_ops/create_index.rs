@@ -115,7 +115,9 @@ pub async fn create_graph_index(
         // `DocumentOp::Scan` emits `{id, data: {...}}` per
         // `encode_raw_document_rows`. Anything else is a protocol bug,
         // not a shape we should silently accommodate.
-        let Some(obj_outer) = doc.as_object() else { continue };
+        let Some(obj_outer) = doc.as_object() else {
+            continue;
+        };
         let Some(obj) = obj_outer.get("data").and_then(|v| v.as_object()) else {
             return Err(sqlstate_error(
                 "XX000",
