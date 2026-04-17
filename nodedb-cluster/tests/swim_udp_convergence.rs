@@ -52,10 +52,23 @@ where
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn three_node_udp_mesh_converges_and_detects_failure() {
-    // Bind three ephemeral UDP sockets.
-    let t_a = Arc::new(UdpTransport::bind(any_loopback()).await.expect("bind a"));
-    let t_b = Arc::new(UdpTransport::bind(any_loopback()).await.expect("bind b"));
-    let t_c = Arc::new(UdpTransport::bind(any_loopback()).await.expect("bind c"));
+    // Bind three ephemeral UDP sockets under a shared cluster MAC key.
+    let cluster_key = || nodedb_cluster::MacKey::from_bytes([0x7Cu8; 32]);
+    let t_a = Arc::new(
+        UdpTransport::bind(any_loopback(), cluster_key())
+            .await
+            .expect("bind a"),
+    );
+    let t_b = Arc::new(
+        UdpTransport::bind(any_loopback(), cluster_key())
+            .await
+            .expect("bind b"),
+    );
+    let t_c = Arc::new(
+        UdpTransport::bind(any_loopback(), cluster_key())
+            .await
+            .expect("bind c"),
+    );
     let addr_a = t_a.local_addr();
     let addr_b = t_b.local_addr();
     let addr_c = t_c.local_addr();

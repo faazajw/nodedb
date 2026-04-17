@@ -35,7 +35,7 @@ use std::time::Duration;
 
 use nodedb_cluster::{
     CacheApplier, ClusterCatalog, ClusterConfig, ClusterLifecycleState, ClusterLifecycleTracker,
-    ClusterTopology, MetadataCache, NexarTransport, RaftLoop, start_cluster,
+    ClusterTopology, MetadataCache, NexarTransport, RaftLoop, TransportCredentials, start_cluster,
 };
 
 /// Build a `NexarTransport` with a tighter-than-production RPC
@@ -43,11 +43,15 @@ use nodedb_cluster::{
 /// per failed peer contact. 4 s leaves enough headroom for legitimate
 /// Raft RPCs under contention while still cutting the join-failure
 /// tests (which retry against a dead seed) substantially.
+///
+/// Tests run with [`TransportCredentials::Insecure`] — mTLS coverage
+/// lives in `tests/transport_security.rs`.
 pub fn test_transport(node_id: u64) -> Result<NexarTransport, nodedb_cluster::ClusterError> {
     NexarTransport::with_timeout(
         node_id,
         "127.0.0.1:0".parse().unwrap(),
         Duration::from_secs(4),
+        TransportCredentials::Insecure,
     )
 }
 use nodedb_raft::message::LogEntry;

@@ -257,12 +257,21 @@ mod tests {
             "10.0.0.1:9400",
             &["10.0.0.1:9400", "10.0.0.2:9400", "10.0.0.3:9400"],
         );
-        let transport = Arc::new(NexarTransport::new(1, "127.0.0.1:0".parse().unwrap()).unwrap());
+        use crate::transport::credentials::TransportCredentials;
+        let transport = Arc::new(
+            NexarTransport::new(
+                1,
+                "127.0.0.1:0".parse().unwrap(),
+                TransportCredentials::Insecure,
+            )
+            .unwrap(),
+        );
         assert!(should_bootstrap(&cfg, &transport).await);
     }
 
     #[tokio::test]
     async fn force_bootstrap_overrides_rule() {
+        use crate::transport::credentials::TransportCredentials;
         // Not the lowest seed, but force flag is set.
         let mut cfg = cfg_with_seeds(
             3,
@@ -270,7 +279,14 @@ mod tests {
             &["10.0.0.1:9400", "10.0.0.2:9400", "10.0.0.3:9400"],
         );
         cfg.force_bootstrap = true;
-        let transport = Arc::new(NexarTransport::new(3, "127.0.0.1:0".parse().unwrap()).unwrap());
+        let transport = Arc::new(
+            NexarTransport::new(
+                3,
+                "127.0.0.1:0".parse().unwrap(),
+                TransportCredentials::Insecure,
+            )
+            .unwrap(),
+        );
         assert!(should_bootstrap(&cfg, &transport).await);
     }
 
@@ -288,8 +304,16 @@ mod tests {
         // non-routable designated seed (`127.0.0.1:1` which is below
         // the privileged-port range and nothing can bind there without
         // root). If the probe quietly succeeds that's a bug.
+        use crate::transport::credentials::TransportCredentials;
         let cfg = cfg_with_seeds(2, "127.0.0.1:9400", &["127.0.0.1:1", "127.0.0.1:9400"]);
-        let transport = Arc::new(NexarTransport::new(2, "127.0.0.1:0".parse().unwrap()).unwrap());
+        let transport = Arc::new(
+            NexarTransport::new(
+                2,
+                "127.0.0.1:0".parse().unwrap(),
+                TransportCredentials::Insecure,
+            )
+            .unwrap(),
+        );
         // This test is bounded by MAX_PROBE_ATTEMPTS * PROBE_INTERVAL
         // ~= 5 s. Wrap in a timeout so a regression hangs instead of
         // stalling the whole test suite.

@@ -88,6 +88,7 @@ impl TestClusterNode {
         let transport = Arc::new(nodedb_cluster::NexarTransport::new(
             node_id,
             "127.0.0.1:0".parse()?,
+            nodedb_cluster::TransportCredentials::Insecure,
         )?);
         let listen_addr = transport.local_addr();
 
@@ -105,6 +106,8 @@ impl TestClusterNode {
             num_groups: 2,
             replication_factor: 3,
             force_bootstrap: false,
+            tls: None,
+            insecure_transport: true,
         };
 
         // Open WAL + dispatcher + event bus.

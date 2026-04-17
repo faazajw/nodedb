@@ -452,7 +452,14 @@ mod tests {
 
     /// Helper: create a transport on an ephemeral port.
     fn make_transport(node_id: u64) -> Arc<NexarTransport> {
-        Arc::new(NexarTransport::new(node_id, "127.0.0.1:0".parse().unwrap()).unwrap())
+        Arc::new(
+            NexarTransport::new(
+                node_id,
+                "127.0.0.1:0".parse().unwrap(),
+                crate::transport::credentials::TransportCredentials::Insecure,
+            )
+            .unwrap(),
+        )
     }
 
     #[tokio::test]

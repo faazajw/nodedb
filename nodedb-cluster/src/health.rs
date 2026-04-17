@@ -463,7 +463,14 @@ mod tests {
             ));
         }
 
-        let transport = Arc::new(NexarTransport::new(1, "127.0.0.1:0".parse().unwrap()).unwrap());
+        let transport = Arc::new(
+            NexarTransport::new(
+                1,
+                "127.0.0.1:0".parse().unwrap(),
+                crate::transport::credentials::TransportCredentials::Insecure,
+            )
+            .unwrap(),
+        );
         let dir = tempfile::tempdir().unwrap();
         let catalog = Arc::new(ClusterCatalog::open(&dir.path().join("cluster.redb")).unwrap());
 
@@ -504,7 +511,14 @@ mod tests {
             ));
         }
 
-        let transport = Arc::new(NexarTransport::new(1, "127.0.0.1:0".parse().unwrap()).unwrap());
+        let transport = Arc::new(
+            NexarTransport::new(
+                1,
+                "127.0.0.1:0".parse().unwrap(),
+                crate::transport::credentials::TransportCredentials::Insecure,
+            )
+            .unwrap(),
+        );
         let dir = tempfile::tempdir().unwrap();
         let catalog = Arc::new(ClusterCatalog::open(&dir.path().join("cluster.redb")).unwrap());
 

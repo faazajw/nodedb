@@ -122,7 +122,13 @@ mod tests {
         let _ = bootstrap(&config, &catalog).unwrap();
 
         // Create transport for restart.
-        let transport = NexarTransport::new(1, "127.0.0.1:0".parse().unwrap()).unwrap();
+        use crate::transport::credentials::TransportCredentials;
+        let transport = NexarTransport::new(
+            1,
+            "127.0.0.1:0".parse().unwrap(),
+            TransportCredentials::Insecure,
+        )
+        .unwrap();
 
         // Restart — should load from catalog.
         let state = restart(&config, &catalog, &transport).unwrap();

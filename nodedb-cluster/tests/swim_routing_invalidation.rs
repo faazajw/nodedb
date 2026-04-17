@@ -44,18 +44,20 @@ fn resolver_static() -> NodeIdResolver {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn swim_dead_leader_clears_routing_hint() {
     // --- Build three real UDP transports on ephemeral ports. ---
+    // Shared cluster MAC key — in production delivered via L.4 join RPC.
+    let cluster_key = || nodedb_cluster::MacKey::from_bytes([0xA5u8; 32]);
     let t_a = Arc::new(
-        UdpTransport::bind("127.0.0.1:0".parse().unwrap())
+        UdpTransport::bind("127.0.0.1:0".parse().unwrap(), cluster_key())
             .await
             .unwrap(),
     );
     let t_b = Arc::new(
-        UdpTransport::bind("127.0.0.1:0".parse().unwrap())
+        UdpTransport::bind("127.0.0.1:0".parse().unwrap(), cluster_key())
             .await
             .unwrap(),
     );
     let t_c = Arc::new(
-        UdpTransport::bind("127.0.0.1:0".parse().unwrap())
+        UdpTransport::bind("127.0.0.1:0".parse().unwrap(), cluster_key())
             .await
             .unwrap(),
     );

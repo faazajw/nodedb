@@ -432,8 +432,23 @@ mod tests {
     #[tokio::test]
     async fn full_bootstrap_join_flow() {
         // Node 1 bootstraps, Node 2 joins via QUIC.
-        let t1 = Arc::new(NexarTransport::new(1, "127.0.0.1:0".parse().unwrap()).unwrap());
-        let t2 = Arc::new(NexarTransport::new(2, "127.0.0.1:0".parse().unwrap()).unwrap());
+        use crate::transport::credentials::TransportCredentials;
+        let t1 = Arc::new(
+            NexarTransport::new(
+                1,
+                "127.0.0.1:0".parse().unwrap(),
+                TransportCredentials::Insecure,
+            )
+            .unwrap(),
+        );
+        let t2 = Arc::new(
+            NexarTransport::new(
+                2,
+                "127.0.0.1:0".parse().unwrap(),
+                TransportCredentials::Insecure,
+            )
+            .unwrap(),
+        );
 
         let (_dir1, catalog1) = temp_catalog();
         let (_dir2, catalog2) = temp_catalog();

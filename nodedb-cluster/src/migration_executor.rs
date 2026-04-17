@@ -535,7 +535,14 @@ mod tests {
         let multi_raft = Arc::new(Mutex::new(mr));
         let routing = Arc::new(RwLock::new(rt));
         let topology = Arc::new(RwLock::new(ClusterTopology::new()));
-        let transport = Arc::new(NexarTransport::new(1, "127.0.0.1:0".parse().unwrap()).unwrap());
+        let transport = Arc::new(
+            NexarTransport::new(
+                1,
+                "127.0.0.1:0".parse().unwrap(),
+                crate::transport::credentials::TransportCredentials::Insecure,
+            )
+            .unwrap(),
+        );
 
         let executor = MigrationExecutor::new(multi_raft.clone(), routing, topology, transport);
 
