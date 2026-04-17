@@ -355,3 +355,259 @@ async fn after_sync_trigger_insert_persists_side_effect() {
     assert!(rows[0].contains("\"id\":\"as1_log\""), "got: {:?}", rows);
     assert!(rows[0].contains("\"src_id\":\"as1\""), "got: {:?}", rows);
 }
+
+/// A trigger body containing `PUBLISH TO <topic> ...` must parse and compile.
+/// `PUBLISH TO` is a first-class statement at the SQL top-level and is the
+/// documented mechanism for reactive pipelines (CDC → topic). It must be
+/// usable inside trigger bodies, not only as a standalone statement.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn publish_to_inside_trigger_body_parses() {
+    let server = TestServer::start().await;
+
+    server
+        .exec("CREATE TOPIC profile_events WITH (RETENTION = '1 hour')")
+        .await
+        .unwrap();
+    server.exec("CREATE COLLECTION memories").await.unwrap();
+
+    server
+        .exec(
+            "CREATE TRIGGER memory_publish AFTER INSERT ON memories FOR EACH ROW \
+             BEGIN \
+                 PUBLISH TO profile_events NEW.user_id; \
+             END",
+        )
+        .await
+        .expect("CREATE TRIGGER with PUBLISH TO body should succeed");
+
+    server.exec("DROP TRIGGER memory_publish").await.unwrap();
+}
+
+/// A string-literal `PUBLISH TO` form (no NEW.* substitution) inside a trigger
+/// body must also parse. Guards the parser specifically, independent of
+/// expression substitution.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn publish_to_literal_inside_trigger_body_parses() {
+    let server = TestServer::start().await;
+
+    server
+        .exec("CREATE TOPIC audit_events WITH (RETENTION = '1 hour')")
+        .await
+        .unwrap();
+    server.exec("CREATE COLLECTION audited").await.unwrap();
+
+    server
+        .exec(
+            "CREATE TRIGGER audit_pub AFTER INSERT ON audited FOR EACH ROW \
+             BEGIN \
+                 PUBLISH TO audit_events 'row inserted'; \
+             END",
+        )
+        .await
+        .expect("CREATE TRIGGER with literal PUBLISH TO body should succeed");
+
+    server.exec("DROP TRIGGER audit_pub").await.unwrap();
+}
+
+/// End-to-end: an AFTER INSERT trigger that PUBLISHes must deliver the message
+/// to the topic so a consumer group can read it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn publish_to_inside_trigger_body_delivers_message() {
+    let server = TestServer::start().await;
+
+    server
+        .exec("CREATE TOPIC order_events WITH (RETENTION = '1 hour')")
+        .await
+        .unwrap();
+    server
+        .exec("CREATE CONSUMER GROUP processors ON order_events")
+        .await
+        .unwrap();
+    server.exec("CREATE COLLECTION orders").await.unwrap();
+
+    server
+        .exec(
+            "CREATE TRIGGER orders_publish AFTER INSERT ON orders FOR EACH ROW \
+             BEGIN \
+                 PUBLISH TO order_events 'order inserted'; \
+             END",
+        )
+        .await
+        .expect("trigger with PUBLISH TO body should be created");
+
+    server
+        .exec("INSERT INTO orders (id) VALUES ('o1')")
+        .await
+        .unwrap();
+
+    // Give the event plane a moment to dispatch the AFTER trigger.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let rows = server
+        .query_text("SELECT * FROM TOPIC order_events CONSUMER GROUP processors LIMIT 10")
+        .await
+        .expect("SELECT FROM TOPIC should succeed");
+
+    assert!(
+        !rows.is_empty(),
+        "expected at least one published message, got: {:?}",
+        rows
+    );
+}
+
+/// A PUBLISH TO payload containing an SQL-escaped quote (`''` → `'`) must be
+/// delivered to the topic with the quote unescaped, not as the literal two-char
+/// sequence. Guards against naive outer-quote stripping.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn publish_to_payload_unescapes_doubled_quotes() {
+    let server = TestServer::start().await;
+
+    server
+        .exec("CREATE TOPIC quote_events WITH (RETENTION = '1 hour')")
+        .await
+        .unwrap();
+    server
+        .exec("CREATE CONSUMER GROUP qg ON quote_events")
+        .await
+        .unwrap();
+    server.exec("CREATE COLLECTION quotes").await.unwrap();
+
+    server
+        .exec(
+            "CREATE TRIGGER quotes_pub AFTER INSERT ON quotes FOR EACH ROW \
+             BEGIN \
+                 PUBLISH TO quote_events 'it''s fine'; \
+             END",
+        )
+        .await
+        .unwrap();
+
+    server
+        .exec("INSERT INTO quotes (id) VALUES ('q1')")
+        .await
+        .unwrap();
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let combined = topic_rows_joined(
+        &server,
+        "SELECT * FROM TOPIC quote_events CONSUMER GROUP qg LIMIT 10",
+    )
+    .await;
+    assert!(
+        combined.contains("it's fine"),
+        "payload should be unescaped to `it's fine`, got: {combined:?}"
+    );
+    assert!(
+        !combined.contains("it''s fine"),
+        "payload must not retain SQL-escaped form `it''s fine`, got: {combined:?}"
+    );
+}
+
+async fn topic_rows_joined(server: &TestServer, sql: &str) -> String {
+    let msgs = server.client.simple_query(sql).await.unwrap();
+    let mut out = String::new();
+    for msg in msgs {
+        if let tokio_postgres::SimpleQueryMessage::Row(row) = msg {
+            for i in 0..row.len() {
+                if let Some(v) = row.get(i) {
+                    out.push_str(v);
+                    out.push('\t');
+                }
+            }
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// An empty quoted payload (`''`) must deliver an empty string — not be
+/// rejected, not be treated as a bare payload.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn publish_to_empty_quoted_payload_delivers() {
+    let server = TestServer::start().await;
+
+    server
+        .exec("CREATE TOPIC empty_events WITH (RETENTION = '1 hour')")
+        .await
+        .unwrap();
+    server
+        .exec("CREATE CONSUMER GROUP eg ON empty_events")
+        .await
+        .unwrap();
+    server.exec("CREATE COLLECTION empties").await.unwrap();
+
+    server
+        .exec(
+            "CREATE TRIGGER empties_pub AFTER INSERT ON empties FOR EACH ROW \
+             BEGIN \
+                 PUBLISH TO empty_events ''; \
+             END",
+        )
+        .await
+        .unwrap();
+
+    server
+        .exec("INSERT INTO empties (id) VALUES ('e1')")
+        .await
+        .unwrap();
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let rows = server
+        .query_text("SELECT * FROM TOPIC empty_events CONSUMER GROUP eg LIMIT 10")
+        .await
+        .unwrap();
+
+    assert!(
+        !rows.is_empty(),
+        "empty-payload publish should still deliver a message row, got: {rows:?}"
+    );
+}
+
+/// A PUBLISH TO with NEW.* substitution must produce a quoted literal that
+/// survives payload parsing. This is the documented trigger pattern.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn publish_to_new_field_substitution_delivers_value() {
+    let server = TestServer::start().await;
+
+    server
+        .exec("CREATE TOPIC user_events WITH (RETENTION = '1 hour')")
+        .await
+        .unwrap();
+    server
+        .exec("CREATE CONSUMER GROUP ug ON user_events")
+        .await
+        .unwrap();
+    server
+        .exec("CREATE COLLECTION memories TYPE DOCUMENT STRICT (id TEXT PRIMARY KEY, user_id TEXT)")
+        .await
+        .unwrap();
+
+    server
+        .exec(
+            "CREATE TRIGGER memories_pub AFTER INSERT ON memories FOR EACH ROW \
+             BEGIN \
+                 PUBLISH TO user_events NEW.user_id; \
+             END",
+        )
+        .await
+        .unwrap();
+
+    server
+        .exec("INSERT INTO memories (id, user_id) VALUES ('m1', 'alice')")
+        .await
+        .unwrap();
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let combined = topic_rows_joined(
+        &server,
+        "SELECT * FROM TOPIC user_events CONSUMER GROUP ug LIMIT 10",
+    )
+    .await;
+    assert!(
+        combined.contains("alice"),
+        "expected substituted value `alice` in published payload, got: {combined:?}"
+    );
+}

@@ -58,7 +58,7 @@ async fn reject_dml_in_function_body() {
         .expect_error(
             "CREATE FUNCTION bad_func(x INT) RETURNS INT AS \
              BEGIN INSERT INTO t (id) VALUES (x); RETURN x; END",
-            "DML",
+            "side-effecting",
         )
         .await;
 }

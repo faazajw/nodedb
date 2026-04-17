@@ -225,7 +225,7 @@ fn procedure_body_with_commit_parses() {
     )
     .unwrap();
     assert_eq!(block.statements.len(), 3);
-    assert!(matches!(&block.statements[0], Statement::Dml { .. }));
+    assert!(matches!(&block.statements[0], Statement::Sql { .. }));
     assert!(matches!(&block.statements[1], Statement::Commit));
-    assert!(matches!(&block.statements[2], Statement::Dml { .. }));
+    assert!(matches!(&block.statements[2], Statement::Sql { .. }));
 }
