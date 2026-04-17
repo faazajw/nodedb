@@ -276,7 +276,7 @@ fn collect_dml_targets(
 
     for stmt in stmts {
         match stmt {
-            Statement::Dml { sql } => {
+            Statement::Sql { sql } => {
                 if let Some(name) = extract_dml_target_collection(sql) {
                     collections.insert(name);
                 }

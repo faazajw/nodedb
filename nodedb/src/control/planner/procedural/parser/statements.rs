@@ -29,7 +29,7 @@ pub(super) fn parse_statement(
             Ok(Statement::Continue)
         }
         Some(Token::Raise) => parse_raise(tokens, pos),
-        Some(Token::Insert | Token::Update | Token::Delete) => parse_dml(tokens, pos),
+        Some(Token::Insert | Token::Update | Token::Delete) => parse_sql(tokens, pos),
         Some(Token::Commit) => {
             *pos += 1;
             skip_if(tokens, pos, &Token::Semicolon);
@@ -43,11 +43,10 @@ pub(super) fn parse_statement(
             if is_assignment_ahead(tokens, *pos) {
                 parse_assign(tokens, pos)
             } else {
-                Err(ProceduralError::parse(format!(
-                    "unexpected token at position {}: {:?}",
-                    *pos,
-                    tokens.get(*pos)
-                )))
+                // Fall through to raw SQL collection: handles NodeDB SQL extensions
+                // such as `PUBLISH TO <topic> <payload>` and any other statement
+                // beginning with an identifier that is not an assignment.
+                parse_sql(tokens, pos)
             }
         }
         other => Err(ProceduralError::parse(format!(
@@ -246,11 +245,14 @@ fn parse_raise(tokens: &[Token], pos: &mut usize) -> Result<Statement, Procedura
     Ok(Statement::Raise { level, message })
 }
 
-/// Capture DML statement as raw SQL.
-fn parse_dml(tokens: &[Token], pos: &mut usize) -> Result<Statement, ProceduralError> {
+/// Capture a raw SQL statement until the next semicolon.
+///
+/// Used for DML (INSERT/UPDATE/DELETE) as well as NodeDB SQL extensions
+/// (PUBLISH TO, etc.) that start with an identifier token.
+fn parse_sql(tokens: &[Token], pos: &mut usize) -> Result<Statement, ProceduralError> {
     let sql = collect_raw_sql_until(tokens, pos, &[Token::Semicolon]);
     skip_if(tokens, pos, &Token::Semicolon);
-    Ok(Statement::Dml { sql })
+    Ok(Statement::Sql { sql })
 }
 
 /// ROLLBACK [TO [SAVEPOINT] <name>]

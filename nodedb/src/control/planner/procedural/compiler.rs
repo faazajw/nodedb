@@ -137,8 +137,8 @@ fn compile_statements(
             }
             // Raise NOTICE/WARNING — informational, skip (no expression effect).
             Statement::Raise { .. } => {}
-            // DML/transaction control — should be caught by validator before we get here.
-            Statement::Dml { .. }
+            // Side-effecting SQL / transaction control — should be caught by validator.
+            Statement::Sql { .. }
             | Statement::Commit
             | Statement::Rollback
             | Statement::Savepoint { .. }

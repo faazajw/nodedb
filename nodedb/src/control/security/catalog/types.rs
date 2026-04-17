@@ -210,16 +210,12 @@ impl CheckpointRecord {
     Copy,
     PartialEq,
     Eq,
+    Default,
 )]
 pub enum IndexBuildState {
     Building,
+    #[default]
     Ready,
-}
-
-impl Default for IndexBuildState {
-    fn default() -> Self {
-        Self::Ready
-    }
 }
 
 /// A secondary index declared on a document collection.

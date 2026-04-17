@@ -27,6 +27,7 @@ pub mod security;
 pub mod sequence;
 pub mod server;
 pub mod shutdown;
+pub mod sql_dispatch;
 pub mod startup;
 pub mod state;
 pub mod trace_context;

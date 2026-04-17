@@ -150,9 +150,9 @@ mod tests {
     }
 
     #[test]
-    fn parse_dml_detected() {
+    fn parse_sql_detected() {
         let block = parse_block("BEGIN INSERT INTO users VALUES (1); END").unwrap();
-        assert!(matches!(&block.statements[0], Statement::Dml { .. }));
+        assert!(matches!(&block.statements[0], Statement::Sql { .. }));
     }
 
     #[test]
@@ -195,7 +195,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_multiple_trigger_dml_statements() {
+    fn parse_multiple_trigger_sql_statements() {
         let block = parse_block(
             "BEGIN \
              INSERT INTO after_log (id, src_id, action) VALUES (NEW.id || '_log', NEW.id, 'inserted'); \
@@ -204,7 +204,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(block.statements.len(), 2);
-        assert!(matches!(&block.statements[0], Statement::Dml { .. }));
-        assert!(matches!(&block.statements[1], Statement::Dml { .. }));
+        assert!(matches!(&block.statements[0], Statement::Sql { .. }));
+        assert!(matches!(&block.statements[1], Statement::Sql { .. }));
     }
 }

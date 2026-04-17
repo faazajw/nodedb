@@ -25,12 +25,40 @@ pub fn validate_function_block(block: &ProceduralBlock) -> Result<(), Procedural
     Ok(())
 }
 
+/// Returns true if the SQL string begins with a side-effecting keyword that is
+/// not permitted inside a function body.
+fn is_side_effect_sql(sql: &str) -> bool {
+    let upper = sql.trim().to_uppercase();
+    let first_word = upper.split_ascii_whitespace().next().unwrap_or("");
+    matches!(
+        first_word,
+        "INSERT"
+            | "UPDATE"
+            | "DELETE"
+            | "PUBLISH"
+            | "CREATE"
+            | "DROP"
+            | "ALTER"
+            | "TRUNCATE"
+            | "GRANT"
+            | "REVOKE"
+            | "COMMIT"
+            | "ROLLBACK"
+            | "SAVEPOINT"
+            | "RELEASE"
+            | "COPY"
+    )
+}
+
 fn validate_statement(stmt: &Statement, loop_depth: usize) -> Result<(), ProceduralError> {
     match stmt {
-        Statement::Dml { sql } => Err(ProceduralError::validate(format!(
-            "DML is not allowed in function bodies: '{sql}'. \
+        Statement::Sql { sql } if is_side_effect_sql(sql) => {
+            Err(ProceduralError::validate(format!(
+                "side-effecting SQL is not allowed in function bodies: '{sql}'. \
                  Use CREATE PROCEDURE for side-effecting logic"
-        ))),
+            )))
+        }
+        Statement::Sql { .. } => Ok(()), // SELECT and other read-only SQL is allowed.
         Statement::Commit => Err(ProceduralError::validate(
             "COMMIT is not allowed in function bodies. \
                  Use CREATE PROCEDURE for transaction control",
@@ -154,7 +182,7 @@ mod tests {
 
     #[test]
     fn reject_dml() {
-        let block = make_block(vec![Statement::Dml {
+        let block = make_block(vec![Statement::Sql {
             sql: "INSERT INTO users VALUES (1)".into(),
         }]);
         assert!(validate_function_block(&block).is_err());
@@ -219,7 +247,7 @@ mod tests {
     fn reject_dml_nested_in_if() {
         let block = make_block(vec![Statement::If {
             condition: SqlExpr::new("true"),
-            then_block: vec![Statement::Dml {
+            then_block: vec![Statement::Sql {
                 sql: "DELETE FROM t".into(),
             }],
             elsif_branches: vec![],

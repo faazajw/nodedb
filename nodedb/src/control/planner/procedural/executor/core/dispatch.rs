@@ -39,11 +39,27 @@ impl<'a> StatementExecutor<'a> {
         Ok(())
     }
 
-    // ── DML dispatch ────────────────────────────────────────────────────
+    // ── SQL dispatch ────────────────────────────────────────────────────
 
-    pub(super) async fn execute_dml(&self, sql: &str, bindings: &RowBindings) -> crate::Result<()> {
+    pub(super) async fn execute_sql(&self, sql: &str, bindings: &RowBindings) -> crate::Result<()> {
         let bound_sql = fold_literal_string_concat(&bindings.substitute(sql));
 
+        // First, attempt unified dispatch for NodeDB SQL extensions (PUBLISH TO,
+        // topic/consumer-group DDL, etc.). If the SQL is not an extension,
+        // `dispatch_sql` returns None and we fall through to plan_sql with
+        // transaction-buffer semantics preserved exactly as before.
+        if let Some(result) = crate::control::sql_dispatch::dispatch_sql(
+            self.state,
+            &self.identity_for_dispatch(),
+            &bound_sql,
+        )
+        .await
+        {
+            result?;
+            return Ok(());
+        }
+
+        // Not a NodeDB extension: route through plan_sql with transaction buffering.
         let ctx = crate::control::planner::context::QueryContext::for_state(self.state);
         let tasks = ctx.plan_sql(&bound_sql, self.tenant_id).await?;
 
@@ -74,6 +90,11 @@ impl<'a> StatementExecutor<'a> {
         }
 
         Ok(())
+    }
+
+    /// Return the procedural session's identity for use when dispatching SQL extensions.
+    fn identity_for_dispatch(&self) -> crate::control::security::identity::AuthenticatedIdentity {
+        self.identity.clone()
     }
 
     // ── Transaction control ─────────────────────────────────────────────

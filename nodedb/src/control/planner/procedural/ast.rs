@@ -91,9 +91,11 @@ pub enum Statement {
     /// `RAISE EXCEPTION 'message';` — abort with error.
     Raise { level: RaiseLevel, message: SqlExpr },
 
-    /// Raw DML statement (INSERT/UPDATE/DELETE). Rejected in function bodies
-    /// at parse time. Used by triggers and procedures.
-    Dml { sql: String },
+    /// Raw SQL statement dispatched through the unified SQL dispatcher at execution
+    /// time. Handles INSERT/UPDATE/DELETE as well as NodeDB SQL extensions such as
+    /// `PUBLISH TO`. Rejected in function bodies based on the leading keyword.
+    /// Used by triggers and procedures.
+    Sql { sql: String },
 
     /// `COMMIT;` — commit current transaction.
     Commit,

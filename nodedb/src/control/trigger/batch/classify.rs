@@ -61,7 +61,7 @@ fn collect_dml_info(
 ) {
     for stmt in stmts {
         match stmt {
-            Statement::Dml { sql } => {
+            Statement::Sql { sql } => {
                 if let Some(target) = extract_dml_target(sql) {
                     if in_conditional && !targets.is_empty() && !targets.contains(&target) {
                         *has_conditional_dml = true;

@@ -123,7 +123,7 @@ fn parse_dml_in_procedural_body() {
     assert!(result.is_err(), "should reject DML: {:?}", result);
     let err_msg = format!("{}", result.unwrap_err());
     assert!(
-        err_msg.contains("DML"),
-        "error should mention DML, got: {err_msg}"
+        err_msg.contains("side-effecting"),
+        "error should reject side-effecting SQL, got: {err_msg}"
     );
 }

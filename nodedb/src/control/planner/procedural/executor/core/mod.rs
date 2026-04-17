@@ -172,8 +172,8 @@ impl<'a> StatementExecutor<'a> {
             budget.check()?;
 
             match stmt {
-                Statement::Dml { sql } => {
-                    self.execute_dml(sql, bindings).await?;
+                Statement::Sql { sql } => {
+                    self.execute_sql(sql, bindings).await?;
                     Ok(Flow::Continue)
                 }
                 Statement::If {
