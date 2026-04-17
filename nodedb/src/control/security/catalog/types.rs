@@ -193,6 +193,73 @@ impl CheckpointRecord {
 
 // ── Collection metadata ───────────────────────────────────────────────
 
+/// Build state of a secondary index.
+///
+/// A freshly created index is `Building` until the applier-driven backfill
+/// reports every vShard caught-up; a second `PutCollection` then flips it
+/// to `Ready`. The planner only rewrites queries to `IndexLookup` for
+/// indexes in the `Ready` state — `Building` indexes are invisible to reads
+/// but receive dual-writes on new inserts so they converge.
+#[derive(
+    serde::Serialize,
+    serde::Deserialize,
+    zerompk::ToMessagePack,
+    zerompk::FromMessagePack,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+)]
+pub enum IndexBuildState {
+    Building,
+    Ready,
+}
+
+impl Default for IndexBuildState {
+    fn default() -> Self {
+        Self::Ready
+    }
+}
+
+/// A secondary index declared on a document collection.
+///
+/// Stored inline on [`StoredCollection::indexes`]. CREATE/DROP INDEX DDL
+/// mutates the vector and issues a `PutCollection`, so replication, restart
+/// recovery, descriptor-lease invalidation, and DROP cascade all ride the
+/// existing collection-commit pipeline.
+#[derive(
+    serde::Serialize,
+    serde::Deserialize,
+    zerompk::ToMessagePack,
+    zerompk::FromMessagePack,
+    Debug,
+    Clone,
+)]
+pub struct StoredIndex {
+    /// Index identifier, unique per tenant.
+    pub name: String,
+    /// Field path being indexed. Schemaless paths start with `$.`, strict
+    /// column indexes are plain column names — the DDL layer normalizes.
+    pub field: String,
+    /// UNIQUE enforced at write-path pre-commit.
+    #[serde(default)]
+    pub unique: bool,
+    /// COLLATE NOCASE / COLLATE CI — values normalized to lowercase before
+    /// index put and lookup.
+    #[serde(default)]
+    pub case_insensitive: bool,
+    /// Partial index predicate (raw SQL text, parsed at write-time).
+    #[serde(default)]
+    pub predicate: Option<String>,
+    /// Build state — see [`IndexBuildState`].
+    #[serde(default)]
+    pub state: IndexBuildState,
+    /// Owner — inherited from the owning collection at create time.
+    #[serde(default)]
+    pub owner: String,
+}
+
 /// Serializable collection metadata for redb storage.
 #[derive(
     serde::Serialize,
@@ -276,6 +343,13 @@ pub struct StoredCollection {
     /// Permission tree definition (JSON-serialized).
     #[serde(default)]
     pub permission_tree_def: Option<String>,
+    /// Secondary indexes declared on this collection.
+    ///
+    /// Mutated by CREATE/DROP INDEX DDL; the existing `PutCollection`
+    /// commit pipeline handles replication + fan-out + descriptor-lease
+    /// invalidation.
+    #[serde(default)]
+    pub indexes: Vec<StoredIndex>,
 }
 
 impl StoredCollection {
@@ -317,6 +391,7 @@ impl StoredCollection {
             materialized_sums: Vec::new(),
             lvc_enabled: false,
             permission_tree_def: None,
+            indexes: Vec::new(),
         }
     }
 

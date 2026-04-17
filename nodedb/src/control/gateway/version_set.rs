@@ -145,7 +145,9 @@ pub fn touched_collections(plan: &PhysicalPlan) -> Vec<String> {
                 | RangeScan { collection, .. }
                 | Register { collection, .. }
                 | IndexLookup { collection, .. }
+                | IndexedFetch { collection, .. }
                 | DropIndex { collection, .. }
+                | BackfillIndex { collection, .. }
                 | Truncate { collection, .. }
                 | EstimateCount { collection, .. }
                 | Upsert { collection, .. }

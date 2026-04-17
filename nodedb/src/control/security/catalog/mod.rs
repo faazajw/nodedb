@@ -51,4 +51,6 @@ pub use scopes::{StoredScope, StoredScopeGrant};
 pub use sequence_types::{SequenceState, StoredSequence};
 pub use system_catalog::SystemCatalog;
 pub use trigger_types::StoredTrigger;
-pub use types::{StoredCollection, StoredMaterializedView, catalog_err, owner_key};
+pub use types::{
+    IndexBuildState, StoredCollection, StoredIndex, StoredMaterializedView, catalog_err, owner_key,
+};

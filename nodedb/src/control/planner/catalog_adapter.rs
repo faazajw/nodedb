@@ -224,6 +224,24 @@ impl SqlCatalog for OriginCatalog {
 
         let (engine, columns, primary_key) = convert_collection_type(&stored);
         let auto_tier = self.has_auto_tier(name);
+        let indexes = stored
+            .indexes
+            .iter()
+            .map(|i| nodedb_sql::types::IndexSpec {
+                name: i.name.clone(),
+                field: i.field.clone(),
+                unique: i.unique,
+                case_insensitive: i.case_insensitive,
+                state: match i.state {
+                    crate::control::security::catalog::IndexBuildState::Building => {
+                        nodedb_sql::types::IndexState::Building
+                    }
+                    crate::control::security::catalog::IndexBuildState::Ready => {
+                        nodedb_sql::types::IndexState::Ready
+                    }
+                },
+            })
+            .collect();
 
         Ok(Some(CollectionInfo {
             name: stored.name,
@@ -231,6 +249,7 @@ impl SqlCatalog for OriginCatalog {
             columns,
             primary_key,
             has_auto_tier: auto_tier,
+            indexes,
         }))
     }
 }

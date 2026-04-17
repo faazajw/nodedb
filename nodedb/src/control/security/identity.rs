@@ -163,6 +163,7 @@ pub fn required_permission(plan: &crate::bridge::envelope::PhysicalPlan) -> Perm
             | DocumentOp::RangeScan { .. }
             | DocumentOp::Scan { .. }
             | DocumentOp::IndexLookup { .. }
+            | DocumentOp::IndexedFetch { .. }
             | DocumentOp::EstimateCount { .. },
         ) => Permission::Read,
 
@@ -265,9 +266,11 @@ pub fn required_permission(plan: &crate::bridge::envelope::PhysicalPlan) -> Perm
         PhysicalPlan::Meta(MetaOp::TransactionBatch { .. }) => Permission::Write,
 
         // DDL / schema changes.
-        PhysicalPlan::Document(DocumentOp::Register { .. } | DocumentOp::DropIndex { .. }) => {
-            Permission::Alter
-        }
+        PhysicalPlan::Document(
+            DocumentOp::Register { .. }
+            | DocumentOp::DropIndex { .. }
+            | DocumentOp::BackfillIndex { .. },
+        ) => Permission::Alter,
 
         PhysicalPlan::Crdt(CrdtOp::SetPolicy { .. } | CrdtOp::CompactAtVersion { .. }) => {
             Permission::Alter
