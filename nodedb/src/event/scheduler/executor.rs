@@ -12,7 +12,7 @@
 //! (commit_index > last_applied), the scheduler skips firing to prevent
 //! stale execution during a network partition.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -30,6 +30,41 @@ use super::dispatcher::{DispatchOutcome, JobDispatcher, JobDispatcherConfig};
 use super::history::JobHistoryStore;
 use super::registry::ScheduleRegistry;
 use super::types::{JobRun, ScheduleDef, ScheduleScope};
+
+/// Compute the set of cron-matching minute numbers that still need to
+/// fire for one schedule given its last-fired minute and the current
+/// observation.
+///
+/// The caller is the per-second tick loop. The loop cannot assume its
+/// observed `now_secs` lands on a minute boundary — Tokio scheduling
+/// latency, GC pauses, and leader handoffs can all push the observation
+/// a second or more past `xx:00`. Gating on `now_secs % 60 == 0` drops
+/// the entire minute on any such jitter; in the worst case a daily
+/// schedule misses its single matching minute and doesn't fire for 24
+/// hours.
+///
+/// Contract:
+/// - `last_fired_minute = None` (never fired, or loop restart): consider
+///   only the current minute. This bounds catch-up — a freshly started
+///   node does not replay ticks from epoch.
+/// - `last_fired_minute = Some(L)`: return every minute in
+///   `(L ..= now_secs / 60]` that the cron expression matches.
+/// - Within-minute re-observations (e.g. second 61 when minute 1 has
+///   already fired) return empty.
+pub fn pending_minute_ticks(
+    last_fired_minute: Option<u64>,
+    now_secs: u64,
+    cron: &CronExpr,
+) -> Vec<u64> {
+    let now_min = now_secs / 60;
+    let start = match last_fired_minute {
+        Some(last) => last.saturating_add(1),
+        None => now_min,
+    };
+    (start..=now_min)
+        .filter(|m| cron.matches_epoch(m.saturating_mul(60)))
+        .collect()
+}
 
 /// Spawn the scheduler loop as a background Tokio task.
 pub fn spawn_scheduler(
@@ -68,6 +103,13 @@ async fn scheduler_loop(
         max_result_bytes: u64::MAX,
     }));
     let job_timeout_secs = sched_tuning.job_timeout_secs;
+
+    // Per-schedule last-fired minute. Tracked in memory only: on loop
+    // restart every schedule's last_fired is None, and
+    // `pending_minute_ticks` returns at most the current minute. That
+    // bounded catch-up is what prevents a cold start from replaying
+    // ticks from epoch.
+    let mut last_fired_minute: HashMap<(u32, String), u64> = HashMap::new();
 
     loop {
         tokio::select! {
@@ -111,15 +153,27 @@ async fn scheduler_loop(
                 }
             };
 
-            // Check if this second matches the cron expression.
-            // We check at second-level granularity but cron is minute-level,
-            // so only fire at second 0 of each minute to prevent duplicate fires.
-            if !now_secs.is_multiple_of(60) {
+            // Per-schedule minute tracking: fire every matching minute
+            // between the last-fired and the current observation. This
+            // tolerates tick jitter past a minute boundary; the old code
+            // gated on `now_secs % 60 == 0` and silently dropped any
+            // minute whose tick landed at second != 0.
+            let sched_key = (sched.tenant_id, sched.name.clone());
+            let last = last_fired_minute.get(&sched_key).copied();
+            let pending = pending_minute_ticks(last, now_secs, &cron);
+            if pending.is_empty() {
+                // Still advance the marker on first observation so that
+                // a schedule whose cron never matches the current minute
+                // doesn't fall into unbounded catch-up on the next tick.
+                if last.is_none() {
+                    last_fired_minute.insert(sched_key.clone(), now_secs / 60);
+                }
                 continue;
             }
-
-            if !cron.matches_epoch(now_secs) {
-                continue;
+            // Record the highest minute we're about to fire so subsequent
+            // ticks within the same minute don't refire it.
+            if let Some(&max_min) = pending.iter().max() {
+                last_fired_minute.insert(sched_key.clone(), max_min);
             }
 
             // Leader-aware: skip if this node is not the right one for this schedule.

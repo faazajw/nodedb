@@ -4,6 +4,7 @@
 //! missed execution policy, overlap enforcement, job history.
 
 use nodedb::event::scheduler::cron::CronExpr;
+use nodedb::event::scheduler::executor::pending_minute_ticks;
 use nodedb::event::scheduler::history::JobHistoryStore;
 use nodedb::event::scheduler::types::{JobRun, MissedPolicy, ScheduleDef, ScheduleScope};
 
@@ -145,6 +146,87 @@ fn job_history_record_and_query() {
     // last_runs returns most recent first.
     assert!(!runs[0].success); // Most recent = the failing run.
     assert!(runs[1].success); // Older = the successful run.
+}
+
+// ── Minute-tick tracking (scheduler loop jitter-safety) ──
+//
+// The scheduler tick loop runs at 1-second cadence. Under Tokio
+// scheduling latency / GC / leader handoff, the observed wall-clock
+// second can jitter past `00` — the loop's current gate
+// (`now_secs % 60 == 0`) then drops the entire minute.
+//
+// These tests pin the correct per-schedule contract: given the last
+// minute already fired and the current observation, compute every
+// matching minute in-between. The helper is mirrored in this test
+// module to reproduce the current broken gate; the fix will move this
+// helper into `executor.rs` as `pending_minute_ticks` and these tests
+// switch to the real one. A one-line swap — no test rewrites.
+
+#[test]
+fn scheduler_fires_minute_even_when_observation_jittered() {
+    // Spec: at now_secs = 61 with last_fired = 0, minute 1 MUST fire.
+    // The old gate dropped it because 61 % 60 != 0.
+    let cron = CronExpr::parse("* * * * *").unwrap();
+    let fired = pending_minute_ticks(Some(0), 61, &cron);
+    assert_eq!(
+        fired,
+        vec![1],
+        "minute 1 dropped on jittered observation at second 61"
+    );
+}
+
+#[test]
+fn scheduler_catches_up_across_skipped_minutes() {
+    // Spec: if the loop stalls and observes seconds 195 after last
+    // firing at minute 0, all matching minutes (1, 2, 3) must catch up.
+    let cron = CronExpr::parse("* * * * *").unwrap();
+    let fired = pending_minute_ticks(Some(0), 195, &cron);
+    assert_eq!(
+        fired,
+        vec![1, 2, 3],
+        "skipped minutes not caught up; got {fired:?}"
+    );
+}
+
+#[test]
+fn scheduler_daily_cron_survives_jitter_on_trigger_minute() {
+    // Spec: `0 3 * * *` (03:00 daily) must fire minute 180 even when
+    // the tick observes 10821 (03:00:21) instead of 10800 (03:00:00).
+    // Daily schedules missed this way don't fire for 24 hours.
+    let cron = CronExpr::parse("0 3 * * *").unwrap();
+    let fired = pending_minute_ticks(Some(179), 10821, &cron);
+    assert_eq!(
+        fired,
+        vec![180],
+        "daily 03:00 schedule silently skipped on jittered tick"
+    );
+}
+
+#[test]
+fn scheduler_catchup_filters_through_cron() {
+    // Spec: when catching up across skipped minutes, each candidate
+    // minute must still be checked against the cron expression.
+    // `*/5` matches minute 5 but not 1-4; catch-up from minute 0 at
+    // second 303 (minute 5) must fire only minute 5.
+    let cron = CronExpr::parse("*/5 * * * *").unwrap();
+    let fired = pending_minute_ticks(Some(0), 5 * 60 + 3, &cron);
+    assert_eq!(
+        fired,
+        vec![5],
+        "catch-up must filter through cron; got {fired:?}"
+    );
+}
+
+#[test]
+fn scheduler_does_not_refire_same_minute() {
+    // Spec: after minute 1 has fired, subsequent within-minute ticks
+    // (seconds 61..120) must not re-fire it.
+    let cron = CronExpr::parse("* * * * *").unwrap();
+    let fired = pending_minute_ticks(Some(1), 80, &cron);
+    assert!(
+        fired.is_empty(),
+        "minute 1 re-fired within its own minute window; got {fired:?}"
+    );
 }
 
 #[test]
