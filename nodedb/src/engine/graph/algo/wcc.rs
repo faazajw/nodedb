@@ -102,9 +102,9 @@ mod tests {
     fn wcc_single_component() {
         // a -> b -> c -> a (cycle — all connected)
         let mut csr = CsrIndex::new();
-        csr.add_edge("a", "L", "b");
-        csr.add_edge("b", "L", "c");
-        csr.add_edge("c", "L", "a");
+        csr.add_edge("a", "L", "b").unwrap();
+        csr.add_edge("b", "L", "c").unwrap();
+        csr.add_edge("c", "L", "a").unwrap();
         csr.compact();
 
         let batch = run(&csr);
@@ -127,8 +127,8 @@ mod tests {
         // Component 1: a -> b
         // Component 2: c -> d
         let mut csr = CsrIndex::new();
-        csr.add_edge("a", "L", "b");
-        csr.add_edge("c", "L", "d");
+        csr.add_edge("a", "L", "b").unwrap();
+        csr.add_edge("c", "L", "d").unwrap();
         csr.compact();
 
         let batch = run(&csr);
@@ -155,7 +155,7 @@ mod tests {
     fn wcc_directed_edges_treated_as_undirected() {
         // a -> b (only outbound). WCC should still put them in same component.
         let mut csr = CsrIndex::new();
-        csr.add_edge("a", "L", "b");
+        csr.add_edge("a", "L", "b").unwrap();
         csr.compact();
 
         let batch = run(&csr);
@@ -177,7 +177,7 @@ mod tests {
     #[test]
     fn wcc_isolated_nodes() {
         let mut csr = CsrIndex::new();
-        csr.add_edge("a", "L", "b");
+        csr.add_edge("a", "L", "b").unwrap();
         csr.add_node("isolated");
         csr.compact();
 
@@ -211,10 +211,10 @@ mod tests {
     fn wcc_chain_graph() {
         // a -> b -> c -> d -> e (single chain = single component)
         let mut csr = CsrIndex::new();
-        csr.add_edge("a", "L", "b");
-        csr.add_edge("b", "L", "c");
-        csr.add_edge("c", "L", "d");
-        csr.add_edge("d", "L", "e");
+        csr.add_edge("a", "L", "b").unwrap();
+        csr.add_edge("b", "L", "c").unwrap();
+        csr.add_edge("c", "L", "d").unwrap();
+        csr.add_edge("d", "L", "e").unwrap();
         csr.compact();
 
         let batch = run(&csr);

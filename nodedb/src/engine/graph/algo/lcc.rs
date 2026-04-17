@@ -190,12 +190,12 @@ mod tests {
     fn lcc_triangle() {
         // Fully connected triangle: each node has LCC = 1.0.
         let mut csr = CsrIndex::new();
-        csr.add_edge("a", "L", "b");
-        csr.add_edge("b", "L", "c");
-        csr.add_edge("c", "L", "a");
-        csr.add_edge("b", "L", "a");
-        csr.add_edge("c", "L", "b");
-        csr.add_edge("a", "L", "c");
+        csr.add_edge("a", "L", "b").unwrap();
+        csr.add_edge("b", "L", "c").unwrap();
+        csr.add_edge("c", "L", "a").unwrap();
+        csr.add_edge("b", "L", "a").unwrap();
+        csr.add_edge("c", "L", "b").unwrap();
+        csr.add_edge("a", "L", "c").unwrap();
         csr.compact();
 
         let batch = run(&csr, DEFAULT_HIGH_DEGREE_THRESHOLD, DEFAULT_SAMPLE_PAIRS);
@@ -219,9 +219,9 @@ mod tests {
         // a has LCC = 0.0 (3 neighbors, 0 edges between them → 0/3).
         // b, c, d have LCC = 0.0 (degree 1 < 2).
         let mut csr = CsrIndex::new();
-        csr.add_edge("a", "L", "b");
-        csr.add_edge("a", "L", "c");
-        csr.add_edge("a", "L", "d");
+        csr.add_edge("a", "L", "b").unwrap();
+        csr.add_edge("a", "L", "c").unwrap();
+        csr.add_edge("a", "L", "d").unwrap();
         csr.compact();
 
         let batch = run(&csr, DEFAULT_HIGH_DEGREE_THRESHOLD, DEFAULT_SAMPLE_PAIRS);
@@ -241,8 +241,8 @@ mod tests {
     fn lcc_path() {
         // Path: a -> b -> c. Only b has 2 neighbors. No edge a-c → LCC(b) = 0.
         let mut csr = CsrIndex::new();
-        csr.add_edge("a", "L", "b");
-        csr.add_edge("b", "L", "c");
+        csr.add_edge("a", "L", "b").unwrap();
+        csr.add_edge("b", "L", "c").unwrap();
         csr.compact();
 
         let batch = run(&csr, DEFAULT_HIGH_DEGREE_THRESHOLD, DEFAULT_SAMPLE_PAIRS);
@@ -288,11 +288,11 @@ mod tests {
         // Diamond: a-b, a-c, b-d, c-d, b-c.
         // Node a: neighbors {b, c}. Edge b-c exists → 1 triangle / 1 pair = 1.0.
         let mut csr = CsrIndex::new();
-        csr.add_edge("a", "L", "b");
-        csr.add_edge("a", "L", "c");
-        csr.add_edge("b", "L", "c");
-        csr.add_edge("b", "L", "d");
-        csr.add_edge("c", "L", "d");
+        csr.add_edge("a", "L", "b").unwrap();
+        csr.add_edge("a", "L", "c").unwrap();
+        csr.add_edge("b", "L", "c").unwrap();
+        csr.add_edge("b", "L", "d").unwrap();
+        csr.add_edge("c", "L", "d").unwrap();
         csr.compact();
 
         let batch = run(&csr, DEFAULT_HIGH_DEGREE_THRESHOLD, DEFAULT_SAMPLE_PAIRS);

@@ -155,9 +155,9 @@ mod tests {
     fn diameter_path() {
         // a - b - c - d (path of length 3).
         let mut csr = CsrIndex::new();
-        csr.add_edge("a", "L", "b");
-        csr.add_edge("b", "L", "c");
-        csr.add_edge("c", "L", "d");
+        csr.add_edge("a", "L", "b").unwrap();
+        csr.add_edge("b", "L", "c").unwrap();
+        csr.add_edge("c", "L", "d").unwrap();
         csr.compact();
 
         let batch = run(
@@ -178,7 +178,7 @@ mod tests {
     fn diameter_triangle() {
         let mut csr = CsrIndex::new();
         for (s, d) in &[("a", "b"), ("b", "c"), ("c", "a")] {
-            csr.add_edge(s, "L", d);
+            csr.add_edge(s, "L", d).unwrap();
         }
         csr.compact();
 
@@ -201,10 +201,10 @@ mod tests {
     #[test]
     fn diameter_approximate() {
         let mut csr = CsrIndex::new();
-        csr.add_edge("a", "L", "b");
-        csr.add_edge("b", "L", "c");
-        csr.add_edge("c", "L", "d");
-        csr.add_edge("d", "L", "e");
+        csr.add_edge("a", "L", "b").unwrap();
+        csr.add_edge("b", "L", "c").unwrap();
+        csr.add_edge("c", "L", "d").unwrap();
+        csr.add_edge("d", "L", "e").unwrap();
         csr.compact();
 
         // Approximate should give a reasonable result.

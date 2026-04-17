@@ -14,7 +14,7 @@ use zerompk::{FromMessagePack, ToMessagePack};
 use super::index::CsrIndex;
 
 /// Magic header for rkyv-serialized CSR snapshots (6 bytes).
-const RKYV_MAGIC: &[u8; 6] = b"RKCSR\0";
+const RKYV_MAGIC: &[u8; 6] = b"RKCS2\0";
 
 #[derive(ToMessagePack, FromMessagePack)]
 struct CsrSnapshotMsgpack {
@@ -22,13 +22,13 @@ struct CsrSnapshotMsgpack {
     labels: Vec<String>,
     out_offsets: Vec<u32>,
     out_targets: Vec<u32>,
-    out_labels: Vec<u16>,
+    out_labels: Vec<u32>,
     in_offsets: Vec<u32>,
     in_targets: Vec<u32>,
-    in_labels: Vec<u16>,
-    buffer_out: Vec<Vec<(u16, u32)>>,
-    buffer_in: Vec<Vec<(u16, u32)>>,
-    deleted: Vec<(u32, u16, u32)>,
+    in_labels: Vec<u32>,
+    buffer_out: Vec<Vec<(u32, u32)>>,
+    buffer_in: Vec<Vec<(u32, u32)>>,
+    deleted: Vec<(u32, u32, u32)>,
     has_weights: bool,
     out_weights: Option<Vec<f64>>,
     in_weights: Option<Vec<f64>>,
@@ -43,13 +43,13 @@ struct CsrSnapshotRkyv {
     labels: Vec<String>,
     out_offsets: Vec<u32>,
     out_targets: Vec<u32>,
-    out_labels: Vec<u16>,
+    out_labels: Vec<u32>,
     in_offsets: Vec<u32>,
     in_targets: Vec<u32>,
-    in_labels: Vec<u16>,
-    buffer_out: Vec<Vec<(u16, u32)>>,
-    buffer_in: Vec<Vec<(u16, u32)>>,
-    deleted: Vec<(u32, u16, u32)>,
+    in_labels: Vec<u32>,
+    buffer_out: Vec<Vec<(u32, u32)>>,
+    buffer_in: Vec<Vec<(u32, u32)>>,
+    deleted: Vec<(u32, u32, u32)>,
     has_weights: bool,
     out_weights: Option<Vec<f64>>,
     in_weights: Option<Vec<f64>>,
@@ -146,7 +146,7 @@ impl CsrIndex {
         };
         let out_labels = unsafe {
             let s = archived.out_labels.as_slice();
-            DenseArray::zero_copy(backing.clone(), s.as_ptr().cast::<u16>(), s.len())
+            DenseArray::zero_copy(backing.clone(), s.as_ptr().cast::<u32>(), s.len())
         };
         let in_targets = unsafe {
             let s = archived.in_targets.as_slice();
@@ -154,7 +154,7 @@ impl CsrIndex {
         };
         let in_labels = unsafe {
             let s = archived.in_labels.as_slice();
-            DenseArray::zero_copy(backing.clone(), s.as_ptr().cast::<u16>(), s.len())
+            DenseArray::zero_copy(backing.clone(), s.as_ptr().cast::<u32>(), s.len())
         };
         let out_weights = archived.out_weights.as_ref().map(|w| unsafe {
             let s = w.as_slice();
@@ -175,11 +175,11 @@ impl CsrIndex {
             .enumerate()
             .map(|(i, n)| (n.clone(), i as u32))
             .collect();
-        let label_to_id: HashMap<String, u16> = snap
+        let label_to_id: HashMap<String, u32> = snap
             .labels
             .iter()
             .enumerate()
-            .map(|(i, l)| (l.clone(), i as u16))
+            .map(|(i, l)| (l.clone(), i as u32))
             .collect();
         let node_count = snap.nodes.len();
         let access_counts = (0..node_count).map(|_| std::cell::Cell::new(0)).collect();
@@ -252,11 +252,11 @@ impl CsrIndex {
             .enumerate()
             .map(|(i, n)| (n.clone(), i as u32))
             .collect();
-        let label_to_id: HashMap<String, u16> = snap
+        let label_to_id: HashMap<String, u32> = snap
             .labels
             .iter()
             .enumerate()
-            .map(|(i, l)| (l.clone(), i as u16))
+            .map(|(i, l)| (l.clone(), i as u32))
             .collect();
 
         let node_count = snap.nodes.len();
@@ -309,8 +309,8 @@ mod tests {
     #[test]
     fn checkpoint_roundtrip_unweighted() {
         let mut csr = CsrIndex::new();
-        csr.add_edge("a", "KNOWS", "b");
-        csr.add_edge("b", "KNOWS", "c");
+        csr.add_edge("a", "KNOWS", "b").unwrap();
+        csr.add_edge("b", "KNOWS", "c").unwrap();
         csr.compact();
 
         let bytes = csr.checkpoint_to_bytes();
@@ -327,9 +327,9 @@ mod tests {
     #[test]
     fn checkpoint_roundtrip_weighted() {
         let mut csr = CsrIndex::new();
-        csr.add_edge_weighted("a", "R", "b", 2.5);
-        csr.add_edge_weighted("b", "R", "c", 7.0);
-        csr.add_edge("c", "R", "d");
+        csr.add_edge_weighted("a", "R", "b", 2.5).unwrap();
+        csr.add_edge_weighted("b", "R", "c", 7.0).unwrap();
+        csr.add_edge("c", "R", "d").unwrap();
         csr.compact();
 
         let bytes = csr.checkpoint_to_bytes();
@@ -343,7 +343,7 @@ mod tests {
     #[test]
     fn checkpoint_roundtrip_with_buffer() {
         let mut csr = CsrIndex::new();
-        csr.add_edge("a", "L", "b");
+        csr.add_edge("a", "L", "b").unwrap();
         // Don't compact — edges in buffer.
         let bytes = csr.checkpoint_to_bytes();
         let restored = CsrIndex::from_checkpoint(&bytes).expect("roundtrip");

@@ -116,7 +116,7 @@ mod tests {
             ("a", "c"),
             ("c", "a"),
         ] {
-            csr.add_edge(s, "L", d);
+            csr.add_edge(s, "L", d).unwrap();
         }
         csr.compact();
 
@@ -134,9 +134,9 @@ mod tests {
         // Hub a connects to b, c, d. a has degree 3, leaves have degree 1.
         // 1-core includes all. 2-core: none (removing leaves drops a to 0).
         let mut csr = CsrIndex::new();
-        csr.add_edge("a", "L", "b");
-        csr.add_edge("a", "L", "c");
-        csr.add_edge("a", "L", "d");
+        csr.add_edge("a", "L", "b").unwrap();
+        csr.add_edge("a", "L", "c").unwrap();
+        csr.add_edge("a", "L", "d").unwrap();
         csr.compact();
 
         let batch = run(&csr);
@@ -166,12 +166,12 @@ mod tests {
         for i in 0..4 {
             for j in 0..4 {
                 if i != j {
-                    csr.add_edge(k4[i], "L", k4[j]);
+                    csr.add_edge(k4[i], "L", k4[j]).unwrap();
                 }
             }
         }
-        csr.add_edge("a", "L", "e");
-        csr.add_edge("e", "L", "a");
+        csr.add_edge("a", "L", "e").unwrap();
+        csr.add_edge("e", "L", "a").unwrap();
         csr.compact();
 
         let batch = run(&csr);
@@ -197,7 +197,7 @@ mod tests {
     #[test]
     fn kcore_isolated_node() {
         let mut csr = CsrIndex::new();
-        csr.add_edge("a", "L", "b");
+        csr.add_edge("a", "L", "b").unwrap();
         csr.add_node("isolated");
         csr.compact();
 

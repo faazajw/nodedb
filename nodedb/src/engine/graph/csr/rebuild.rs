@@ -22,11 +22,17 @@ pub fn rebuild_from_store(store: &EdgeStore) -> crate::Result<CsrIndex> {
     }
     for edge in &all_edges {
         let weight = extract_weight_from_properties(&edge.properties);
-        if weight != 1.0 {
-            csr.add_edge_weighted(&edge.src_id, &edge.label, &edge.dst_id, weight);
+        let res = if weight != 1.0 {
+            csr.add_edge_weighted(&edge.src_id, &edge.label, &edge.dst_id, weight)
         } else {
-            csr.add_edge(&edge.src_id, &edge.label, &edge.dst_id);
-        }
+            csr.add_edge(&edge.src_id, &edge.label, &edge.dst_id)
+        };
+        // A LabelOverflow here means the edge_store has more distinct
+        // labels than the CSR can hold — surface it rather than silently
+        // drop edges from the rebuilt index.
+        res.map_err(|e| crate::Error::Internal {
+            detail: format!("CSR rebuild: {e}"),
+        })?;
     }
     csr.compact();
     Ok(csr)

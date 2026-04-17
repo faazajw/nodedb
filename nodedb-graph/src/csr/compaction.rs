@@ -10,8 +10,8 @@ impl CsrIndex {
     /// The old arrays are dropped, freeing memory. O(E) where E = total edges.
     pub fn compact(&mut self) {
         let n = self.id_to_node.len();
-        let mut new_out_edges: Vec<Vec<(u16, u32)>> = vec![Vec::new(); n];
-        let mut new_in_edges: Vec<Vec<(u16, u32)>> = vec![Vec::new(); n];
+        let mut new_out_edges: Vec<Vec<(u32, u32)>> = vec![Vec::new(); n];
+        let mut new_in_edges: Vec<Vec<(u32, u32)>> = vec![Vec::new(); n];
         let mut new_out_weights: Vec<Vec<f64>> = if self.has_weights {
             vec![Vec::new(); n]
         } else {

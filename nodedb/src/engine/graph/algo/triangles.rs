@@ -132,7 +132,7 @@ mod tests {
             ("a", "c"),
             ("c", "a"),
         ] {
-            csr.add_edge(s, "L", d);
+            csr.add_edge(s, "L", d).unwrap();
         }
         csr.compact();
         csr
@@ -170,8 +170,8 @@ mod tests {
     #[test]
     fn triangle_no_triangles() {
         let mut csr = CsrIndex::new();
-        csr.add_edge("a", "L", "b");
-        csr.add_edge("b", "L", "c");
+        csr.add_edge("a", "L", "b").unwrap();
+        csr.add_edge("b", "L", "c").unwrap();
         csr.compact();
 
         let batch = run(
@@ -201,7 +201,7 @@ mod tests {
             ("c", "d"),
             ("d", "c"),
         ] {
-            csr.add_edge(s, "L", d);
+            csr.add_edge(s, "L", d).unwrap();
         }
         csr.compact();
 

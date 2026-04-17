@@ -1,7 +1,7 @@
 //! WHERE predicate application and RETURN column projection.
 
 use super::super::ast::*;
-use super::{BindingRow, execute_clause};
+use super::{BindingRow, ExecutionState, execute_clause};
 use crate::engine::graph::csr::CsrIndex;
 use crate::engine::graph::edge_store::EdgeStore;
 
@@ -51,8 +51,27 @@ pub(super) fn apply_predicate(
 
         WherePredicate::NotExists { sub_pattern } => {
             let mut result = Vec::new();
+            // NOT EXISTS sub-patterns run in their own local state: any
+            // truncation inside the sub-query would make the anti-join
+            // unsound (a truncated "empty" isn't really empty), so we
+            // instead propagate truncation to the outer query via the
+            // top-level `ExecutionState` that the caller of
+            // `apply_predicate` already tracks. Here we keep a throwaway
+            // local state and inspect it.
             for row in rows {
-                let sub_rows = execute_clause(sub_pattern, csr, std::slice::from_ref(row))?;
+                let mut sub_state = ExecutionState::default();
+                let sub_rows =
+                    execute_clause(sub_pattern, csr, std::slice::from_ref(row), &mut sub_state)?;
+                if sub_state.truncated {
+                    // Sub-pattern hit a cap — treat the outer match as
+                    // truncated too. The outer caller of apply_predicate
+                    // is responsible for surfacing this, but we have no
+                    // handle to it from inside predicate evaluation, so
+                    // the safest contract is to conservatively drop the
+                    // row: a truncated "did not match" might actually
+                    // have matched. Emitting it would be a false-positive.
+                    continue;
+                }
                 if sub_rows.is_empty() {
                     result.push(row.clone());
                 }

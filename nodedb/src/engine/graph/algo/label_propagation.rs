@@ -125,12 +125,12 @@ mod tests {
     fn label_prop_triangle() {
         // Fully connected triangle — all should be same community.
         let mut csr = CsrIndex::new();
-        csr.add_edge("a", "L", "b");
-        csr.add_edge("b", "L", "c");
-        csr.add_edge("c", "L", "a");
-        csr.add_edge("b", "L", "a");
-        csr.add_edge("c", "L", "b");
-        csr.add_edge("a", "L", "c");
+        csr.add_edge("a", "L", "b").unwrap();
+        csr.add_edge("b", "L", "c").unwrap();
+        csr.add_edge("c", "L", "a").unwrap();
+        csr.add_edge("b", "L", "a").unwrap();
+        csr.add_edge("c", "L", "b").unwrap();
+        csr.add_edge("a", "L", "c").unwrap();
         csr.compact();
 
         let batch = run(&csr, &AlgoParams::default());
@@ -170,7 +170,7 @@ mod tests {
             ("c", "d"),
             ("d", "c"),
         ] {
-            csr.add_edge(s, "L", d);
+            csr.add_edge(s, "L", d).unwrap();
         }
         csr.compact();
 
@@ -203,7 +203,7 @@ mod tests {
     #[test]
     fn label_prop_isolated_node() {
         let mut csr = CsrIndex::new();
-        csr.add_edge("a", "L", "b");
+        csr.add_edge("a", "L", "b").unwrap();
         csr.add_node("isolated");
         csr.compact();
 
@@ -222,9 +222,9 @@ mod tests {
     fn label_prop_deterministic() {
         // Same graph, same params → same result.
         let mut csr = CsrIndex::new();
-        csr.add_edge("a", "L", "b");
-        csr.add_edge("b", "L", "c");
-        csr.add_edge("c", "L", "a");
+        csr.add_edge("a", "L", "b").unwrap();
+        csr.add_edge("b", "L", "c").unwrap();
+        csr.add_edge("c", "L", "a").unwrap();
         csr.compact();
 
         let params = AlgoParams::default();

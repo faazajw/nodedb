@@ -15,6 +15,24 @@ use crate::engine::graph::edge_store::EdgeStore;
 /// A single result row: variable bindings.
 pub type BindingRow = HashMap<String, String>;
 
+/// Result of running a MATCH query.
+///
+/// `truncated` is `true` iff a hard cap inside variable-length expansion
+/// fired — the binding rows are incomplete. Data Plane handlers MUST set
+/// the `partial` flag on the response envelope when this is set so
+/// clients can observe the incomplete result.
+pub struct MatchOutcome {
+    pub rows: Vec<BindingRow>,
+    pub truncated: bool,
+}
+
+/// Shared mutable state collected during triple execution: the list of
+/// binding rows being built + the across-query truncation flag.
+#[derive(Default)]
+pub(super) struct ExecutionState {
+    pub truncated: bool,
+}
+
 /// Execute a MATCH query on a CSR index and edge store.
 ///
 /// Applies join order optimization before execution: triples within each
@@ -24,7 +42,7 @@ pub fn execute(
     query: &MatchQuery,
     csr: &CsrIndex,
     edge_store: &EdgeStore,
-) -> Result<Vec<BindingRow>, crate::Error> {
+) -> Result<MatchOutcome, crate::Error> {
     // Optimize query before execution (reorder triples by selectivity).
     let mut optimized = query.clone();
     super::optimizer::optimize(&mut optimized, csr);
@@ -36,11 +54,12 @@ fn execute_query(
     query: &MatchQuery,
     csr: &CsrIndex,
     edge_store: &EdgeStore,
-) -> Result<Vec<BindingRow>, crate::Error> {
+) -> Result<MatchOutcome, crate::Error> {
     let mut rows: Vec<BindingRow> = vec![HashMap::new()];
+    let mut state = ExecutionState::default();
 
     for clause in &query.clauses {
-        let clause_rows = execute_clause(clause, csr, &rows)?;
+        let clause_rows = execute_clause(clause, csr, &rows, &mut state)?;
         if clause.optional {
             rows = left_join_rows(&rows, &clause_rows, clause);
         } else {
@@ -68,7 +87,10 @@ fn execute_query(
         });
     }
 
-    Ok(rows)
+    Ok(MatchOutcome {
+        rows,
+        truncated: state.truncated,
+    })
 }
 
 /// Serialize binding rows to MessagePack for SPSC transport.
@@ -105,13 +127,14 @@ pub(super) fn execute_clause(
     clause: &MatchClause,
     csr: &CsrIndex,
     input_rows: &[BindingRow],
+    state: &mut ExecutionState,
 ) -> Result<Vec<BindingRow>, crate::Error> {
     let mut result_rows = input_rows.to_vec();
 
     for chain in &clause.patterns {
         let mut next_rows = Vec::new();
         for row in &result_rows {
-            next_rows.extend(execute_chain(chain, csr, row)?);
+            next_rows.extend(execute_chain(chain, csr, row, state)?);
         }
         result_rows = next_rows;
     }
@@ -124,13 +147,14 @@ fn execute_chain(
     chain: &PatternChain,
     csr: &CsrIndex,
     input_row: &BindingRow,
+    state: &mut ExecutionState,
 ) -> Result<Vec<BindingRow>, crate::Error> {
     let mut rows = vec![input_row.clone()];
 
     for triple in &chain.triples {
         let mut next_rows = Vec::new();
         for row in &rows {
-            next_rows.extend(execute_triple(triple, csr, row)?);
+            next_rows.extend(execute_triple(triple, csr, row, state)?);
         }
         rows = next_rows;
         if rows.is_empty() {
@@ -146,6 +170,7 @@ fn execute_triple(
     triple: &PatternTriple,
     csr: &CsrIndex,
     input_row: &BindingRow,
+    state: &mut ExecutionState,
 ) -> Result<Vec<BindingRow>, crate::Error> {
     let direction = triple.edge.direction.to_csr_direction();
     let label_filter = triple.edge.edge_type.as_deref();
@@ -158,16 +183,24 @@ fn execute_triple(
     let mut results = Vec::new();
 
     if triple.edge.is_variable_length() {
+        // Path strings are only needed when the edge variable is bound
+        // (e.g. `(a)-[e*1..3]->(b) RETURN e`). For anonymous variable
+        // expansions skip all `format!`/`String` work in the hot loop.
+        let want_path = triple.edge.name.is_some();
         for &src_id in &src_nodes {
-            let paths = expansion::expand_variable_length(
+            let expansion = expansion::expand_variable_length(
                 csr,
                 src_id,
                 label_filter,
                 direction,
                 triple.edge.min_hops,
                 triple.edge.max_hops,
+                want_path,
             );
-            for (dst_id, path) in paths {
+            if expansion.truncated {
+                state.truncated = true;
+            }
+            for (dst_id, path) in expansion.results {
                 if !binding_compatible(&triple.dst, csr, input_row, dst_id) {
                     continue;
                 }
@@ -334,7 +367,7 @@ mod tests {
         let query =
             super::super::compiler::parse("MATCH (a)-[:KNOWS]->(b) WHERE a = 'alice' RETURN a, b")
                 .unwrap();
-        let rows = execute(&query, &csr, &store).unwrap();
+        let rows = execute(&query, &csr, &store).unwrap().rows;
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["a"], "alice");
         assert_eq!(rows[0]["b"], "bob");
@@ -347,7 +380,7 @@ mod tests {
             "MATCH (a)-[:KNOWS]->(b)-[:KNOWS]->(c) WHERE a = 'alice' RETURN a, b, c",
         )
         .unwrap();
-        let rows = execute(&query, &csr, &store).unwrap();
+        let rows = execute(&query, &csr, &store).unwrap().rows;
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["c"], "carol");
     }
@@ -358,7 +391,7 @@ mod tests {
         let query = super::super::compiler::parse(
             "MATCH (a)-[:KNOWS]->(b) OPTIONAL MATCH (b)-[:LIKES]->(c) WHERE a = 'alice' RETURN a, b, c",
         ).unwrap();
-        let rows = execute(&query, &csr, &store).unwrap();
+        let rows = execute(&query, &csr, &store).unwrap().rows;
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["c"], "NULL");
     }
@@ -370,7 +403,7 @@ mod tests {
             "MATCH (a)-[:KNOWS]->(b) WHERE NOT EXISTS { MATCH (a)-[:BLOCKED]->(b) } RETURN a, b",
         )
         .unwrap();
-        let rows = execute(&query, &csr, &store).unwrap();
+        let rows = execute(&query, &csr, &store).unwrap().rows;
         assert_eq!(rows.len(), 3);
     }
 
@@ -379,7 +412,7 @@ mod tests {
         let (csr, store, _dir) = make_social_graph();
         let query =
             super::super::compiler::parse("MATCH (a)-[:KNOWS]->(b) RETURN a, b LIMIT 2").unwrap();
-        let rows = execute(&query, &csr, &store).unwrap();
+        let rows = execute(&query, &csr, &store).unwrap().rows;
         assert_eq!(rows.len(), 2);
     }
 
@@ -388,7 +421,7 @@ mod tests {
         let (csr, store, _dir) = make_social_graph();
         let query =
             super::super::compiler::parse("MATCH (a)-[:NONEXISTENT]->(b) RETURN a, b").unwrap();
-        let rows = execute(&query, &csr, &store).unwrap();
+        let rows = execute(&query, &csr, &store).unwrap().rows;
         assert!(rows.is_empty());
     }
 
@@ -404,20 +437,20 @@ mod tests {
 
         // Without label filter — all KNOWS edges.
         let query = super::super::compiler::parse("MATCH (a)-[:KNOWS]->(b) RETURN a, b").unwrap();
-        let rows = execute(&query, &csr, &store).unwrap();
+        let rows = execute(&query, &csr, &store).unwrap().rows;
         assert_eq!(rows.len(), 3);
 
         // With label filter — only Person src.
         let query =
             super::super::compiler::parse("MATCH (a:Person)-[:KNOWS]->(b) RETURN a, b").unwrap();
-        let rows = execute(&query, &csr, &store).unwrap();
+        let rows = execute(&query, &csr, &store).unwrap().rows;
         // alice->bob, bob->carol, carol->dave — all 3 srcs are Person.
         assert_eq!(rows.len(), 3);
 
         // With label filter — only Bot dst.
         let query =
             super::super::compiler::parse("MATCH (a)-[:KNOWS]->(b:Bot) RETURN a, b").unwrap();
-        let rows = execute(&query, &csr, &store).unwrap();
+        let rows = execute(&query, &csr, &store).unwrap().rows;
         // Only carol->dave where dave is Bot.
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["a"], "carol");
@@ -426,14 +459,14 @@ mod tests {
         // Both labels — Person->Bot.
         let query = super::super::compiler::parse("MATCH (a:Person)-[:KNOWS]->(b:Bot) RETURN a, b")
             .unwrap();
-        let rows = execute(&query, &csr, &store).unwrap();
+        let rows = execute(&query, &csr, &store).unwrap().rows;
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["a"], "carol");
 
         // Non-matching labels — should return 0.
         let query = super::super::compiler::parse("MATCH (a:Bot)-[:KNOWS]->(b:Person) RETURN a, b")
             .unwrap();
-        let rows = execute(&query, &csr, &store).unwrap();
+        let rows = execute(&query, &csr, &store).unwrap().rows;
         assert!(rows.is_empty());
     }
 

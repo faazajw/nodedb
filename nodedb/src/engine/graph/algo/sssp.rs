@@ -120,9 +120,9 @@ mod tests {
         // a --(2.0)--> b --(3.0)--> c
         // a --(10.0)-> c  (direct but longer)
         let mut csr = CsrIndex::new();
-        csr.add_edge_weighted("a", "R", "b", 2.0);
-        csr.add_edge_weighted("b", "R", "c", 3.0);
-        csr.add_edge_weighted("a", "R", "c", 10.0);
+        csr.add_edge_weighted("a", "R", "b", 2.0).unwrap();
+        csr.add_edge_weighted("b", "R", "c", 3.0).unwrap();
+        csr.add_edge_weighted("a", "R", "c", 10.0).unwrap();
         csr.compact();
         csr
     }
@@ -159,7 +159,7 @@ mod tests {
     #[test]
     fn sssp_unreachable_node() {
         let mut csr = CsrIndex::new();
-        csr.add_edge_weighted("a", "R", "b", 1.0);
+        csr.add_edge_weighted("a", "R", "b", 1.0).unwrap();
         csr.add_node("island");
         csr.compact();
 
@@ -179,9 +179,9 @@ mod tests {
     fn sssp_unweighted_defaults_to_one() {
         // Unweighted edges default to 1.0.
         let mut csr = CsrIndex::new();
-        csr.add_edge("a", "L", "b");
-        csr.add_edge("b", "L", "c");
-        csr.add_edge("c", "L", "d");
+        csr.add_edge("a", "L", "b").unwrap();
+        csr.add_edge("b", "L", "c").unwrap();
+        csr.add_edge("c", "L", "d").unwrap();
         csr.compact();
 
         let params = AlgoParams {
@@ -212,7 +212,7 @@ mod tests {
     #[test]
     fn sssp_missing_source_in_nonempty_graph() {
         let mut csr = CsrIndex::new();
-        csr.add_edge("a", "L", "b");
+        csr.add_edge("a", "L", "b").unwrap();
         csr.compact();
 
         let params = AlgoParams {
@@ -226,7 +226,7 @@ mod tests {
     #[test]
     fn sssp_no_source_param() {
         let mut csr = CsrIndex::new();
-        csr.add_edge("a", "L", "b");
+        csr.add_edge("a", "L", "b").unwrap();
         csr.compact();
 
         let params = AlgoParams::default();
@@ -268,10 +268,10 @@ mod tests {
         // Diamond: a -> b (1), a -> c (4), b -> d (2), c -> d (1)
         // Shortest a->d: a->b->d = 3 (not a->c->d = 5)
         let mut csr = CsrIndex::new();
-        csr.add_edge_weighted("a", "R", "b", 1.0);
-        csr.add_edge_weighted("a", "R", "c", 4.0);
-        csr.add_edge_weighted("b", "R", "d", 2.0);
-        csr.add_edge_weighted("c", "R", "d", 1.0);
+        csr.add_edge_weighted("a", "R", "b", 1.0).unwrap();
+        csr.add_edge_weighted("a", "R", "c", 4.0).unwrap();
+        csr.add_edge_weighted("b", "R", "d", 2.0).unwrap();
+        csr.add_edge_weighted("c", "R", "d", 1.0).unwrap();
         csr.compact();
 
         let params = AlgoParams {
@@ -290,7 +290,7 @@ mod tests {
     #[test]
     fn sssp_rejects_negative_weights() {
         let mut csr = CsrIndex::new();
-        csr.add_edge_weighted("a", "R", "b", -1.0);
+        csr.add_edge_weighted("a", "R", "b", -1.0).unwrap();
         csr.compact();
 
         let params = AlgoParams {

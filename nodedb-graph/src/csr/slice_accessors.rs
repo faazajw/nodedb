@@ -19,7 +19,7 @@ impl CsrIndex {
     }
 
     /// Label-to-ID mapping (for snapshot cloning).
-    pub fn label_to_id_map(&self) -> &HashMap<String, u16> {
+    pub fn label_to_id_map(&self) -> &HashMap<String, u32> {
         &self.label_to_id
     }
 
@@ -39,7 +39,7 @@ impl CsrIndex {
     }
 
     /// Outbound label array slice.
-    pub fn out_labels_slice(&self) -> &[u16] {
+    pub fn out_labels_slice(&self) -> &[u32] {
         &self.out_labels
     }
 
@@ -59,7 +59,7 @@ impl CsrIndex {
     }
 
     /// Inbound label array slice.
-    pub fn in_labels_slice(&self) -> &[u16] {
+    pub fn in_labels_slice(&self) -> &[u32] {
         &self.in_labels
     }
 

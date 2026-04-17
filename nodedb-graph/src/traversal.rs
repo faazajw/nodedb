@@ -105,11 +105,11 @@ impl CsrIndex {
         max_depth: usize,
         max_visited: usize,
     ) -> Vec<(String, u8)> {
-        let label_ids: Vec<u16> = label_filters
+        let label_ids: Vec<u32> = label_filters
             .iter()
             .filter_map(|l| self.label_id(l))
             .collect();
-        let match_label = |lid: u16| label_ids.is_empty() || label_ids.contains(&lid);
+        let match_label = |lid: u32| label_ids.is_empty() || label_ids.contains(&lid);
         let mut visited: HashMap<u32, u8> = HashMap::new();
         let mut queue: VecDeque<(u32, u8)> = VecDeque::new();
 
@@ -319,10 +319,10 @@ mod tests {
 
     fn make_csr() -> CsrIndex {
         let mut csr = CsrIndex::new();
-        csr.add_edge("a", "KNOWS", "b");
-        csr.add_edge("b", "KNOWS", "c");
-        csr.add_edge("c", "KNOWS", "d");
-        csr.add_edge("a", "WORKS", "e");
+        csr.add_edge("a", "KNOWS", "b").unwrap();
+        csr.add_edge("b", "KNOWS", "c").unwrap();
+        csr.add_edge("c", "KNOWS", "d").unwrap();
+        csr.add_edge("a", "WORKS", "e").unwrap();
         csr
     }
 
@@ -351,9 +351,9 @@ mod tests {
     #[test]
     fn bfs_cycle() {
         let mut csr = CsrIndex::new();
-        csr.add_edge("a", "L", "b");
-        csr.add_edge("b", "L", "c");
-        csr.add_edge("c", "L", "a");
+        csr.add_edge("a", "L", "b").unwrap();
+        csr.add_edge("b", "L", "c").unwrap();
+        csr.add_edge("c", "L", "a").unwrap();
         let mut result = csr.traverse_bfs(&["a"], None, Direction::Out, 10, DEFAULT_MAX_VISITED);
         result.sort();
         assert_eq!(result, vec!["a", "b", "c"]);
@@ -422,7 +422,7 @@ mod tests {
     fn large_graph_bfs() {
         let mut csr = CsrIndex::new();
         for i in 0..999 {
-            csr.add_edge(&format!("n{i}"), "NEXT", &format!("n{}", i + 1));
+            csr.add_edge(&format!("n{i}"), "NEXT", &format!("n{}", i + 1)).unwrap();
         }
         csr.compact();
 

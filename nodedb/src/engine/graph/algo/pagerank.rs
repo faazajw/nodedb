@@ -103,9 +103,9 @@ mod tests {
     fn triangle_csr() -> CsrIndex {
         // a -> b -> c -> a (cycle)
         let mut csr = CsrIndex::new();
-        csr.add_edge("a", "L", "b");
-        csr.add_edge("b", "L", "c");
-        csr.add_edge("c", "L", "a");
+        csr.add_edge("a", "L", "b").unwrap();
+        csr.add_edge("b", "L", "c").unwrap();
+        csr.add_edge("c", "L", "a").unwrap();
         csr.compact();
         csr
     }
@@ -129,9 +129,9 @@ mod tests {
     #[test]
     fn pagerank_star_topology() {
         let mut csr = CsrIndex::new();
-        csr.add_edge("a", "L", "b");
-        csr.add_edge("a", "L", "c");
-        csr.add_edge("a", "L", "d");
+        csr.add_edge("a", "L", "b").unwrap();
+        csr.add_edge("a", "L", "c").unwrap();
+        csr.add_edge("a", "L", "d").unwrap();
         csr.compact();
 
         let params = AlgoParams {
@@ -175,7 +175,7 @@ mod tests {
     #[test]
     fn pagerank_dangling_nodes() {
         let mut csr = CsrIndex::new();
-        csr.add_edge("a", "L", "b");
+        csr.add_edge("a", "L", "b").unwrap();
         csr.add_node("c"); // dangling
         csr.compact();
 

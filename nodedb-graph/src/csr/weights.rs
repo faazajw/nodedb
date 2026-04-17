@@ -108,7 +108,7 @@ impl CsrIndex {
     ///
     /// Yields from both dense CSR and buffer, excluding deleted edges.
     /// Weights are 1.0 for unweighted graphs.
-    pub fn iter_out_edges_weighted(&self, node: u32) -> impl Iterator<Item = (u16, u32, f64)> + '_ {
+    pub fn iter_out_edges_weighted(&self, node: u32) -> impl Iterator<Item = (u32, u32, f64)> + '_ {
         let idx = node as usize;
 
         // Dense edges with weights.
@@ -195,7 +195,7 @@ mod tests {
     #[test]
     fn unweighted_graph_has_no_weight_arrays() {
         let mut csr = CsrIndex::new();
-        csr.add_edge("a", "L", "b");
+        csr.add_edge("a", "L", "b").unwrap();
         assert!(!csr.has_weights());
         assert!(csr.out_weights.is_none());
         assert!(csr.in_weights.is_none());
@@ -204,9 +204,9 @@ mod tests {
     #[test]
     fn weighted_edge_basic() {
         let mut csr = CsrIndex::new();
-        csr.add_edge_weighted("a", "ROAD", "b", 5.0);
-        csr.add_edge_weighted("b", "ROAD", "c", 3.0);
-        csr.add_edge("c", "ROAD", "d"); // unweighted → 1.0
+        csr.add_edge_weighted("a", "ROAD", "b", 5.0).unwrap();
+        csr.add_edge_weighted("b", "ROAD", "c", 3.0).unwrap();
+        csr.add_edge("c", "ROAD", "d").unwrap(); // unweighted → 1.0
 
         assert!(csr.has_weights());
         assert_eq!(csr.edge_weight("a", "ROAD", "b"), Some(5.0));
@@ -218,9 +218,9 @@ mod tests {
     #[test]
     fn weighted_edges_survive_compaction() {
         let mut csr = CsrIndex::new();
-        csr.add_edge_weighted("a", "R", "b", 2.5);
-        csr.add_edge_weighted("b", "R", "c", 7.0);
-        csr.add_edge("c", "R", "d");
+        csr.add_edge_weighted("a", "R", "b", 2.5).unwrap();
+        csr.add_edge_weighted("b", "R", "c", 7.0).unwrap();
+        csr.add_edge("c", "R", "d").unwrap();
 
         csr.compact();
 
@@ -233,9 +233,9 @@ mod tests {
     #[test]
     fn weighted_edge_remove_keeps_weights_consistent() {
         let mut csr = CsrIndex::new();
-        csr.add_edge_weighted("a", "R", "b", 2.0);
-        csr.add_edge_weighted("a", "R", "c", 3.0);
-        csr.add_edge_weighted("a", "R", "d", 4.0);
+        csr.add_edge_weighted("a", "R", "b", 2.0).unwrap();
+        csr.add_edge_weighted("a", "R", "c", 3.0).unwrap();
+        csr.add_edge_weighted("a", "R", "d", 4.0).unwrap();
 
         csr.remove_edge("a", "R", "c");
 
@@ -247,11 +247,11 @@ mod tests {
     #[test]
     fn iter_out_edges_weighted_returns_weights() {
         let mut csr = CsrIndex::new();
-        csr.add_edge_weighted("a", "R", "b", 2.5);
-        csr.add_edge_weighted("a", "R", "c", 7.0);
+        csr.add_edge_weighted("a", "R", "b", 2.5).unwrap();
+        csr.add_edge_weighted("a", "R", "c", 7.0).unwrap();
         csr.compact();
 
-        let edges: Vec<(u16, u32, f64)> = csr.iter_out_edges_weighted(0).collect();
+        let edges: Vec<(u32, u32, f64)> = csr.iter_out_edges_weighted(0).collect();
         assert_eq!(edges.len(), 2);
 
         let weights: Vec<f64> = edges.iter().map(|e| e.2).collect();
@@ -262,11 +262,11 @@ mod tests {
     #[test]
     fn mixed_weighted_unweighted_backfill() {
         let mut csr = CsrIndex::new();
-        csr.add_edge("a", "L", "b");
-        csr.add_edge("b", "L", "c");
+        csr.add_edge("a", "L", "b").unwrap();
+        csr.add_edge("b", "L", "c").unwrap();
         assert!(!csr.has_weights());
 
-        csr.add_edge_weighted("c", "L", "d", 5.0);
+        csr.add_edge_weighted("c", "L", "d", 5.0).unwrap();
         assert!(csr.has_weights());
         assert_eq!(csr.edge_weight("a", "L", "b"), Some(1.0));
         assert_eq!(csr.edge_weight("c", "L", "d"), Some(5.0));

@@ -83,9 +83,9 @@ impl CsrIndex {
         }
 
         // Per-label counters.
-        let mut label_edge_count: HashMap<u16, usize> = HashMap::new();
-        let mut label_sources: HashMap<u16, std::collections::HashSet<u32>> = HashMap::new();
-        let mut label_targets: HashMap<u16, std::collections::HashSet<u32>> = HashMap::new();
+        let mut label_edge_count: HashMap<u32, usize> = HashMap::new();
+        let mut label_sources: HashMap<u32, std::collections::HashSet<u32>> = HashMap::new();
+        let mut label_targets: HashMap<u32, std::collections::HashSet<u32>> = HashMap::new();
 
         // Degree arrays.
         let mut out_degrees: Vec<usize> = Vec::with_capacity(n);
@@ -220,9 +220,9 @@ mod tests {
     #[test]
     fn statistics_basic() {
         let mut csr = CsrIndex::new();
-        csr.add_edge("a", "KNOWS", "b");
-        csr.add_edge("b", "KNOWS", "c");
-        csr.add_edge("a", "LIKES", "c");
+        csr.add_edge("a", "KNOWS", "b").unwrap();
+        csr.add_edge("b", "KNOWS", "c").unwrap();
+        csr.add_edge("a", "LIKES", "c").unwrap();
         csr.compact();
 
         let stats = csr.compute_statistics();
@@ -242,10 +242,10 @@ mod tests {
     #[test]
     fn degree_histogram_values() {
         let mut csr = CsrIndex::new();
-        csr.add_edge("a", "L", "b");
-        csr.add_edge("a", "L", "c");
-        csr.add_edge("a", "L", "d");
-        csr.add_edge("b", "L", "c");
+        csr.add_edge("a", "L", "b").unwrap();
+        csr.add_edge("a", "L", "c").unwrap();
+        csr.add_edge("a", "L", "d").unwrap();
+        csr.add_edge("b", "L", "c").unwrap();
         csr.compact();
 
         let stats = csr.compute_statistics();
@@ -257,9 +257,9 @@ mod tests {
     #[test]
     fn label_edge_count_direct() {
         let mut csr = CsrIndex::new();
-        csr.add_edge("a", "KNOWS", "b");
-        csr.add_edge("b", "KNOWS", "c");
-        csr.add_edge("a", "LIKES", "c");
+        csr.add_edge("a", "KNOWS", "b").unwrap();
+        csr.add_edge("b", "KNOWS", "c").unwrap();
+        csr.add_edge("a", "LIKES", "c").unwrap();
         csr.compact();
 
         assert_eq!(csr.label_edge_count("KNOWS"), 2);
@@ -270,9 +270,9 @@ mod tests {
     #[test]
     fn label_selectivity_values() {
         let mut csr = CsrIndex::new();
-        csr.add_edge("a", "KNOWS", "b");
-        csr.add_edge("b", "KNOWS", "c");
-        csr.add_edge("a", "LIKES", "c");
+        csr.add_edge("a", "KNOWS", "b").unwrap();
+        csr.add_edge("b", "KNOWS", "c").unwrap();
+        csr.add_edge("a", "LIKES", "c").unwrap();
         csr.compact();
 
         let sel_knows = csr.label_selectivity("KNOWS");
@@ -286,7 +286,7 @@ mod tests {
     #[test]
     fn statistics_serde_roundtrip() {
         let mut csr = CsrIndex::new();
-        csr.add_edge("a", "KNOWS", "b");
+        csr.add_edge("a", "KNOWS", "b").unwrap();
         csr.compact();
 
         let stats = csr.compute_statistics();
@@ -299,7 +299,7 @@ mod tests {
     #[test]
     fn statistics_with_buffer_edges() {
         let mut csr = CsrIndex::new();
-        csr.add_edge("a", "KNOWS", "b");
+        csr.add_edge("a", "KNOWS", "b").unwrap();
         // Don't compact — edges in buffer.
         let stats = csr.compute_statistics();
         assert_eq!(stats.edge_count, 1);

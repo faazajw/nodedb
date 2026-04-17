@@ -135,8 +135,8 @@ mod tests {
     #[test]
     fn access_tracking() {
         let mut csr = CsrIndex::new();
-        csr.add_edge("a", "L", "b");
-        csr.add_edge("b", "L", "c");
+        csr.add_edge("a", "L", "b").unwrap();
+        csr.add_edge("b", "L", "c").unwrap();
 
         let a_id = csr.node_id("a").unwrap();
         assert_eq!(csr.hot_node_count(), 0);
@@ -156,10 +156,10 @@ mod tests {
     #[test]
     fn memory_estimation_includes_weights() {
         let mut unweighted = CsrIndex::new();
-        unweighted.add_edge("a", "L", "b");
+        unweighted.add_edge("a", "L", "b").unwrap();
 
         let mut weighted = CsrIndex::new();
-        weighted.add_edge_weighted("a", "L", "b", 5.0);
+        weighted.add_edge_weighted("a", "L", "b", 5.0).unwrap();
 
         // Weighted graph uses more memory.
         assert!(weighted.estimated_memory_bytes() >= unweighted.estimated_memory_bytes());
@@ -168,7 +168,7 @@ mod tests {
     #[test]
     fn evaluate_memory_pressure_hysteresis() {
         let mut csr = CsrIndex::new();
-        csr.add_edge("a", "L", "b");
+        csr.add_edge("a", "L", "b").unwrap();
 
         // Above spill threshold.
         let (demote, promote) = csr.evaluate_memory_pressure(95, 90, 75);

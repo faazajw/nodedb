@@ -79,8 +79,8 @@ mod tests {
         // HC(b) = (1/1 + 1/1) / 2 = 1.0
         // HC(a) = (1/1 + 1/2) / 2 = 0.75
         let mut csr = CsrIndex::new();
-        csr.add_edge("a", "L", "b");
-        csr.add_edge("b", "L", "c");
+        csr.add_edge("a", "L", "b").unwrap();
+        csr.add_edge("b", "L", "c").unwrap();
         csr.compact();
 
         let batch = run(&csr);
@@ -104,7 +104,7 @@ mod tests {
     fn harmonic_disconnected() {
         // a-b connected, c isolated. c still gets HC=0 naturally.
         let mut csr = CsrIndex::new();
-        csr.add_edge("a", "L", "b");
+        csr.add_edge("a", "L", "b").unwrap();
         csr.add_node("c");
         csr.compact();
 
@@ -137,7 +137,7 @@ mod tests {
             ("a", "c"),
             ("c", "a"),
         ] {
-            csr.add_edge(s, "L", d);
+            csr.add_edge(s, "L", d).unwrap();
         }
         csr.compact();
 

@@ -1,0 +1,125 @@
+//! `CsrIndex` struct definition and constructor.
+//!
+//! Memory layout at scale (1B edges):
+//! - Old: `Vec<Vec<(String, u32)>>` ≈ 60 GB (heap String per edge)
+//! - New: contiguous `Vec<u32>` offsets + targets + `Vec<u32>` labels ≈ 12 GB
+//!
+//! Writes accumulate in a mutable buffer (`buffer_out`/`buffer_in`).
+//! Reads check both the dense CSR arrays and the mutable buffer.
+//! `compact()` merges the buffer into the dense arrays (double-buffered swap).
+//!
+//! ## Edge Weights
+//!
+//! Optional `f64` weight per edge stored in parallel arrays. `None` when the
+//! graph is entirely unweighted (zero memory overhead). Populated from the
+//! `"weight"` edge property at insertion time. Unweighted edges default to 1.0.
+
+use std::collections::{HashMap, HashSet};
+
+use crate::csr::dense_array::DenseArray;
+
+// Re-export shared Direction from nodedb-types.
+pub use nodedb_types::graph::Direction;
+
+/// Dense integer CSR adjacency index with interned node IDs and labels.
+pub struct CsrIndex {
+    // ── Node interning ──
+    pub(crate) node_to_id: HashMap<String, u32>,
+    pub(crate) id_to_node: Vec<String>,
+
+    // ── Label interning ──
+    pub(crate) label_to_id: HashMap<String, u32>,
+    pub(crate) id_to_label: Vec<String>,
+
+    // ── Dense CSR (read-only between compactions) ──
+    //
+    // Offsets are `Vec<u32>` (mutable — extended on node creation).
+    // Targets/labels/weights use `DenseArray<T>` for zero-copy mmap support:
+    // after cold start from rkyv checkpoint, these point directly into the
+    // archived buffer with no deserialization. Compaction replaces them with
+    // owned Vecs.
+    /// `out_offsets[i]..out_offsets[i+1]` = range in `out_targets`/`out_labels`.
+    /// Length: `num_nodes + 1`.
+    pub(crate) out_offsets: Vec<u32>,
+    pub(crate) out_targets: DenseArray<u32>,
+    pub(crate) out_labels: DenseArray<u32>,
+    /// Parallel edge weight array. `None` if graph has no weighted edges.
+    pub(crate) out_weights: Option<DenseArray<f64>>,
+
+    pub(crate) in_offsets: Vec<u32>,
+    pub(crate) in_targets: DenseArray<u32>,
+    pub(crate) in_labels: DenseArray<u32>,
+    /// Parallel inbound edge weight array. `None` if graph has no weighted edges.
+    pub(crate) in_weights: Option<DenseArray<f64>>,
+
+    // ── Mutable write buffer ──
+    /// Per-node outbound buffer: `buffer_out[node_id]` = `[(label_id, dst_id)]`.
+    pub(crate) buffer_out: Vec<Vec<(u32, u32)>>,
+    pub(crate) buffer_in: Vec<Vec<(u32, u32)>>,
+    /// Per-node outbound weight buffer (parallel to `buffer_out`).
+    /// Only populated when `has_weights` is true.
+    pub(crate) buffer_out_weights: Vec<Vec<f64>>,
+    /// Per-node inbound weight buffer (parallel to `buffer_in`).
+    pub(crate) buffer_in_weights: Vec<Vec<f64>>,
+
+    /// Edges deleted since last compaction: `(src, label, dst)`.
+    pub(crate) deleted_edges: HashSet<(u32, u32, u32)>,
+
+    /// Whether any edge has a non-default weight. When false, weight arrays
+    /// are `None` and weight buffers are empty — zero overhead for unweighted graphs.
+    pub(crate) has_weights: bool,
+
+    // ── Node labels (bitset) ──
+    //
+    // Each node has a `u64` bitset where bit `i` corresponds to label ID `i`.
+    // Supports up to 64 distinct node labels. Labels are interned in
+    // `node_label_to_id` / `node_label_names` (separate from edge labels).
+    // Used by MATCH pattern `(a:Person)` — filters nodes by label membership.
+    pub(crate) node_label_bits: Vec<u64>,
+    pub(crate) node_label_to_id: HashMap<String, u8>,
+    pub(crate) node_label_names: Vec<String>,
+
+    // ── Hot/cold access tracking ──
+    /// Per-node access counter: incremented on each neighbor/BFS/path query.
+    /// Uses `Cell<u32>` so access can be tracked through `&self` references
+    /// (traversal methods are `&self` for shared read access).
+    pub(crate) access_counts: Vec<std::cell::Cell<u32>>,
+    /// Total queries served since last access counter reset.
+    pub(crate) query_epoch: u64,
+}
+
+impl Default for CsrIndex {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CsrIndex {
+    pub fn new() -> Self {
+        Self {
+            node_to_id: HashMap::new(),
+            id_to_node: Vec::new(),
+            label_to_id: HashMap::new(),
+            id_to_label: Vec::new(),
+            out_offsets: vec![0],
+            out_targets: DenseArray::default(),
+            out_labels: DenseArray::default(),
+            out_weights: None,
+            in_offsets: vec![0],
+            in_targets: DenseArray::default(),
+            in_labels: DenseArray::default(),
+            in_weights: None,
+            buffer_out: Vec::new(),
+            buffer_in: Vec::new(),
+            buffer_out_weights: Vec::new(),
+            buffer_in_weights: Vec::new(),
+            deleted_edges: HashSet::new(),
+            has_weights: false,
+            node_label_bits: Vec::new(),
+            node_label_to_id: HashMap::new(),
+            node_label_names: Vec::new(),
+            access_counts: Vec::new(),
+            query_epoch: 0,
+        }
+    }
+}

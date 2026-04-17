@@ -1,0 +1,125 @@
+//! Node / label string↔id interning and the node-label bitset.
+
+use std::collections::hash_map::Entry;
+
+use super::types::CsrIndex;
+
+impl CsrIndex {
+    /// Get or create a dense ID for a node.
+    pub(crate) fn ensure_node(&mut self, node: &str) -> u32 {
+        match self.node_to_id.entry(node.to_string()) {
+            Entry::Occupied(e) => *e.get(),
+            Entry::Vacant(e) => {
+                let id = self.id_to_node.len() as u32;
+                e.insert(id);
+                self.id_to_node.push(node.to_string());
+                // Extend dense offsets (new node has 0 edges in dense part).
+                self.out_offsets
+                    .push(*self.out_offsets.last().unwrap_or(&0));
+                self.in_offsets.push(*self.in_offsets.last().unwrap_or(&0));
+                // Extend buffer and access tracking.
+                self.buffer_out.push(Vec::new());
+                self.buffer_in.push(Vec::new());
+                self.buffer_out_weights.push(Vec::new());
+                self.buffer_in_weights.push(Vec::new());
+                self.node_label_bits.push(0);
+                self.access_counts.push(std::cell::Cell::new(0));
+                id
+            }
+        }
+    }
+
+    /// Get or create a dense ID for a label.
+    ///
+    /// Returns `Err(GraphError::LabelOverflow)` if the id space is
+    /// exhausted (`MAX_EDGE_LABELS` distinct labels already interned).
+    /// The DSL ingress layer enforces a far tighter user-facing cap,
+    /// so this branch is effectively unreachable in practice — but the
+    /// Result is propagated so the ceiling failure mode is typed and
+    /// loud rather than a silent cast.
+    pub(crate) fn ensure_label(&mut self, label: &str) -> Result<u32, crate::GraphError> {
+        match self.label_to_id.entry(label.to_string()) {
+            Entry::Occupied(e) => Ok(*e.get()),
+            Entry::Vacant(e) => {
+                let len = self.id_to_label.len();
+                if len >= crate::MAX_EDGE_LABELS {
+                    return Err(crate::GraphError::LabelOverflow { used: len });
+                }
+                let id = len as u32;
+                e.insert(id);
+                self.id_to_label.push(label.to_string());
+                Ok(id)
+            }
+        }
+    }
+
+    // ── Node label methods ──
+
+    /// Get or create a node label ID (max 64 labels).
+    fn ensure_node_label(&mut self, label: &str) -> Option<u8> {
+        if let Some(&id) = self.node_label_to_id.get(label) {
+            return Some(id);
+        }
+        let id = self.node_label_names.len();
+        if id >= 64 {
+            return None; // bitset limit
+        }
+        let id = id as u8;
+        self.node_label_to_id.insert(label.to_string(), id);
+        self.node_label_names.push(label.to_string());
+        Some(id)
+    }
+
+    /// Add a label to a node. Returns false if the 64-label limit is hit.
+    pub fn add_node_label(&mut self, node: &str, label: &str) -> bool {
+        let node_id = self.ensure_node(node);
+        let Some(label_id) = self.ensure_node_label(label) else {
+            return false;
+        };
+        self.node_label_bits[node_id as usize] |= 1u64 << label_id;
+        true
+    }
+
+    /// Remove a label from a node.
+    pub fn remove_node_label(&mut self, node: &str, label: &str) {
+        let Some(&node_id) = self.node_to_id.get(node) else {
+            return;
+        };
+        let Some(&label_id) = self.node_label_to_id.get(label) else {
+            return;
+        };
+        self.node_label_bits[node_id as usize] &= !(1u64 << label_id);
+    }
+
+    /// Check if a node has a specific label.
+    pub fn node_has_label(&self, node_id: u32, label: &str) -> bool {
+        let Some(&label_id) = self.node_label_to_id.get(label) else {
+            return false;
+        };
+        let bits = self
+            .node_label_bits
+            .get(node_id as usize)
+            .copied()
+            .unwrap_or(0);
+        bits & (1u64 << label_id) != 0
+    }
+
+    /// Get all label names for a node.
+    pub fn node_labels(&self, node_id: u32) -> Vec<&str> {
+        let bits = self
+            .node_label_bits
+            .get(node_id as usize)
+            .copied()
+            .unwrap_or(0);
+        if bits == 0 {
+            return Vec::new();
+        }
+        let mut labels = Vec::new();
+        for (i, name) in self.node_label_names.iter().enumerate() {
+            if bits & (1u64 << i) != 0 {
+                labels.push(name.as_str());
+            }
+        }
+        labels
+    }
+}

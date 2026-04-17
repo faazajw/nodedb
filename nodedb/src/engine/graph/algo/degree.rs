@@ -53,9 +53,9 @@ mod tests {
     fn degree_star_topology() {
         // Hub a connects to b, c, d.
         let mut csr = CsrIndex::new();
-        csr.add_edge("a", "L", "b");
-        csr.add_edge("a", "L", "c");
-        csr.add_edge("a", "L", "d");
+        csr.add_edge("a", "L", "b").unwrap();
+        csr.add_edge("a", "L", "c").unwrap();
+        csr.add_edge("a", "L", "d").unwrap();
         csr.compact();
 
         let batch = run(&csr, &AlgoParams::default());
@@ -80,8 +80,8 @@ mod tests {
     #[test]
     fn degree_out_direction() {
         let mut csr = CsrIndex::new();
-        csr.add_edge("a", "L", "b");
-        csr.add_edge("a", "L", "c");
+        csr.add_edge("a", "L", "b").unwrap();
+        csr.add_edge("a", "L", "c").unwrap();
         csr.compact();
 
         let params = AlgoParams {

@@ -85,8 +85,8 @@ mod tests {
     fn closeness_path() {
         // a - b - c (path). Middle node b should have highest closeness.
         let mut csr = CsrIndex::new();
-        csr.add_edge("a", "L", "b");
-        csr.add_edge("b", "L", "c");
+        csr.add_edge("a", "L", "b").unwrap();
+        csr.add_edge("b", "L", "c").unwrap();
         csr.compact();
 
         let batch = run(&csr);
@@ -118,7 +118,7 @@ mod tests {
             ("a", "c"),
             ("c", "a"),
         ] {
-            csr.add_edge(s, "L", d);
+            csr.add_edge(s, "L", d).unwrap();
         }
         csr.compact();
 
@@ -139,7 +139,7 @@ mod tests {
     fn closeness_disconnected() {
         // a-b connected, c isolated. Wasserman-Faust gives c = 0.
         let mut csr = CsrIndex::new();
-        csr.add_edge("a", "L", "b");
+        csr.add_edge("a", "L", "b").unwrap();
         csr.add_node("c");
         csr.compact();
 

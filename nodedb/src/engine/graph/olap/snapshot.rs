@@ -28,18 +28,18 @@ pub struct CsrSnapshot {
     id_to_node: Vec<String>,
 
     // ── Label interning ──
-    label_to_id: HashMap<String, u16>,
+    label_to_id: HashMap<String, u32>,
     id_to_label: Vec<String>,
 
     // ── Dense CSR arrays (immutable) ──
     out_offsets: Vec<u32>,
     out_targets: Vec<u32>,
-    out_labels: Vec<u16>,
+    out_labels: Vec<u32>,
     out_weights: Option<Vec<f64>>,
 
     in_offsets: Vec<u32>,
     in_targets: Vec<u32>,
-    in_labels: Vec<u16>,
+    in_labels: Vec<u32>,
     in_weights: Option<Vec<f64>>,
 
     has_weights: bool,
@@ -98,11 +98,11 @@ impl CsrSnapshot {
         self.node_to_id.get(name).copied()
     }
 
-    pub fn label_name(&self, label_id: u16) -> &str {
+    pub fn label_name(&self, label_id: u32) -> &str {
         &self.id_to_label[label_id as usize]
     }
 
-    pub fn label_id(&self, name: &str) -> Option<u16> {
+    pub fn label_id(&self, name: &str) -> Option<u32> {
         self.label_to_id.get(name).copied()
     }
 
@@ -129,7 +129,7 @@ impl CsrSnapshot {
     }
 
     /// Iterate outbound edges for a node: `(label_id, dst_id)`.
-    pub fn iter_out_edges(&self, node: u32) -> impl Iterator<Item = (u16, u32)> + '_ {
+    pub fn iter_out_edges(&self, node: u32) -> impl Iterator<Item = (u32, u32)> + '_ {
         let idx = node as usize;
         let (start, end) = if idx + 1 < self.out_offsets.len() {
             (
@@ -143,7 +143,7 @@ impl CsrSnapshot {
     }
 
     /// Iterate inbound edges for a node: `(label_id, src_id)`.
-    pub fn iter_in_edges(&self, node: u32) -> impl Iterator<Item = (u16, u32)> + '_ {
+    pub fn iter_in_edges(&self, node: u32) -> impl Iterator<Item = (u32, u32)> + '_ {
         let idx = node as usize;
         let (start, end) = if idx + 1 < self.in_offsets.len() {
             (
@@ -157,7 +157,7 @@ impl CsrSnapshot {
     }
 
     /// Iterate outbound edges with weights: `(label_id, dst_id, weight)`.
-    pub fn iter_out_edges_weighted(&self, node: u32) -> impl Iterator<Item = (u16, u32, f64)> + '_ {
+    pub fn iter_out_edges_weighted(&self, node: u32) -> impl Iterator<Item = (u32, u32, f64)> + '_ {
         let idx = node as usize;
         let (start, end) = if idx + 1 < self.out_offsets.len() {
             (
@@ -196,9 +196,9 @@ mod tests {
 
     fn make_csr() -> CsrIndex {
         let mut csr = CsrIndex::new();
-        csr.add_edge("a", "KNOWS", "b");
-        csr.add_edge("b", "KNOWS", "c");
-        csr.add_edge("a", "LIKES", "c");
+        csr.add_edge("a", "KNOWS", "b").unwrap();
+        csr.add_edge("b", "KNOWS", "c").unwrap();
+        csr.add_edge("a", "LIKES", "c").unwrap();
         csr
     }
 
@@ -217,7 +217,7 @@ mod tests {
         let snap = CsrSnapshot::from_csr(&mut csr);
 
         // Mutate live CSR after snapshot.
-        csr.add_edge("c", "KNOWS", "d");
+        csr.add_edge("c", "KNOWS", "d").unwrap();
 
         // Snapshot still has original 3 edges.
         assert_eq!(snap.edge_count(), 3);
@@ -240,7 +240,7 @@ mod tests {
         let snap = CsrSnapshot::from_csr(&mut csr);
 
         let a_id = snap.node_id("a").unwrap();
-        let out_edges: Vec<(u16, u32)> = snap.iter_out_edges(a_id).collect();
+        let out_edges: Vec<(u32, u32)> = snap.iter_out_edges(a_id).collect();
         assert_eq!(out_edges.len(), 2); // KNOWS->b, LIKES->c
     }
 
@@ -261,12 +261,12 @@ mod tests {
     #[test]
     fn snapshot_weighted() {
         let mut csr = CsrIndex::new();
-        csr.add_edge_weighted("a", "R", "b", 2.5);
-        csr.add_edge_weighted("b", "R", "c", 7.0);
+        csr.add_edge_weighted("a", "R", "b", 2.5).unwrap();
+        csr.add_edge_weighted("b", "R", "c", 7.0).unwrap();
         let snap = CsrSnapshot::from_csr(&mut csr);
 
         assert!(snap.has_weights());
-        let edges: Vec<(u16, u32, f64)> = snap.iter_out_edges_weighted(0).collect();
+        let edges: Vec<(u32, u32, f64)> = snap.iter_out_edges_weighted(0).collect();
         assert_eq!(edges.len(), 1);
         assert_eq!(edges[0].2, 2.5);
     }
@@ -281,7 +281,7 @@ mod tests {
     #[test]
     fn no_compact_snapshot() {
         let mut csr = CsrIndex::new();
-        csr.add_edge("a", "L", "b");
+        csr.add_edge("a", "L", "b").unwrap();
         // Don't compact — buffer edges only.
         let snap = CsrSnapshot::from_csr_no_compact(&csr);
         // No-compact snapshot captures only dense arrays (empty after no compact).

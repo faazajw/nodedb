@@ -224,7 +224,7 @@ mod tests {
             ("c", "d"),
             ("d", "c"),
         ] {
-            csr.add_edge(s, "L", d);
+            csr.add_edge(s, "L", d).unwrap();
         }
         csr.compact();
 
@@ -261,7 +261,7 @@ mod tests {
             ("b", "c"),
             ("c", "b"),
         ] {
-            csr.add_edge(s, "L", d);
+            csr.add_edge(s, "L", d).unwrap();
         }
         csr.compact();
 

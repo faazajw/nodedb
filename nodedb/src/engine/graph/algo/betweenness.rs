@@ -142,9 +142,9 @@ mod tests {
         // a -> b -> c -> d (linear path)
         // b and c are on all shortest paths between endpoints.
         let mut csr = CsrIndex::new();
-        csr.add_edge("a", "L", "b");
-        csr.add_edge("b", "L", "c");
-        csr.add_edge("c", "L", "d");
+        csr.add_edge("a", "L", "b").unwrap();
+        csr.add_edge("b", "L", "c").unwrap();
+        csr.add_edge("c", "L", "d").unwrap();
         csr.compact();
 
         let batch = run(&csr, &AlgoParams::default());
@@ -180,7 +180,7 @@ mod tests {
             ("a", "c"),
             ("c", "a"),
         ] {
-            csr.add_edge(s, "L", d);
+            csr.add_edge(s, "L", d).unwrap();
         }
         csr.compact();
 
@@ -201,9 +201,9 @@ mod tests {
     fn betweenness_star() {
         // Hub a connects to b, c, d. All shortest paths b-c, b-d, c-d go through a.
         let mut csr = CsrIndex::new();
-        csr.add_edge("a", "L", "b");
-        csr.add_edge("a", "L", "c");
-        csr.add_edge("a", "L", "d");
+        csr.add_edge("a", "L", "b").unwrap();
+        csr.add_edge("a", "L", "c").unwrap();
+        csr.add_edge("a", "L", "d").unwrap();
         csr.compact();
 
         let batch = run(&csr, &AlgoParams::default());
@@ -227,7 +227,7 @@ mod tests {
     fn betweenness_with_sampling() {
         let mut csr = CsrIndex::new();
         for i in 0..20 {
-            csr.add_edge(&format!("n{i}"), "L", &format!("n{}", i + 1));
+            csr.add_edge(&format!("n{i}"), "L", &format!("n{}", i + 1)).unwrap();
         }
         csr.compact();
 
