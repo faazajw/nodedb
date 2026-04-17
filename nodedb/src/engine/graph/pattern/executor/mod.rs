@@ -78,6 +78,7 @@ fn execute_query(
 /// from multiple cores. BindingRow is `HashMap<String, String>` — all
 /// values are strings, so we write raw msgpack directly.
 pub fn rows_to_msgpack(rows: &[BindingRow]) -> Result<Vec<u8>, crate::Error> {
+    use crate::data::executor::scoping::strip_tenant_prefix;
     use nodedb_query::msgpack_scan::{write_array_header, write_map_header, write_str};
 
     let mut buf = Vec::with_capacity(rows.len() * 64);
@@ -86,7 +87,14 @@ pub fn rows_to_msgpack(rows: &[BindingRow]) -> Result<Vec<u8>, crate::Error> {
         write_map_header(&mut buf, row.len());
         for (k, v) in row {
             write_str(&mut buf, k);
-            write_str(&mut buf, v);
+            // MATCH bindings carry tenant-scoped node ids (`{tid}:name`)
+            // because CSR/EdgeStore lookups run on scoped keys. The
+            // prefix must be stripped before the payload crosses the
+            // Data-Plane boundary so no consumer (pgwire, native,
+            // HTTP) can leak internal tenant numbering. Literal
+            // property values without a `{digits}:` prefix pass
+            // through untouched.
+            write_str(&mut buf, strip_tenant_prefix(v));
         }
     }
     Ok(buf)
