@@ -99,15 +99,26 @@ impl CoreLoop {
 
         self.doc_cache.put(tid, collection, document_id, &stored);
 
-        // Secondary index extraction: if this collection has registered index paths,
-        // extract values from the incoming document and store them in the INDEXES
-        // redb B-Tree for range-scan-based lookups.
+        // Secondary index extraction: if this collection has registered
+        // index paths, extract values and write them into the INDEXES redb
+        // B-Tree inside the CALLER'S write txn. Using the non-_in_txn
+        // variant here would deadlock — `execute_point_put` already owns
+        // the only writer.
+        //
+        // UNIQUE enforcement runs first: for every `unique: true` path we
+        // check whether the incoming value already belongs to a different
+        // document and reject with a typed constraint error. The check
+        // uses the sparse engine's read API, which opens a separate read
+        // transaction (redb MVCC) — the read view won't see our outer
+        // write txn but that's precisely the semantics we want for the
+        // "does another row already hold this value" question.
         let config_key = format!("{tid}:{collection}");
         if let Some(config) = self.doc_configs.get(&config_key)
             && let Some(doc) = super::super::super::doc_format::decode_document(value)
         {
             let paths = config.index_paths.clone();
-            self.apply_secondary_indexes(tid, collection, &doc, document_id, &paths);
+            check_unique_constraints(&self.sparse, tid, collection, &doc, document_id, &paths)?;
+            self.apply_secondary_indexes_in_txn(txn, tid, collection, &doc, document_id, &paths);
         }
 
         // Spatial index: detect geometry fields and insert into R-tree.
@@ -262,4 +273,50 @@ impl CoreLoop {
 
         Ok(())
     }
+}
+
+/// Reject the write if any `unique: true` index already holds one of the
+/// incoming document's extracted values under a *different* `document_id`.
+///
+/// Runs before `apply_secondary_indexes_in_txn` so the caller's write
+/// transaction is still clean — rejection does not roll anything back.
+/// Same-id re-puts (idempotent overwrites) are allowed through; we only
+/// reject when another row owns the value.
+fn check_unique_constraints(
+    sparse: &crate::engine::sparse::btree::SparseEngine,
+    tid: u32,
+    collection: &str,
+    doc: &serde_json::Value,
+    document_id: &str,
+    paths: &[crate::engine::document::store::IndexPath],
+) -> crate::Result<()> {
+    use crate::engine::document::store::extract_index_values;
+
+    let doc_engine = crate::engine::document::store::DocumentEngine::new(sparse, tid);
+    for path in paths {
+        if !path.unique {
+            continue;
+        }
+        for raw in extract_index_values(doc, &path.path, path.is_array) {
+            let needle = if path.case_insensitive {
+                raw.to_lowercase()
+            } else {
+                raw
+            };
+            let existing = doc_engine
+                .index_lookup(collection, &path.path, &needle)
+                .unwrap_or_default();
+            if existing.iter().any(|id| id != document_id) {
+                return Err(crate::Error::RejectedConstraint {
+                    collection: collection.to_string(),
+                    constraint: "unique".to_string(),
+                    detail: format!(
+                        "unique index '{}' violation on field '{}' (value '{}')",
+                        path.name, path.path, needle
+                    ),
+                });
+            }
+        }
+    }
+    Ok(())
 }

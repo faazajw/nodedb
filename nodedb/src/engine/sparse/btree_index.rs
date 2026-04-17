@@ -218,6 +218,11 @@ impl SparseEngine {
     }
 
     /// Insert a secondary index entry (tenant-scoped).
+    ///
+    /// Opens its own write transaction. Callers already inside a write
+    /// transaction — the PointPut / BatchInsert apply path — MUST use
+    /// [`SparseEngine::index_put_in_txn`] instead; redb allows only one
+    /// active writer so a nested `begin_write` here deadlocks.
     pub fn index_put(
         &self,
         tenant_id: u32,
@@ -240,6 +245,30 @@ impl SparseEngine {
                     .map_err(|e| redb_err("index insert", e))?;
             }
             write_txn.commit().map_err(|e| redb_err("commit", e))?;
+            Ok(())
+        })
+    }
+
+    /// Insert a secondary index entry into an already-open write txn.
+    ///
+    /// Use from the PointPut / BatchInsert apply path so document + index
+    /// writes commit atomically in the same redb transaction.
+    pub fn index_put_in_txn(
+        &self,
+        txn: &redb::WriteTransaction,
+        tenant_id: u32,
+        collection: &str,
+        field: &str,
+        value: &str,
+        document_id: &str,
+    ) -> crate::Result<()> {
+        super::btree::with_tenant_key4(tenant_id, collection, field, value, document_id, |key| {
+            let mut table = txn
+                .open_table(INDEXES)
+                .map_err(|e| redb_err("open table", e))?;
+            table
+                .insert(key, [].as_slice())
+                .map_err(|e| redb_err("index insert", e))?;
             Ok(())
         })
     }

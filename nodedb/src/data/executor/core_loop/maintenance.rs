@@ -53,9 +53,13 @@ impl CoreLoop {
         self.query_tuning = tuning;
     }
 
-    /// Apply secondary index extraction for a document.
+    /// Apply secondary index extraction for a document (opens its own txn).
     ///
-    /// Shared by `execute_document_batch_insert` and `execute_point_put`.
+    /// Used by `execute_document_batch_insert` after `batch_put` has already
+    /// committed its document transaction. Callers that already hold a
+    /// write transaction (PointPut) MUST call
+    /// [`apply_secondary_indexes_in_txn`](Self::apply_secondary_indexes_in_txn)
+    /// instead — a nested `begin_write` deadlocks redb's single-writer lock.
     pub(in crate::data::executor) fn apply_secondary_indexes(
         &mut self,
         tid: u32,
@@ -71,9 +75,10 @@ impl CoreLoop {
                 index_path.is_array,
             );
             for v in values {
-                if let Err(e) = self
-                    .sparse
-                    .index_put(tid, collection, &index_path.path, &v, doc_id)
+                let stored = maybe_lowercase(&v, index_path.case_insensitive);
+                if let Err(e) =
+                    self.sparse
+                        .index_put(tid, collection, &index_path.path, &stored, doc_id)
                 {
                     tracing::warn!(
                         core = self.core_id,
@@ -82,6 +87,50 @@ impl CoreLoop {
                         path = %index_path.path,
                         error = %e,
                         "secondary index extraction failed"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Apply secondary index extraction within an already-open write txn.
+    ///
+    /// Routes writes through [`SparseEngine::index_put_in_txn`] so that
+    /// the document + index entries commit atomically with the caller's
+    /// `WriteTransaction`. Required from `apply_point_put`, which opens
+    /// the outer txn in `execute_point_put`.
+    pub(in crate::data::executor) fn apply_secondary_indexes_in_txn(
+        &mut self,
+        txn: &redb::WriteTransaction,
+        tid: u32,
+        collection: &str,
+        doc: &serde_json::Value,
+        doc_id: &str,
+        index_paths: &[crate::engine::document::store::IndexPath],
+    ) {
+        for index_path in index_paths {
+            let values = crate::engine::document::store::extract_index_values(
+                doc,
+                &index_path.path,
+                index_path.is_array,
+            );
+            for v in values {
+                let stored = maybe_lowercase(&v, index_path.case_insensitive);
+                if let Err(e) = self.sparse.index_put_in_txn(
+                    txn,
+                    tid,
+                    collection,
+                    &index_path.path,
+                    &stored,
+                    doc_id,
+                ) {
+                    tracing::warn!(
+                        core = self.core_id,
+                        %collection,
+                        doc_id = %doc_id,
+                        path = %index_path.path,
+                        error = %e,
+                        "secondary index extraction failed (in-txn)"
                     );
                 }
             }
@@ -138,5 +187,15 @@ impl CoreLoop {
             );
         }
         removed
+    }
+}
+
+/// Lowercase `v` iff `case_insensitive` — used so COLLATE NOCASE indexes
+/// can be matched with a case-insensitive equality lookup.
+fn maybe_lowercase(v: &str, case_insensitive: bool) -> String {
+    if case_insensitive {
+        v.to_lowercase()
+    } else {
+        v.to_string()
     }
 }

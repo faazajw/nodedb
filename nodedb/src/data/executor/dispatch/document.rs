@@ -127,7 +127,7 @@ impl CoreLoop {
 
             DocumentOp::Register {
                 collection,
-                index_paths,
+                indexes,
                 crdt_enabled,
                 storage_mode,
                 enforcement,
@@ -135,7 +135,7 @@ impl CoreLoop {
                 task,
                 tid,
                 collection,
-                index_paths,
+                indexes,
                 *crdt_enabled,
                 storage_mode,
                 enforcement,
@@ -147,9 +147,37 @@ impl CoreLoop {
                 value,
             } => self.execute_document_index_lookup(task, tid, collection, path, value),
 
+            DocumentOp::IndexedFetch {
+                collection,
+                path,
+                value,
+                filters,
+                projection,
+                limit,
+                offset,
+            } => self.execute_document_indexed_fetch(
+                task, tid, collection, path, value, filters, projection, *limit, *offset,
+            ),
+
             DocumentOp::DropIndex { collection, field } => {
                 self.execute_drop_document_index(task, tid, collection, field)
             }
+
+            DocumentOp::BackfillIndex {
+                collection,
+                path,
+                is_array,
+                unique,
+                case_insensitive,
+            } => self.execute_backfill_index(
+                task,
+                tid,
+                collection,
+                path,
+                *is_array,
+                *unique,
+                *case_insensitive,
+            ),
         }
     }
 }

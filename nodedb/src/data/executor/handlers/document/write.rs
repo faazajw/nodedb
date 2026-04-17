@@ -88,7 +88,7 @@ impl CoreLoop {
         task: &ExecutionTask,
         tid: u32,
         collection: &str,
-        index_paths: &[String],
+        indexes: &[crate::bridge::physical_plan::RegisteredIndex],
         crdt_enabled: bool,
         storage_mode: &crate::bridge::physical_plan::StorageMode,
         enforcement: &crate::bridge::physical_plan::EnforcementOptions,
@@ -100,7 +100,7 @@ impl CoreLoop {
         debug!(
             core = self.core_id,
             %collection,
-            index_count = index_paths.len(),
+            index_count = indexes.len(),
             crdt_enabled,
             storage_mode = mode_label,
             append_only = enforcement.append_only,
@@ -113,9 +113,10 @@ impl CoreLoop {
         config.crdt_enabled = crdt_enabled;
         config.storage_mode = storage_mode.clone();
         config.enforcement = enforcement.clone();
-        for path in index_paths {
-            config = config.with_index(path);
-        }
+        config.index_paths = indexes
+            .iter()
+            .map(crate::engine::document::store::IndexPath::from_registered)
+            .collect();
 
         let config_key = format!("{tid}:{collection}");
         self.doc_configs.insert(config_key, config);
@@ -164,6 +165,197 @@ impl CoreLoop {
                 },
             ),
         }
+    }
+
+    /// Execute a SELECT rewritten as a secondary-index fetch.
+    ///
+    /// Resolves doc IDs through `SparseEngine::range_scan` via
+    /// `DocumentEngine::index_lookup`, fetches each document's raw
+    /// msgpack bytes, applies `offset`/`limit`, and emits rows via
+    /// `encode_raw_document_rows` — the same wire format as a document
+    /// scan — so the pgwire decoder doesn't need a special case.
+    ///
+    /// Post-filters and projection are intentionally not applied here:
+    /// the planner only rewrites to this op when those are empty
+    /// (complex cases fall back to a full scan). Extending this handler
+    /// with filter/projection support is additive.
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::data::executor) fn execute_document_indexed_fetch(
+        &mut self,
+        task: &ExecutionTask,
+        tid: u32,
+        collection: &str,
+        path: &str,
+        value: &str,
+        _filters: &[u8],
+        _projection: &[String],
+        limit: usize,
+        offset: usize,
+    ) -> Response {
+        debug!(
+            core = self.core_id,
+            %collection,
+            %path,
+            %value,
+            limit,
+            offset,
+            "document indexed fetch"
+        );
+
+        let doc_engine = crate::engine::document::store::DocumentEngine::new(&self.sparse, tid);
+        let doc_ids = match doc_engine.index_lookup(collection, path, value) {
+            Ok(ids) => ids,
+            Err(e) => {
+                return self.response_error(
+                    task,
+                    crate::bridge::envelope::ErrorCode::Internal {
+                        detail: format!("indexed fetch: {e}"),
+                    },
+                );
+            }
+        };
+
+        let mut rows: Vec<(String, Vec<u8>)> = Vec::new();
+        for doc_id in doc_ids.iter().skip(offset).take(limit) {
+            match self.sparse.get(tid, collection, doc_id) {
+                Ok(Some(bytes)) => rows.push((doc_id.clone(), bytes)),
+                Ok(None) => {
+                    // Index entry pointed at a deleted doc — skip, don't
+                    // fail. A future compaction will purge the orphan.
+                }
+                Err(e) => {
+                    return self.response_error(
+                        task,
+                        crate::bridge::envelope::ErrorCode::Internal {
+                            detail: format!("fetch doc {doc_id}: {e}"),
+                        },
+                    );
+                }
+            }
+        }
+
+        match super::super::super::response_codec::encode_raw_document_rows(&rows) {
+            Ok(bytes) => self.response_with_payload(task, bytes),
+            Err(e) => self.response_error(
+                task,
+                crate::bridge::envelope::ErrorCode::Internal {
+                    detail: format!("indexed fetch encode: {e}"),
+                },
+            ),
+        }
+    }
+
+    /// Backfill an index: scan every document in the collection and
+    /// populate sparse-index entries for the given field. Atomic — one
+    /// write transaction covers the whole backfill and UNIQUE
+    /// violations abort it, leaving the index empty (the caller's
+    /// Building→Ready flip is skipped, so readers never see a
+    /// partial-index view).
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::data::executor) fn execute_backfill_index(
+        &mut self,
+        task: &ExecutionTask,
+        tid: u32,
+        collection: &str,
+        path: &str,
+        is_array: bool,
+        unique: bool,
+        case_insensitive: bool,
+    ) -> Response {
+        debug!(
+            core = self.core_id,
+            %collection,
+            %path,
+            unique,
+            case_insensitive,
+            "backfill index"
+        );
+
+        // Snapshot existing documents outside the write txn. 1,000,000
+        // cap matches the Data Plane's other collection-wide scans; rows
+        // beyond this are handled by a future chunked backfill (see
+        // `scan_documents_chunked`).
+        let docs = match self.sparse.scan_documents(tid, collection, 1_000_000) {
+            Ok(d) => d,
+            Err(e) => {
+                return self.response_error(
+                    task,
+                    crate::bridge::envelope::ErrorCode::Internal {
+                        detail: format!("backfill scan: {e}"),
+                    },
+                );
+            }
+        };
+
+        // Deduplicate-unique-as-we-go: track `(normalized_value → doc_id)`
+        // so a dup within the existing set is flagged before we ever
+        // touch the index table.
+        let mut seen: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+
+        let txn = match self.sparse.begin_write() {
+            Ok(t) => t,
+            Err(e) => {
+                return self.response_error(
+                    task,
+                    crate::bridge::envelope::ErrorCode::Internal {
+                        detail: format!("backfill txn: {e}"),
+                    },
+                );
+            }
+        };
+
+        for (doc_id, bytes) in &docs {
+            let Some(doc) = super::super::super::doc_format::decode_document(bytes) else {
+                continue;
+            };
+            let values = crate::engine::document::store::extract_index_values(&doc, path, is_array);
+            for raw in values {
+                let stored = if case_insensitive {
+                    raw.to_lowercase()
+                } else {
+                    raw
+                };
+                if unique
+                    && let Some(prev) = seen.get(&stored)
+                    && prev != doc_id
+                {
+                    return self.response_error(
+                        task,
+                        crate::bridge::envelope::ErrorCode::Internal {
+                            detail: format!(
+                                "unique index backfill: duplicate value '{stored}' on '{path}' \
+                                 (existing '{prev}', new '{doc_id}')"
+                            ),
+                        },
+                    );
+                }
+                if unique {
+                    seen.insert(stored.clone(), doc_id.clone());
+                }
+                if let Err(e) = self
+                    .sparse
+                    .index_put_in_txn(&txn, tid, collection, path, &stored, doc_id)
+                {
+                    return self.response_error(
+                        task,
+                        crate::bridge::envelope::ErrorCode::Internal {
+                            detail: format!("backfill index_put: {e}"),
+                        },
+                    );
+                }
+            }
+        }
+
+        if let Err(e) = txn.commit() {
+            return self.response_error(
+                task,
+                crate::bridge::envelope::ErrorCode::Internal {
+                    detail: format!("backfill commit: {e}"),
+                },
+            );
+        }
+
+        self.response_ok(task)
     }
 
     /// Drop all secondary index entries for a field across the entire collection.
