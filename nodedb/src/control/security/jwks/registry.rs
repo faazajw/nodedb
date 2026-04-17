@@ -204,23 +204,20 @@ impl JwksRegistry {
     }
 
     /// Find the provider matching a token's issuer.
+    ///
+    /// Strict match only — a non-empty configured `issuer` must equal the
+    /// token's `iss`. There is **no** single-provider fallback: a token
+    /// whose issuer is empty or does not match any configured provider is
+    /// rejected, even when only one provider is configured. Accepting a
+    /// lone provider by count is how the cross-tenant-JWKS bypass worked.
     fn find_provider(&self, issuer: &str) -> Result<&JwtProviderConfig, JwtError> {
-        // Exact match on issuer.
-        if let Some(p) = self
-            .providers
+        if issuer.is_empty() {
+            return Err(JwtError::InvalidIssuer);
+        }
+        self.providers
             .iter()
             .find(|p| !p.issuer.is_empty() && p.issuer == issuer)
-        {
-            return Ok(p);
-        }
-
-        // If only one provider is configured, use it regardless of issuer.
-        if self.providers.len() == 1 {
-            return Ok(&self.providers[0]);
-        }
-
-        // Ambiguous: multiple providers, no issuer match.
-        Err(JwtError::InvalidIssuer)
+            .ok_or(JwtError::InvalidIssuer)
     }
 
     /// On-demand re-fetch for unknown `kid`.

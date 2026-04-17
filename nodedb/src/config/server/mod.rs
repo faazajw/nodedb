@@ -214,9 +214,20 @@ impl ServerConfig {
         let content = std::fs::read_to_string(path).map_err(|e| crate::Error::Config {
             detail: format!("failed to read config file {}: {e}", path.display()),
         })?;
-        toml::from_str(&content).map_err(|e| crate::Error::Config {
+        let parsed: Self = toml::from_str(&content).map_err(|e| crate::Error::Config {
             detail: format!("invalid TOML config: {e}"),
-        })
+        })?;
+        parsed.validate()?;
+        Ok(parsed)
+    }
+
+    /// Validate cross-field invariants that serde cannot express. Called
+    /// from [`Self::from_file`] so misconfiguration fails startup.
+    pub fn validate(&self) -> crate::Result<()> {
+        if let Some(ref jwt) = self.auth.jwt {
+            jwt.validate()?;
+        }
+        Ok(())
     }
 
     /// WAL directory within the data directory.

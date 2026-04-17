@@ -106,6 +106,45 @@ pub struct JwtProviderConfig {
     pub audience: String,
 }
 
+impl JwtProviderConfig {
+    /// Validate provider config. Fail-closed: empty `issuer` is rejected,
+    /// `jwks_url` must be syntactically safe (https + DNS host).
+    pub fn validate(&self) -> crate::Result<()> {
+        if self.name.trim().is_empty() {
+            return Err(crate::Error::Config {
+                detail: "auth.jwt provider must have a non-empty name".into(),
+            });
+        }
+        if self.issuer.trim().is_empty() {
+            return Err(crate::Error::Config {
+                detail: format!(
+                    "auth.jwt provider '{}' must set a non-empty `issuer`; \
+                     empty issuer would disable issuer validation and allow \
+                     cross-tenant token acceptance",
+                    self.name
+                ),
+            });
+        }
+        crate::control::security::jwks::url::validate_jwks_url(&self.jwks_url).map_err(|e| {
+            crate::Error::Config {
+                detail: format!("auth.jwt provider '{}' has unsafe jwks_url: {e}", self.name),
+            }
+        })?;
+        Ok(())
+    }
+}
+
+impl JwtAuthConfig {
+    /// Validate all providers. Called from the server-config loader so
+    /// misconfiguration fails startup rather than silently bypassing auth.
+    pub fn validate(&self) -> crate::Result<()> {
+        for p in &self.providers {
+            p.validate()?;
+        }
+        Ok(())
+    }
+}
+
 fn default_jwks_refresh() -> u64 {
     3600
 }
