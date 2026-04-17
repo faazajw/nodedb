@@ -48,21 +48,44 @@ pub fn consume_stream(
     state: &SharedState,
     params: &ConsumeParams<'_>,
 ) -> Result<ConsumeResult, ConsumeError> {
-    // Verify stream exists.
-    if state
+    // Verify stream (or topic) exists.
+    // Topics use buffer keys with the "topic:" prefix.  When the stream_name
+    // already carries that prefix we accept it if the corresponding topic is
+    // registered in ep_topic_registry.
+    let stream_exists = state
         .stream_registry
         .get(params.tenant_id, params.stream_name)
-        .is_none()
-    {
+        .is_some();
+    let topic_exists = params
+        .stream_name
+        .strip_prefix("topic:")
+        .is_some_and(|bare| {
+            state
+                .ep_topic_registry
+                .get(params.tenant_id, bare)
+                .is_some()
+        });
+    if !stream_exists && !topic_exists {
         return Err(ConsumeError::StreamNotFound(params.stream_name.to_string()));
     }
 
     // Verify consumer group exists.
-    if state
+    // For topics: the group may have been registered under the bare name
+    // ("order_events") even though we query with the prefixed name
+    // ("topic:order_events").  Accept either.
+    let bare_stream = params
+        .stream_name
+        .strip_prefix("topic:")
+        .unwrap_or(params.stream_name);
+    let group_exists = state
         .group_registry
         .get(params.tenant_id, params.stream_name, params.group_name)
-        .is_none()
-    {
+        .is_some()
+        || state
+            .group_registry
+            .get(params.tenant_id, bare_stream, params.group_name)
+            .is_some();
+    if !group_exists {
         return Err(ConsumeError::GroupNotFound(
             params.group_name.to_string(),
             params.stream_name.to_string(),
