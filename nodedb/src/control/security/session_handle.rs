@@ -37,10 +37,9 @@ impl SessionHandleStore {
     }
 
     /// Create a session handle for the given `AuthContext`.
-    /// Returns the UUID handle string.
+    /// Returns the opaque handle string.
     pub fn create(&self, auth_context: AuthContext) -> String {
         let now = now_secs();
-        let handle = generate_handle();
         let cached = CachedSession {
             auth_context,
             created_at: now,
@@ -48,6 +47,14 @@ impl SessionHandleStore {
         };
 
         let mut sessions = self.sessions.write().unwrap_or_else(|p| p.into_inner());
+        // Retry on the (astronomical, 1-in-2^128) chance of collision so a
+        // random collision never silently overwrites a live session.
+        let handle = loop {
+            let candidate = generate_handle();
+            if !sessions.contains_key(&candidate) {
+                break candidate;
+            }
+        };
         sessions.insert(handle.clone(), cached);
 
         // Lazy cleanup: remove expired handles (max 100 per call to avoid latency).
@@ -115,15 +122,9 @@ fn now_secs() -> u64 {
         .as_secs()
 }
 
-/// Generate a cryptographically random UUID-like handle.
+/// Generate a cryptographically random session handle (`nds_<128-bit hex>`).
 fn generate_handle() -> String {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let ts = now_secs();
-    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
-    // Use timestamp + counter for uniqueness. Not cryptographic but sufficient
-    // for session handles since the handle is opaque and short-lived.
-    format!("nds_{ts:x}_{seq:08x}")
+    super::random::generate_tagged_random_hex("nds_")
 }
 
 #[cfg(test)]
@@ -181,5 +182,17 @@ mod tests {
     fn unknown_handle_returns_none() {
         let store = SessionHandleStore::new(3600);
         assert!(store.resolve("nds_nonexistent").is_none());
+    }
+
+    /// Sanity check that `generate_handle` uses the CSPRNG helper and
+    /// carries the `nds_` tag. Entropy / leak / enumerability guarantees
+    /// are tested on the shared helper in `super::random`.
+    #[test]
+    fn handle_uses_shared_csprng_helper_with_nds_prefix() {
+        let handle = generate_handle();
+        assert!(handle.starts_with("nds_"));
+        let rest = handle.strip_prefix("nds_").unwrap();
+        assert_eq!(rest.len(), 32, "expected 128-bit (32 hex char) payload");
+        assert!(rest.chars().all(|c| c.is_ascii_hexdigit()));
     }
 }
