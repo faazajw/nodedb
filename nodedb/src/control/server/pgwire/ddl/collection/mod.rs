@@ -8,6 +8,7 @@ pub mod describe;
 pub mod drop;
 pub mod helpers;
 pub mod index;
+pub(super) mod index_fanout;
 pub mod insert;
 pub(super) mod insert_parse;
 pub mod upsert;

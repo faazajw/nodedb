@@ -261,6 +261,7 @@ impl CoreLoop {
         is_array: bool,
         unique: bool,
         case_insensitive: bool,
+        predicate: Option<&str>,
     ) -> Response {
         debug!(
             core = self.core_id,
@@ -268,8 +269,35 @@ impl CoreLoop {
             %path,
             unique,
             case_insensitive,
+            partial = predicate.is_some(),
             "backfill index"
         );
+        if let Some(ref m) = self.metrics {
+            m.record_document_index_backfill();
+        }
+
+        // Parse the partial-index predicate once, up front. An
+        // unparsable predicate is a catalog-level bug — the DDL layer
+        // already validates the text at CREATE INDEX time, so a
+        // failure here means the stored entry drifted from what the
+        // grammar accepts. Refuse the backfill rather than silently
+        // over-populating a "partial" index.
+        let parsed_predicate = match predicate {
+            Some(text) => match crate::engine::document::predicate::IndexPredicate::parse(text) {
+                Some(p) => Some(p),
+                None => {
+                    return self.response_error(
+                        task,
+                        crate::bridge::envelope::ErrorCode::Internal {
+                            detail: format!(
+                                "backfill: partial-index predicate failed to parse: {text}"
+                            ),
+                        },
+                    );
+                }
+            },
+            None => None,
+        };
 
         // Snapshot existing documents outside the write txn. 1,000,000
         // cap matches the Data Plane's other collection-wide scans; rows
@@ -308,6 +336,15 @@ impl CoreLoop {
             let Some(doc) = super::super::super::doc_format::decode_document(bytes) else {
                 continue;
             };
+            // Partial-index predicate: skip rows that don't satisfy
+            // the `WHERE` clause. `evaluate` treats NULL / non-bool as
+            // false (Postgres partial-index semantics), so only rows
+            // for which the predicate is explicitly true are indexed.
+            if let Some(ref p) = parsed_predicate
+                && !p.evaluate_json(&doc)
+            {
+                continue;
+            }
             let values = crate::engine::document::store::extract_index_values(&doc, path, is_array);
             for raw in values {
                 let stored = if case_insensitive {

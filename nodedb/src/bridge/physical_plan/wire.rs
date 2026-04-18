@@ -99,6 +99,7 @@ mod tests {
                 unique: false,
                 case_insensitive: false,
                 state: crate::bridge::physical_plan::RegisteredIndexState::Ready,
+                predicate: None,
             }],
             crdt_enabled: false,
             storage_mode: crate::bridge::physical_plan::StorageMode::Schemaless,

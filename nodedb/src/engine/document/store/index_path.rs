@@ -25,6 +25,10 @@ pub struct IndexPath {
     /// Build state — `Building` indexes get dual-writes but aren't picked
     /// by the planner.
     pub state: RegisteredIndexState,
+    /// Parsed partial-index predicate. `None` means a full index.
+    /// Evaluated against every candidate document before insert /
+    /// UNIQUE-check so rows where the predicate is false are excluded.
+    pub predicate: Option<crate::engine::document::predicate::IndexPredicate>,
 }
 
 impl IndexPath {
@@ -41,11 +45,14 @@ impl IndexPath {
             unique: false,
             case_insensitive: false,
             state: RegisteredIndexState::Ready,
+            predicate: None,
         }
     }
 
     /// Build from the wire-format [`RegisteredIndex`] sent via
-    /// `DocumentOp::Register`.
+    /// `DocumentOp::Register`. Parses the optional partial-index
+    /// predicate eagerly so every write-path invocation reuses the
+    /// same parsed AST.
     pub fn from_registered(spec: &crate::bridge::physical_plan::RegisteredIndex) -> Self {
         let is_array = spec.path.ends_with("[]");
         let path = spec
@@ -53,6 +60,10 @@ impl IndexPath {
             .strip_suffix("[]")
             .unwrap_or(&spec.path)
             .to_string();
+        let predicate = spec
+            .predicate
+            .as_deref()
+            .and_then(crate::engine::document::predicate::IndexPredicate::parse);
         Self {
             name: spec.name.clone(),
             path,
@@ -60,6 +71,7 @@ impl IndexPath {
             unique: spec.unique,
             case_insensitive: spec.case_insensitive,
             state: spec.state,
+            predicate,
         }
     }
 }

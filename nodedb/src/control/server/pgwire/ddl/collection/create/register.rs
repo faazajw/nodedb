@@ -75,6 +75,7 @@ fn derive_auto_indexes<'a>(
             unique: false,
             case_insensitive: false,
             state: crate::bridge::physical_plan::RegisteredIndexState::Ready,
+            predicate: None,
         })
         .collect()
 }
@@ -102,6 +103,7 @@ fn extend_with_catalog_indexes(
             unique: idx.unique,
             case_insensitive: idx.case_insensitive,
             state,
+            predicate: idx.predicate.clone(),
         };
         if let Some(existing) = out.iter_mut().find(|e| e.path == spec.path) {
             *existing = spec;

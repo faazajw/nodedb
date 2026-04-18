@@ -67,6 +67,12 @@ pub struct SystemMetrics {
     pub document_inserts: AtomicU64,
     pub document_reads: AtomicU64,
     pub document_collections: AtomicU64,
+    /// Count of `DocumentOp::BackfillIndex` handler invocations on this
+    /// node's Data Plane. Per-node: every node increments its own
+    /// counter exactly when its local core runs the backfill primitive.
+    /// Tests assert per-node fan-out for distributed CREATE INDEX by
+    /// reading this counter on every node after DDL completion.
+    pub document_index_backfills: AtomicU64,
 
     pub columnar_segments: AtomicU64,
     pub columnar_compaction_queue: AtomicU64,
@@ -327,6 +333,11 @@ impl SystemMetrics {
 
     pub fn record_document_read(&self) {
         self.document_reads.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_document_index_backfill(&self) {
+        self.document_index_backfills
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn update_document_collections(&self, count: u64) {

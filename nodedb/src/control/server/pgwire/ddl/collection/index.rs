@@ -227,10 +227,11 @@ pub async fn create_index(
     let backfill_plan = crate::bridge::envelope::PhysicalPlan::Document(
         crate::bridge::physical_plan::DocumentOp::BackfillIndex {
             collection: collection.clone(),
-            path: extraction_path,
+            path: extraction_path.clone(),
             is_array,
             unique: is_unique,
             case_insensitive,
+            predicate: where_condition.clone(),
         },
     );
     let backfill_resp = crate::control::server::dispatch_utils::dispatch_to_data_plane(
@@ -256,6 +257,25 @@ pub async fn create_index(
         };
         return Err(sqlstate_error(code, &detail));
     }
+
+    // Phase 2b: fan the same backfill op to every other cluster node.
+    // `execute_backfill_index` is vShard-local per core, so without
+    // this step non-coordinator nodes never populate the index for
+    // the rows they host — the #71 silent-miss bug. Single-node and
+    // peerless clusters short-circuit inside the helper.
+    super::index_fanout::backfill_on_peers(
+        state,
+        super::index_fanout::PeerBackfill {
+            tenant_id,
+            collection: &collection,
+            path: &extraction_path,
+            is_array,
+            unique: is_unique,
+            case_insensitive,
+            predicate: where_condition.as_deref(),
+        },
+    )
+    .await?;
 
     // Phase 3: flip to Ready. Re-read the collection so any concurrent
     // mutation (e.g. another DDL on the same collection — blocked by

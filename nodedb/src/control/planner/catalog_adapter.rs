@@ -240,6 +240,7 @@ impl SqlCatalog for OriginCatalog {
                         nodedb_sql::types::IndexState::Ready
                     }
                 },
+                predicate: i.predicate.clone(),
             })
             .collect();
 

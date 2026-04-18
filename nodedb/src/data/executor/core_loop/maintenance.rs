@@ -69,6 +69,11 @@ impl CoreLoop {
         index_paths: &[crate::engine::document::store::IndexPath],
     ) {
         for index_path in index_paths {
+            if let Some(ref p) = index_path.predicate
+                && !p.evaluate_json(doc)
+            {
+                continue;
+            }
             let values = crate::engine::document::store::extract_index_values(
                 doc,
                 &index_path.path,
@@ -109,6 +114,11 @@ impl CoreLoop {
         index_paths: &[crate::engine::document::store::IndexPath],
     ) {
         for index_path in index_paths {
+            if let Some(ref p) = index_path.predicate
+                && !p.evaluate_json(doc)
+            {
+                continue;
+            }
             let values = crate::engine::document::store::extract_index_values(
                 doc,
                 &index_path.path,

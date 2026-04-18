@@ -169,6 +169,7 @@ impl CoreLoop {
                 is_array,
                 unique,
                 case_insensitive,
+                predicate,
             } => self.execute_backfill_index(
                 task,
                 tid,
@@ -177,6 +178,7 @@ impl CoreLoop {
                 *is_array,
                 *unique,
                 *case_insensitive,
+                predicate.as_deref(),
             ),
         }
     }

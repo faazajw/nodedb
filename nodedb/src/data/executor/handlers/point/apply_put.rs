@@ -297,6 +297,16 @@ fn check_unique_constraints(
         if !path.unique {
             continue;
         }
+        // A partial UNIQUE index only applies to rows the predicate
+        // accepts; rows outside the predicate's scope are not part of
+        // the uniqueness domain. Skipping the check here mirrors the
+        // skip in `apply_secondary_indexes_in_txn` so the two paths
+        // agree on which rows the index governs.
+        if let Some(ref p) = path.predicate
+            && !p.evaluate_json(doc)
+        {
+            continue;
+        }
         for raw in extract_index_values(doc, &path.path, path.is_array) {
             let needle = if path.case_insensitive {
                 raw.to_lowercase()

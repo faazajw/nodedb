@@ -530,6 +530,12 @@ pub struct IndexSpec {
     pub case_insensitive: bool,
     /// Build state. Only `Ready` indexes drive query rewrites.
     pub state: IndexState,
+    /// Partial-index predicate as raw SQL text (`WHERE <expr>` body
+    /// without the keyword), or `None` for full indexes. The planner
+    /// uses this to reject rewrites whose WHERE clause doesn't entail
+    /// the predicate — matching against such a partial index would
+    /// omit rows the index didn't cover.
+    pub predicate: Option<String>,
 }
 
 /// Planner-facing index state. Mirrors the catalog variant but lives here

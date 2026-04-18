@@ -256,6 +256,13 @@ pub struct RegisteredIndex {
     pub unique: bool,
     pub case_insensitive: bool,
     pub state: RegisteredIndexState,
+    /// Partial-index predicate as raw SQL text (`WHERE <expr>` body,
+    /// without the `WHERE` keyword). `None` for full indexes.
+    /// The write path parses and evaluates this per document; rows
+    /// where the predicate is false are not inserted into the index
+    /// and do not participate in UNIQUE enforcement.
+    #[serde(default)]
+    pub predicate: Option<String>,
 }
 
 /// Document engine physical operations (schemaless + strict + DML).
@@ -402,6 +409,11 @@ pub enum DocumentOp {
         is_array: bool,
         unique: bool,
         case_insensitive: bool,
+        /// Partial-index predicate (raw SQL text of the `WHERE` body)
+        /// or `None` for full indexes. Rows where the predicate is
+        /// false are skipped — not indexed, not UNIQUE-checked.
+        #[serde(default)]
+        predicate: Option<String>,
     },
 
     /// Truncate: delete ALL documents in a collection.

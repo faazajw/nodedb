@@ -327,6 +327,7 @@ pub(crate) fn build_register(fields: &TextFields, collection: &str) -> crate::Re
             unique: false,
             case_insensitive: false,
             state: crate::bridge::physical_plan::RegisteredIndexState::Ready,
+            predicate: None,
         })
         .collect();
 
