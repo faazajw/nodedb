@@ -173,6 +173,40 @@ impl CircuitBreaker {
             .map(|b| b.consecutive_failures)
             .unwrap_or(0)
     }
+
+    /// Snapshot every tracked peer's breaker state for observability
+    /// (`/cluster/debug/transport`). Sorted by peer id so output is
+    /// deterministic.
+    pub fn snapshot(&self) -> Vec<BreakerSnapshot> {
+        let peers = self.peers.read().unwrap_or_else(|p| p.into_inner());
+        let mut out: Vec<BreakerSnapshot> = peers
+            .iter()
+            .map(|(id, b)| BreakerSnapshot {
+                peer_id: *id,
+                state: match b.state {
+                    CircuitState::Closed => "closed",
+                    CircuitState::Open => "open",
+                    CircuitState::HalfOpen => "half_open",
+                },
+                consecutive_failures: b.consecutive_failures,
+                seconds_in_state: b.last_state_change.elapsed().as_secs(),
+            })
+            .collect();
+        out.sort_by_key(|s| s.peer_id);
+        out
+    }
+}
+
+/// Per-peer circuit-breaker snapshot emitted by
+/// [`CircuitBreaker::snapshot`] for the `/cluster/debug/transport`
+/// endpoint.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct BreakerSnapshot {
+    pub peer_id: u64,
+    /// One of `"closed"`, `"open"`, `"half_open"`.
+    pub state: &'static str,
+    pub consecutive_failures: u32,
+    pub seconds_in_state: u64,
 }
 
 // ── Retry policy ────────────────────────────────────────────────────

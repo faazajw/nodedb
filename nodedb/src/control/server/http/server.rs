@@ -39,6 +39,22 @@ fn build_router(state: AppState) -> Router {
         .route("/status", get(routes::status::status))
         .route("/cluster/status", get(routes::cluster::cluster_status))
         .route(
+            "/cluster/debug/raft/{group_id}",
+            get(routes::cluster_debug::raft::raft_debug),
+        )
+        .route(
+            "/cluster/debug/transport",
+            get(routes::cluster_debug::transport::transport_debug),
+        )
+        .route(
+            "/cluster/debug/catalog/descriptors",
+            get(routes::cluster_debug::catalog::catalog_debug),
+        )
+        .route(
+            "/cluster/debug/leases",
+            get(routes::cluster_debug::leases::leases_debug),
+        )
+        .route(
             "/api/auth/exchange-key",
             post(routes::auth_key::exchange_key),
         )

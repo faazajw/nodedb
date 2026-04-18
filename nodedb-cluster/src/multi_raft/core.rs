@@ -14,7 +14,7 @@ use crate::raft_storage::RedbLogStorage;
 use crate::routing::RoutingTable;
 
 /// Snapshot of a single Raft group's state for observability.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct GroupStatus {
     pub group_id: u64,
     /// Role as a human-readable string ("Leader", "Follower", "Candidate", "Learner").

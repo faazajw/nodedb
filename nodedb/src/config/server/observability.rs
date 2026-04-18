@@ -29,6 +29,14 @@ pub struct ObservabilityConfig {
     /// OpenTelemetry Protocol configuration.
     #[serde(default)]
     pub otlp: OtlpConfig,
+
+    /// Master gate for the `/cluster/debug/*` HTTP endpoints. Disabled
+    /// by default — operators must opt in per deployment because the
+    /// endpoints expose raft internals, transport connection caches,
+    /// descriptor leases, and the full metadata cache. Even when
+    /// enabled the handlers still require a superuser identity. (J.5)
+    #[serde(default)]
+    pub debug_endpoints_enabled: bool,
 }
 
 /// PromQL engine configuration.
@@ -237,6 +245,17 @@ pub fn apply_observability_env(config: &mut ObservabilityConfig) {
             "override applied"
         );
         config.otlp.export.metrics_interval_secs = secs;
+    }
+
+    if let Ok(val) = std::env::var("NODEDB_DEBUG_ENDPOINTS_ENABLED")
+        && let Ok(b) = val.parse::<bool>()
+    {
+        tracing::info!(
+            env_var = "NODEDB_DEBUG_ENDPOINTS_ENABLED",
+            value = b,
+            "override applied"
+        );
+        config.debug_endpoints_enabled = b;
     }
 }
 

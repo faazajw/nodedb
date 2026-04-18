@@ -181,6 +181,11 @@ pub async fn metrics(
     // source subsystem has been published on `SharedState`.
     render_loop_specific_gauges(&state, &mut output);
 
+    // Per-vShard QPS / latency histograms. Emitted only for vshards
+    // that have observed at least one request; see `SHOW RANGES` for
+    // the operator-facing view of the same numbers.
+    state.shared.per_vshard_metrics.render_prom(&mut output);
+
     Ok((
         StatusCode::OK,
         [("content-type", "text/plain; version=0.0.4; charset=utf-8")],
