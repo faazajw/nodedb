@@ -336,6 +336,7 @@ jobs:
   notify-discord:
     name: Notify Discord
     needs: [validate-version, publish-crates, github-release]
+    if: needs.validate-version.outputs.is_full_release == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
