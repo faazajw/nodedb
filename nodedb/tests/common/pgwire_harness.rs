@@ -18,6 +18,11 @@ use nodedb::wal::WalManager;
 pub struct TestServer {
     pub client: tokio_postgres::Client,
     pub pg_port: u16,
+    /// Underlying shared state — exposed so integration tests can drive
+    /// store-level side effects (e.g. seeding a session handle with a
+    /// specific `ClientFingerprint`) before hitting the wire.
+    #[allow(dead_code)]
+    pub shared: Arc<SharedState>,
     _conn_handle: tokio::task::JoinHandle<()>,
     shutdown_bus: nodedb::control::shutdown::ShutdownBus,
     poller_shutdown_tx: tokio::sync::watch::Sender<bool>,
@@ -151,6 +156,7 @@ impl TestServer {
         Self {
             client,
             pg_port: pg_addr.port(),
+            shared,
             _conn_handle: conn_handle,
             shutdown_bus,
             poller_shutdown_tx,

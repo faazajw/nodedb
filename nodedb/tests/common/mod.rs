@@ -1,6 +1,7 @@
 //! Shared helpers for integration tests.
 
 pub mod cluster_harness;
+pub mod pgwire_auth_helpers;
 pub mod pgwire_harness;
 
 use nodedb::event::cdc::event::CdcEvent;
