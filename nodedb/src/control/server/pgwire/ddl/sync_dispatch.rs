@@ -98,5 +98,16 @@ pub async fn dispatch_async_with_source(
         return Err(crate::Error::Internal { detail });
     }
 
+    // Advance the tenant's observed write-HLC high-water. Used by
+    // RESTORE to reject stale envelopes. Tracking on every dispatch
+    // (not just known-write ops) is intentional: advance is
+    // monotonic, and capturing the backup envelope's watermark AFTER
+    // its own fan-out ensures envelope.wm ≥ tenant_wm on a fresh
+    // backup (so a same-cluster roundtrip passes the staleness gate).
+    // Reached only after the `resp.status != Ok` early-return above, so
+    // this point is the "success" branch per the advance_tenant_write_hlc
+    // contract.
+    state.advance_tenant_write_hlc(tenant_id.as_u32());
+
     Ok(resp.payload.to_vec())
 }

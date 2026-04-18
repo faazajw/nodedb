@@ -245,6 +245,15 @@ pub async fn dispatch_to_data_plane_with_source(
         }
     }
 
+    // Advance the tenant's observed write-HLC high-water on any
+    // successful dispatch. Used by RESTORE staleness gate. Advance
+    // on every success (not just writes) is intentionally
+    // conservative — envelope.watermark is captured AFTER fan-out so
+    // it always dominates the tenant_wm of a fresh backup.
+    if response.status == crate::bridge::envelope::Status::Ok {
+        shared.advance_tenant_write_hlc(tenant_id.as_u32());
+    }
+
     observe(shared);
     Ok(response)
 }

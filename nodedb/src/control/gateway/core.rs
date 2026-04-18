@@ -104,6 +104,18 @@ impl Gateway {
             0,
             result.is_ok(),
         );
+
+        // Advance per-tenant observed write-HLC high-water on any
+        // successful cluster dispatch (local or remote). Used by
+        // RESTORE staleness gate. Tracking on success of every
+        // gateway.execute is intentional: backup captures its
+        // envelope watermark AFTER its own fan-out, so a fresh
+        // backup's watermark always dominates the tenant_wm it
+        // itself advanced.
+        if result.is_ok() {
+            self.shared.advance_tenant_write_hlc(ctx.tenant_id.as_u32());
+        }
+
         result
     }
 

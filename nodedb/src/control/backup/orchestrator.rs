@@ -36,20 +36,38 @@ pub async fn backup_tenant(state: &Arc<SharedState>, tenant_id: u32) -> Result<B
     let nodes = unique_origin_nodes(state);
     let snapshot_plan = PhysicalPlan::Meta(MetaOp::CreateTenantSnapshot { tenant_id });
 
-    let meta = EnvelopeMeta {
-        tenant_id,
-        source_vshard_count: VSHARD_COUNT,
-        hash_seed: 0,          // VSHARD_COUNT-derived hash; no seed today
-        snapshot_watermark: 0, // global watermark capture is a future enhancement
-    };
-    let mut writer = EnvelopeWriter::new(meta);
-
+    // Collect per-node sections first. The orchestrator's own
+    // dispatches advance the tenant write-HLC high-water via
+    // `dispatch_async`; capturing the envelope watermark AFTER the
+    // fan-out guarantees `envelope.watermark ≥ tenant_write_hlc`
+    // at backup time, so a subsequent restore of this envelope into
+    // the same (unchanged) cluster passes the staleness gate.
+    let mut sections = Vec::with_capacity(nodes.len());
     for node_id in nodes {
         let body = if is_self(state, node_id) {
             snapshot_self(state, tenant_id, &snapshot_plan).await?
         } else {
             snapshot_remote(state, node_id, tenant_id, &snapshot_plan).await?
         };
+        sections.push((node_id, body));
+    }
+
+    // Capture a cluster-wide logical instant for the envelope via the
+    // HLC. `hlc_clock.now()` advances past any previously observed
+    // local or remote HLC — the wall-ns component is the scalar
+    // watermark we stamp into the header. Restore compares this
+    // against the destination's `tenant_write_hlc` to detect stale
+    // envelopes.
+    let snapshot_watermark = state.hlc_clock.now().wall_ns;
+    let meta = EnvelopeMeta {
+        tenant_id,
+        source_vshard_count: VSHARD_COUNT,
+        hash_seed: 0, // VSHARD_COUNT-derived hash; no seed today
+        snapshot_watermark,
+    };
+    let mut writer = EnvelopeWriter::new(meta);
+
+    for (node_id, body) in sections {
         writer
             .push_section(node_id, body)
             .map_err(|e| Error::Internal {

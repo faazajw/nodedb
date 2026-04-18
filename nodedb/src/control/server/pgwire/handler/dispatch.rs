@@ -16,6 +16,22 @@ impl NodeDbPgHandler {
     /// In cluster mode, write operations are proposed to Raft first and only
     /// executed on the Data Plane after quorum commit. Reads bypass Raft.
     pub(super) async fn dispatch_task(&self, task: PhysicalTask) -> crate::Result<Response> {
+        let tenant_id = task.tenant_id;
+        let result = self.dispatch_task_inner(task).await;
+        // Advance per-tenant observed write-HLC high-water on any
+        // successful dispatch (local, raft-replicated, or broadcast).
+        // Used by RESTORE's staleness gate. Backup captures envelope
+        // watermark AFTER its own fan-out, so envelope.wm dominates
+        // tenant_wm on a fresh backup.
+        if let Ok(ref resp) = result
+            && resp.status == crate::bridge::envelope::Status::Ok
+        {
+            self.state.advance_tenant_write_hlc(tenant_id.as_u32());
+        }
+        result
+    }
+
+    async fn dispatch_task_inner(&self, task: PhysicalTask) -> crate::Result<Response> {
         if matches!(
             task.plan,
             crate::bridge::envelope::PhysicalPlan::Document(

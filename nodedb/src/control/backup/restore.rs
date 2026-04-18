@@ -81,6 +81,34 @@ pub async fn restore_tenant(
         });
     }
 
+    // Staleness gate. An envelope whose captured watermark is older
+    // than any dispatch this destination cluster has already observed
+    // for the same tenant would silently roll back newer committed
+    // writes. Reject unconditionally today — a `FORCE` override is
+    // the operator's escape hatch and is a separate DDL decision.
+    // Envelopes with `snapshot_watermark == 0` come from a source
+    // that did not capture a watermark (pre-gate envelopes); let them
+    // through for compatibility — the gate only rejects real
+    // ordered-against-ordered comparisons.
+    if !dry_run && env.meta.snapshot_watermark != 0 {
+        let current_high_water = state
+            .tenant_write_hlc
+            .lock()
+            .ok()
+            .and_then(|map| map.get(&tenant_id).copied())
+            .unwrap_or(0);
+        if env.meta.snapshot_watermark < current_high_water {
+            return Err(Error::Internal {
+                detail: format!(
+                    "restore refused: envelope watermark {} is older than the \
+                     destination cluster's last observed write-HLC {} for tenant \
+                     {} — newer writes would be silently overwritten",
+                    env.meta.snapshot_watermark, current_high_water, tenant_id
+                ),
+            });
+        }
+    }
+
     let mut stats = RestoreStats {
         tenant_id,
         dry_run,

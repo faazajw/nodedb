@@ -352,6 +352,14 @@ pub struct SharedState {
     /// before every stamp so cross-node causality is preserved.
     pub hlc_clock: Arc<nodedb_types::HlcClock>,
 
+    /// Per-tenant monotonic high-water HLC wall-ns observed for any
+    /// dispatched plan. Used by RESTORE to reject envelopes whose
+    /// captured watermark is older than the destination cluster's
+    /// most recent observed dispatch for the same tenant —
+    /// silently overwriting newer committed writes would otherwise
+    /// be a correctness bug.
+    pub tenant_write_hlc: Arc<std::sync::Mutex<std::collections::HashMap<u32, u64>>>,
+
     /// Replicated descriptor lease drain state.
     /// Written by the metadata applier on `DescriptorDrainStart`
     /// / `DescriptorDrainEnd` raft entries (and implicitly

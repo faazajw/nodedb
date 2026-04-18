@@ -10,6 +10,23 @@ use crate::types::TenantId;
 use super::SharedState;
 
 impl SharedState {
+    /// Advance the per-tenant observed write-HLC high-water to the current
+    /// HLC wall time. Idempotent and monotonic: no-op if a larger value is
+    /// already recorded. Callers MUST invoke this only after a successful
+    /// dispatch; "success" is defined as `Response.status == Status::Ok`
+    /// (and, for `Result<Response>` callers, `Result::Ok` as well). A
+    /// poisoned lock is silently ignored — the high-water is best-effort
+    /// and the RESTORE staleness gate treats missing entries as zero.
+    pub fn advance_tenant_write_hlc(&self, tenant_id: u32) {
+        let wall = self.hlc_clock.now().wall_ns;
+        if let Ok(mut map) = self.tenant_write_hlc.lock() {
+            let entry = map.entry(tenant_id).or_insert(0);
+            if wall > *entry {
+                *entry = wall;
+            }
+        }
+    }
+
     /// Shared HTTP client reused by every outbound emitter. Cloning the
     /// Arc is cheap — the client itself owns a connection pool, DNS
     /// resolver, and TLS session cache that every caller benefits from.
