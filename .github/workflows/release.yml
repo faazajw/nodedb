@@ -361,7 +361,7 @@ jobs:
             COMPARE_URL="https://github.com/${REPO}/releases/tag/${TAG}"
           fi
 
-          COMMITS=$(git log "$RANGE" --pretty=format:'- %s (%h)' --no-merges | head -n 25)
+          COMMITS=$(git log "$RANGE" --pretty=format:'- %s (%h)' --no-merges --max-count=25)
           [[ -z "$COMMITS" ]] && COMMITS="- (no commits found)"
 
           COUNT=$(git rev-list --count --no-merges "$RANGE" 2>/dev/null || echo 0)
