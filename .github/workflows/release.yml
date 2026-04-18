@@ -124,9 +124,11 @@ jobs:
           # Tier 2: depends on tier 1 only
           TIER2="nodedb-types"
           # Tier 3: depends on tier 1-2
-          TIER3="nodedb-vector nodedb-graph nodedb-spatial nodedb-strict nodedb-client nodedb-sql nodedb-columnar nodedb-cluster"
-          # Tier 4: depends on tier 3 (nodedb-spatial)
+          TIER3="nodedb-vector nodedb-graph nodedb-spatial nodedb-strict nodedb-client nodedb-columnar nodedb-cluster"
+          # Tier 4: depends on tier 3 (nodedb-spatial, nodedb-fts, nodedb-types)
           TIER4="nodedb-query"
+          # Tier 5: depends on tier 4 (nodedb-query)
+          TIER5="nodedb-sql"
           is_published() {
             curl -sf \
               -H "User-Agent: nodedb-ci (github.com/NodeDB-Lab/nodedb)" \
@@ -175,6 +177,7 @@ jobs:
           publish_tier "2 (depends on tier 1)" $TIER2
           publish_tier "3 (depends on tier 2)" $TIER3
           publish_tier "4 (depends on tier 3)" $TIER4
+          publish_tier "5 (depends on tier 4)" $TIER5
 
   # ── Build nodedb server binary (Linux only — requires io_uring) ──────────────
   build-server:
