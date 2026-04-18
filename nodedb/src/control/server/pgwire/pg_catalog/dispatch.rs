@@ -32,10 +32,68 @@ pub fn try_pg_catalog(
     Some(result)
 }
 
+/// Static schema for a pg_catalog virtual table, for use at Parse/Describe
+/// time in the extended-query protocol. Returns `None` for unknown tables.
+///
+/// The schema MUST match the `DataRowEncoder` schema used by the matching
+/// row generator in `tables.rs`.
+pub fn pg_catalog_schema(table: &str) -> Option<Vec<pgwire::api::results::FieldInfo>> {
+    use crate::control::server::pgwire::types::{bool_field, int4_field, int8_field, text_field};
+    let fields = match table {
+        "pg_database" => vec![
+            int8_field("oid"),
+            text_field("datname"),
+            text_field("datdba"),
+            text_field("encoding"),
+        ],
+        "pg_namespace" => vec![
+            int8_field("oid"),
+            text_field("nspname"),
+            int8_field("nspowner"),
+        ],
+        "pg_type" => vec![
+            int8_field("oid"),
+            text_field("typname"),
+            int8_field("typnamespace"),
+            int4_field("typlen"),
+            text_field("typtype"),
+        ],
+        "pg_class" => vec![
+            int8_field("oid"),
+            text_field("relname"),
+            int8_field("relnamespace"),
+            text_field("relkind"),
+            int8_field("relowner"),
+        ],
+        "pg_attribute" => vec![
+            int8_field("attrelid"),
+            text_field("attname"),
+            int8_field("atttypid"),
+            int4_field("attnum"),
+            int4_field("attlen"),
+            bool_field("attnotnull"),
+        ],
+        "pg_index" => vec![
+            int8_field("indexrelid"),
+            int8_field("indrelid"),
+            bool_field("indisunique"),
+            bool_field("indisprimary"),
+        ],
+        "pg_authid" => vec![
+            int8_field("oid"),
+            text_field("rolname"),
+            bool_field("rolsuper"),
+            bool_field("rolcanlogin"),
+        ],
+        _ => return None,
+    };
+    Some(fields)
+}
+
 /// Extract the first `pg_catalog.<table>` or bare `pg_<table>`
 /// reference from a FROM clause. Returns the lowercase table name
 /// if found.
-fn extract_pg_catalog_table(upper: &str) -> Option<&'static str> {
+pub fn extract_pg_catalog_table(upper: &str) -> Option<&'static str> {
     let known = [
         "pg_database",
         "pg_namespace",

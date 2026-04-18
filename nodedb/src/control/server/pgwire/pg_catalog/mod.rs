@@ -16,4 +16,4 @@
 pub mod dispatch;
 pub mod tables;
 
-pub use dispatch::try_pg_catalog;
+pub use dispatch::{extract_pg_catalog_table, pg_catalog_schema, try_pg_catalog};
