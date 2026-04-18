@@ -107,7 +107,17 @@ async fn handle_stream<H: RaftRpcHandler>(
         let (fields, inner_frame) = auth_envelope::parse_envelope(&envelope, &auth.mac_key)?;
 
         // 2. Replay window — under the advertised from_node_id (MAC-verified).
-        auth.peer_seq_in.accept(fields.from_node_id, fields.seq)?;
+        //    Self-addressed frames skip the window: when a node dispatches
+        //    an RPC to itself over the transport, the shared `AuthContext`
+        //    means one window is updated by both the server-side request
+        //    accept (here) and the client-side response accept (in
+        //    `send.rs::parse_inbound`). Skipping when `from == local`
+        //    keeps the two flows from tripping on each other's entries —
+        //    a self-addressed frame can't have been replayed by an
+        //    external attacker by definition.
+        if fields.from_node_id != auth.local_node_id {
+            auth.peer_seq_in.accept(fields.from_node_id, fields.seq)?;
+        }
 
         // 3. Decode inner RPC and hand to handler.
         let request = rpc_codec::decode(inner_frame)?;
@@ -116,7 +126,7 @@ async fn handle_stream<H: RaftRpcHandler>(
         // 4. Wrap the response in its own envelope. `from = local_node_id`,
         //    `seq = next outbound seq scoped to the caller`.
         let response_inner = rpc_codec::encode(&response)?;
-        let response_seq = auth.peer_seq_out.next(fields.from_node_id);
+        let response_seq = auth.peer_seq_out.next();
         let mut response_envelope =
             Vec::with_capacity(auth_envelope::ENVELOPE_OVERHEAD + response_inner.len());
         auth_envelope::write_envelope(

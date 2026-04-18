@@ -94,10 +94,13 @@ impl SwimAuth {
 
 /// Encode `msg` and wrap it in an authenticated envelope destined for
 /// `to`. Returns the bytes to hand to `UdpSocket::send_to`.
-pub fn wrap(auth: &SwimAuth, to: SocketAddr, msg: &SwimMessage) -> Result<Vec<u8>, SwimError> {
+///
+/// `to` is retained in the signature as documentation (callers pass the
+/// destination they are about to `send_to`), but the outbound seq is a
+/// single sender-global counter — see `PeerSeqSender`.
+pub fn wrap(auth: &SwimAuth, _to: SocketAddr, msg: &SwimMessage) -> Result<Vec<u8>, SwimError> {
     let inner = codec::encode(msg)?;
-    let to_hash = addr_hash(to);
-    let seq = auth.seq_out.next(to_hash);
+    let seq = auth.seq_out.next();
     let mut out = Vec::with_capacity(auth_envelope::ENVELOPE_OVERHEAD + inner.len());
     auth_envelope::write_envelope(auth.local_addr_hash, seq, &inner, &auth.mac_key, &mut out)
         .map_err(|e| SwimError::Encode {

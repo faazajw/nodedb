@@ -32,11 +32,16 @@ use crate::error::{ClusterError, Result};
 /// Size of the inbound replay-detection window.
 pub const REPLAY_WINDOW: u64 = 64;
 
-/// Per-peer outbound monotonic counter. One counter per (local_node,
-/// remote_peer) pair. Thread-safe via atomics.
+/// Outbound monotonic counter for this `AuthContext`. One counter total
+/// — not one per target — because the receiver's replay window is keyed
+/// by the *sender's* `local_node_id`. If this sender used a per-target
+/// counter, two distinct targets' traffic would share the same window on
+/// any node that receives from both: seq=1 from target=A and seq=1 from
+/// target=B collide in the receiver's `window[sender_id]`. A single
+/// counter makes every outbound seq globally unique per sender.
 #[derive(Default, Debug)]
 pub struct PeerSeqSender {
-    counters: RwLock<HashMap<u64, AtomicU64>>,
+    counter: AtomicU64,
 }
 
 impl PeerSeqSender {
@@ -44,30 +49,16 @@ impl PeerSeqSender {
         Self::default()
     }
 
-    /// Reserve and return the next sequence number for frames sent to
-    /// `peer_id`. Sequence starts at 1 and is strictly increasing.
-    pub fn next(&self, peer_id: u64) -> u64 {
-        // Fast path: counter already exists.
-        {
-            let guard = self.counters.read().unwrap_or_else(|p| p.into_inner());
-            if let Some(counter) = guard.get(&peer_id) {
-                return counter.fetch_add(1, Ordering::Relaxed) + 1;
-            }
-        }
-        // Slow path: create counter under the write lock.
-        let mut guard = self.counters.write().unwrap_or_else(|p| p.into_inner());
-        let counter = guard.entry(peer_id).or_insert_with(|| AtomicU64::new(0));
-        counter.fetch_add(1, Ordering::Relaxed) + 1
+    /// Reserve and return the next outbound sequence number. Starts at 1
+    /// and is strictly increasing across all targets for this sender.
+    pub fn next(&self) -> u64 {
+        self.counter.fetch_add(1, Ordering::Relaxed) + 1
     }
 
     /// Current counter value (0 if no frames have been sent). Test-only.
     #[cfg(test)]
-    pub fn peek(&self, peer_id: u64) -> u64 {
-        let guard = self.counters.read().unwrap_or_else(|p| p.into_inner());
-        guard
-            .get(&peer_id)
-            .map(|c| c.load(Ordering::Relaxed))
-            .unwrap_or(0)
+    pub fn peek(&self) -> u64 {
+        self.counter.load(Ordering::Relaxed)
     }
 }
 
@@ -157,18 +148,24 @@ mod tests {
     #[test]
     fn outbound_counter_starts_at_one() {
         let s = PeerSeqSender::new();
-        assert_eq!(s.next(1), 1);
-        assert_eq!(s.next(1), 2);
-        assert_eq!(s.next(1), 3);
+        assert_eq!(s.next(), 1);
+        assert_eq!(s.next(), 2);
+        assert_eq!(s.next(), 3);
     }
 
     #[test]
-    fn outbound_counters_are_independent_per_peer() {
+    fn outbound_counter_is_single_across_all_targets() {
+        // The outbound counter is intentionally shared across targets: the
+        // receiver's replay window is keyed by the sender's local_node_id,
+        // so per-target counters would collide in the same window. A
+        // single monotonic counter guarantees every emitted seq is unique
+        // from the receiver's point of view regardless of which target
+        // the sender was aiming at.
         let s = PeerSeqSender::new();
-        assert_eq!(s.next(1), 1);
-        assert_eq!(s.next(2), 1);
-        assert_eq!(s.next(1), 2);
-        assert_eq!(s.next(2), 2);
+        assert_eq!(s.next(), 1);
+        assert_eq!(s.next(), 2);
+        assert_eq!(s.next(), 3);
+        assert_eq!(s.next(), 4);
     }
 
     #[test]

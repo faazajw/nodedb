@@ -19,15 +19,6 @@ use crate::transport::server;
 
 use super::transport::NexarTransport;
 
-/// Sentinel peer id for the outbound seq counter when the real peer id is
-/// not yet known (bootstrap/join — see [`send_rpc_to_addr`]).
-///
-/// Using a fixed key means two concurrent bootstrap attempts on the same
-/// transport share a counter, which is fine — each attempt produces a
-/// strictly-higher seq than the last, and neither attempt cares about
-/// pairing its outbound seq with any specific remote id.
-const BOOTSTRAP_PEER_ID: u64 = 0;
-
 impl NexarTransport {
     /// Send an RPC to an address directly (for bootstrap/join before peer
     /// IDs are known).
@@ -45,7 +36,7 @@ impl NexarTransport {
     }
 
     async fn send_rpc_to_addr_inner(&self, addr: SocketAddr, rpc: RaftRpc) -> Result<RaftRpc> {
-        let envelope = self.wrap_outbound(BOOTSTRAP_PEER_ID, &rpc)?;
+        let envelope = self.wrap_outbound(&rpc)?;
 
         let conn = self
             .listener
@@ -94,7 +85,7 @@ impl NexarTransport {
                 tokio::time::sleep(delay).await;
             }
 
-            let envelope = self.wrap_inner(target, &inner)?;
+            let envelope = self.wrap_inner(&inner)?;
             match self.try_send_once(target, &envelope).await {
                 Ok(resp) => {
                     self.circuit_breaker.record_success(target);
@@ -156,15 +147,15 @@ impl NexarTransport {
         Ok(self.parse_inbound(&response_envelope))
     }
 
-    /// Encode and wrap an RPC for a known peer id.
-    fn wrap_outbound(&self, target: u64, rpc: &RaftRpc) -> Result<Vec<u8>> {
+    /// Encode and wrap an RPC in an authenticated envelope.
+    fn wrap_outbound(&self, rpc: &RaftRpc) -> Result<Vec<u8>> {
         let inner = rpc_codec::encode(rpc)?;
-        self.wrap_inner(target, &inner)
+        self.wrap_inner(&inner)
     }
 
     /// Wrap an already-encoded inner frame in an authenticated envelope.
-    fn wrap_inner(&self, target: u64, inner: &[u8]) -> Result<Vec<u8>> {
-        let seq = self.auth.peer_seq_out.next(target);
+    fn wrap_inner(&self, inner: &[u8]) -> Result<Vec<u8>> {
+        let seq = self.auth.peer_seq_out.next();
         let mut out = Vec::with_capacity(auth_envelope::ENVELOPE_OVERHEAD + inner.len());
         auth_envelope::write_envelope(
             self.auth.local_node_id,
@@ -178,11 +169,22 @@ impl NexarTransport {
 
     /// Parse an inbound envelope: verify MAC, check replay window, decode
     /// inner RPC.
+    ///
+    /// Self-addressed frames skip the replay-window check. In a single-node
+    /// test (or when a node genuinely dispatches an RPC to itself over the
+    /// transport) the client and server share one `AuthContext`, which
+    /// means one `peer_seq_in` window is updated by *both* the server-side
+    /// request-accept and the client-side response-accept. Without this
+    /// guard the second accept trips on its own first — the envelope
+    /// was never replayed, the same window simply saw traffic from both
+    /// directions for `peer_id == local_node_id`.
     fn parse_inbound(&self, envelope: &[u8]) -> Result<RaftRpc> {
         let (fields, inner_frame) = auth_envelope::parse_envelope(envelope, &self.auth.mac_key)?;
-        self.auth
-            .peer_seq_in
-            .accept(fields.from_node_id, fields.seq)?;
+        if fields.from_node_id != self.auth.local_node_id {
+            self.auth
+                .peer_seq_in
+                .accept(fields.from_node_id, fields.seq)?;
+        }
         rpc_codec::decode(inner_frame)
     }
 }
