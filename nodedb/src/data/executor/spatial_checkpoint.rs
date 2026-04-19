@@ -40,9 +40,7 @@ impl CoreLoop {
             // Write R-tree checkpoint.
             let ckpt_path = ckpt_dir.join(format!("{}.ckpt", sanitize_key(&key_str)));
             let tmp_path = ckpt_dir.join(format!("{}.ckpt.tmp", sanitize_key(&key_str)));
-            if std::fs::write(&tmp_path, &bytes).is_ok()
-                && std::fs::rename(&tmp_path, &ckpt_path).is_ok()
-            {
+            if nodedb_wal::segment::atomic_write_fsync(&tmp_path, &ckpt_path, &bytes).is_ok() {
                 checkpointed += 1;
             }
 
@@ -56,7 +54,8 @@ impl CoreLoop {
             if !doc_entries.is_empty() {
                 let map_bytes = zerompk::to_msgpack_vec(&doc_entries).unwrap_or_default();
                 let map_path = ckpt_dir.join(format!("{}.docmap", sanitize_key(&key_str)));
-                let _ = std::fs::write(&map_path, &map_bytes);
+                let map_tmp = ckpt_dir.join(format!("{}.docmap.tmp", sanitize_key(&key_str)));
+                let _ = nodedb_wal::segment::atomic_write_fsync(&map_tmp, &map_path, &map_bytes);
             }
         }
 
@@ -102,7 +101,7 @@ impl CoreLoop {
             // Restore the original key from sanitized form.
             let key = unsanitize_key(&sanitized);
 
-            if let Ok(bytes) = std::fs::read(&path)
+            if let Ok(bytes) = nodedb_wal::segment::read_checkpoint_dontneed(&path)
                 && let Ok(rtree) = crate::engine::spatial::RTree::from_checkpoint(&bytes)
             {
                 // Parse key string "{tid}:{coll}:{field}" back to tuple.
@@ -126,7 +125,7 @@ impl CoreLoop {
 
                 // Load doc_map.
                 let map_path = ckpt_dir.join(format!("{sanitized}.docmap"));
-                if let Ok(map_bytes) = std::fs::read(&map_path)
+                if let Ok(map_bytes) = nodedb_wal::segment::read_checkpoint_dontneed(&map_path)
                     && let Ok(doc_entries) = zerompk::from_msgpack::<Vec<(u64, String)>>(&map_bytes)
                 {
                     for (entry_id, doc_id) in doc_entries {

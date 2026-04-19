@@ -38,9 +38,7 @@ impl CoreLoop {
             let safe_key = key_str.replace(':', "_");
             let ckpt_path = ckpt_dir.join(format!("{safe_key}.ckpt"));
             let tmp_path = ckpt_dir.join(format!("{safe_key}.ckpt.tmp"));
-            if std::fs::write(&tmp_path, &bytes).is_ok()
-                && std::fs::rename(&tmp_path, &ckpt_path).is_ok()
-            {
+            if nodedb_wal::segment::atomic_write_fsync(&tmp_path, &ckpt_path, &bytes).is_ok() {
                 checkpointed += 1;
             }
         }
@@ -87,7 +85,7 @@ impl CoreLoop {
             // Restore original key format (underscore → colon, first two only).
             let key = unsanitize_sparse_key(&safe_key);
 
-            if let Ok(bytes) = std::fs::read(&path)
+            if let Ok(bytes) = nodedb_wal::segment::read_checkpoint_dontneed(&path)
                 && let Some(index) =
                     crate::engine::vector::sparse::SparseInvertedIndex::from_checkpoint(&bytes)
             {

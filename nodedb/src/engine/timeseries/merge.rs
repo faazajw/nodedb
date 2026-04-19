@@ -321,11 +321,11 @@ pub fn merge_o3_into_partition(
     let backup_name = format!("{partition_dir_name}.old");
     let backup_dir = base_dir.join(&backup_name);
 
-    // Rename original → backup, tmp → original, then remove backup.
-    std::fs::rename(&partition_dir, &backup_dir)
-        .map_err(|e| SegmentError::Io(format!("rename original → backup: {e}")))?;
-    std::fs::rename(&tmp_dir, &partition_dir)
-        .map_err(|e| SegmentError::Io(format!("rename tmp → original: {e}")))?;
+    // Durable directory swap: rename original → backup, tmp → original, then
+    // fsync the parent directory so both renames are metadata-durable before
+    // the backup is removed.
+    nodedb_wal::segment::atomic_swap_dirs_fsync(&partition_dir, &backup_dir, &tmp_dir)
+        .map_err(|e| SegmentError::Io(format!("atomic dir swap: {e}")))?;
     let _ = std::fs::remove_dir_all(&backup_dir); // Best-effort cleanup.
 
     Ok(new_meta)

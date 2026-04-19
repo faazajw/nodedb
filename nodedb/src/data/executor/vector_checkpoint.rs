@@ -81,9 +81,7 @@ impl CoreLoop {
             let filename = CoreLoop::vector_checkpoint_filename(key);
             let ckpt_path = ckpt_dir.join(format!("{filename}.ckpt"));
             let tmp_path = ckpt_dir.join(format!("{filename}.ckpt.tmp"));
-            if std::fs::write(&tmp_path, &bytes).is_ok()
-                && std::fs::rename(&tmp_path, &ckpt_path).is_ok()
-            {
+            if nodedb_wal::segment::atomic_write_fsync(&tmp_path, &ckpt_path, &bytes).is_ok() {
                 checkpointed += 1;
             }
         }
@@ -132,7 +130,7 @@ impl CoreLoop {
             }
             let tuple_key = parse_build_key(&filename);
 
-            if let Ok(bytes) = std::fs::read(&path)
+            if let Ok(bytes) = nodedb_wal::segment::read_checkpoint_dontneed(&path)
                 && let Some(collection) =
                     crate::engine::vector::collection::VectorCollection::from_checkpoint(&bytes)
             {

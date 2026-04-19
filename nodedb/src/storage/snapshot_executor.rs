@@ -229,8 +229,8 @@ fn restore_vector_checkpoints(
         let ckpt_path = ckpt_dir.join(format!("{key}.ckpt"));
         let tmp_path = ckpt_dir.join(format!("{key}.ckpt.tmp"));
 
-        std::fs::write(&tmp_path, &idx.checkpoint_bytes).map_err(crate::Error::Io)?;
-        std::fs::rename(&tmp_path, &ckpt_path).map_err(crate::Error::Io)?;
+        nodedb_wal::segment::atomic_write_fsync(&tmp_path, &ckpt_path, &idx.checkpoint_bytes)
+            .map_err(crate::Error::Wal)?;
 
         // Count vectors from checkpoint size (rough estimate: each vector
         // is ~3 KiB at 768-dim FP32, but we don't parse the checkpoint here).
@@ -262,8 +262,8 @@ fn restore_crdt_checkpoints(
         let ckpt_path = ckpt_dir.join(format!("tenant-{}.ckpt", snap.tenant_id));
         let tmp_path = ckpt_dir.join(format!("tenant-{}.ckpt.tmp", snap.tenant_id));
 
-        std::fs::write(&tmp_path, &snap.snapshot_bytes).map_err(crate::Error::Io)?;
-        std::fs::rename(&tmp_path, &ckpt_path).map_err(crate::Error::Io)?;
+        nodedb_wal::segment::atomic_write_fsync(&tmp_path, &ckpt_path, &snap.snapshot_bytes)
+            .map_err(crate::Error::Wal)?;
     }
 
     info!(tenants = crdt_snapshots.len(), "CRDT checkpoints restored");

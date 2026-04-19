@@ -182,8 +182,12 @@ impl JwksCache {
             std::fs::create_dir_all(parent)?;
         }
         let tmp = format!("{path}.tmp");
-        std::fs::write(&tmp, json)?;
-        std::fs::rename(&tmp, disk_path)?;
+        nodedb_wal::segment::atomic_write_fsync(
+            std::path::Path::new(&tmp),
+            disk_path,
+            json.as_bytes(),
+        )
+        .map_err(std::io::Error::other)?;
         Ok(())
     }
 }

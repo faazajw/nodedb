@@ -29,15 +29,33 @@ pub fn pem_encode(label: &str, der: &[u8]) -> String {
 }
 
 /// Write a DER certificate as a PEM-encoded `CERTIFICATE` block.
+///
+/// The write is durable: bytes go to a sibling tmp file that is fsynced
+/// before being renamed over `path`, and the parent directory is fsynced
+/// after the rename. A power loss that interrupts the write leaves either
+/// the old cert intact or the new cert fully present — never a zero-byte
+/// file.
 pub fn write_pem_cert(path: &Path, der: &[u8]) -> io::Result<()> {
-    fs::write(path, pem_encode("CERTIFICATE", der))
+    let tmp = tmp_path(path);
+    let pem = pem_encode("CERTIFICATE", der);
+    nodedb_wal::segment::atomic_write_fsync(&tmp, path, pem.as_bytes()).map_err(io::Error::other)
 }
 
 /// Write a DER private key as a PEM-encoded `PRIVATE KEY` block and
-/// tighten the file mode to 0600 (no-op on non-Unix).
+/// tighten the file mode to 0600 (no-op on non-Unix). Same durability
+/// semantics as `write_pem_cert`.
 pub fn write_pem_private_key(path: &Path, der: &[u8]) -> io::Result<()> {
-    fs::write(path, pem_encode("PRIVATE KEY", der))?;
+    let tmp = tmp_path(path);
+    let pem = pem_encode("PRIVATE KEY", der);
+    nodedb_wal::segment::atomic_write_fsync(&tmp, path, pem.as_bytes())
+        .map_err(io::Error::other)?;
     set_private_key_perms(path)
+}
+
+fn tmp_path(path: &Path) -> std::path::PathBuf {
+    let mut os = path.as_os_str().to_owned();
+    os.push(".tmp");
+    std::path::PathBuf::from(os)
 }
 
 /// Tighten a file's permissions to 0600. No-op on non-Unix (Windows

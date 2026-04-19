@@ -106,8 +106,8 @@ pub fn create_base_snapshot(
         let final_path = snap_dir.join(&filename);
         let tmp_path = snap_dir.join(format!("core-{core_id}.snap.tmp"));
 
-        fs::write(&tmp_path, bytes).map_err(crate::Error::Io)?;
-        fs::rename(&tmp_path, &final_path).map_err(crate::Error::Io)?;
+        nodedb_wal::segment::atomic_write_fsync(&tmp_path, &final_path, bytes)
+            .map_err(crate::Error::Wal)?;
 
         core_files.push(filename);
     }
@@ -142,8 +142,8 @@ pub fn create_base_snapshot(
         })?;
     let manifest_path = snap_dir.join("manifest.msgpack");
     let manifest_tmp = snap_dir.join("manifest.msgpack.tmp");
-    fs::write(&manifest_tmp, &manifest_bytes).map_err(crate::Error::Io)?;
-    fs::rename(&manifest_tmp, &manifest_path).map_err(crate::Error::Io)?;
+    nodedb_wal::segment::atomic_write_fsync(&manifest_tmp, &manifest_path, &manifest_bytes)
+        .map_err(crate::Error::Wal)?;
 
     info!(
         snapshot_id,

@@ -276,8 +276,8 @@ impl CoreLoop {
                     }
                     let ckpt_path = ckpt_dir.join(format!("tenant-{tenant_id}.ckpt"));
                     let tmp_path = ckpt_dir.join(format!("tenant-{tenant_id}.ckpt.tmp"));
-                    if std::fs::write(&tmp_path, &snapshot).is_ok()
-                        && std::fs::rename(&tmp_path, &ckpt_path).is_ok()
+                    if nodedb_wal::segment::atomic_write_fsync(&tmp_path, &ckpt_path, &snapshot)
+                        .is_ok()
                     {
                         checkpointed += 1;
                     }

@@ -12,7 +12,7 @@
 
 use std::fs;
 use std::io::BufReader;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use nodedb_cluster::issue_leaf_for_sans;
 use nodedb_cluster::transport::config::SNI_HOSTNAME;
@@ -61,31 +61,17 @@ pub fn run(data_dir: &Path, node_id: u64) -> Result<(), String> {
     let creds = issue_leaf_for_sans(&ca, &[&node_san, SNI_HOSTNAME])
         .map_err(|e| format!("issue new leaf: {e}"))?;
 
-    // Atomic-ish write: stage under `.new` then rename.
+    // `write_pem_cert` / `write_pem_key` route through
+    // `nodedb_wal::segment::atomic_write_fsync`: each writes to a sibling
+    // `.tmp` file, fsyncs it, renames it over the destination, then fsyncs
+    // the parent directory. No additional staging is needed.
     let node_cert_path = tls_dir.join("node.crt");
     let node_key_path = tls_dir.join("node.key");
-    let cert_tmp = with_suffix(&node_cert_path, ".new");
-    let key_tmp = with_suffix(&node_key_path, ".new");
 
-    write_pem_cert(&cert_tmp, creds.cert.as_ref())
-        .map_err(|e| format!("write {}: {e}", cert_tmp.display()))?;
-    write_pem_key(&key_tmp, creds.key.secret_der())
-        .map_err(|e| format!("write {}: {e}", key_tmp.display()))?;
-
-    fs::rename(&cert_tmp, &node_cert_path).map_err(|e| {
-        format!(
-            "rename {} → {}: {e}",
-            cert_tmp.display(),
-            node_cert_path.display()
-        )
-    })?;
-    fs::rename(&key_tmp, &node_key_path).map_err(|e| {
-        format!(
-            "rename {} → {}: {e}",
-            key_tmp.display(),
-            node_key_path.display()
-        )
-    })?;
+    write_pem_cert(&node_cert_path, creds.cert.as_ref())
+        .map_err(|e| format!("write {}: {e}", node_cert_path.display()))?;
+    write_pem_key(&node_key_path, creds.key.secret_der())
+        .map_err(|e| format!("write {}: {e}", node_key_path.display()))?;
 
     println!("reissued node cert:");
     println!("  node_id:   {node_id}");
@@ -114,12 +100,6 @@ fn parse_private_key_pem(bytes: &[u8]) -> Result<Vec<u8>, String> {
         .map_err(|e| format!("pem: {e}"))?
         .ok_or_else(|| "no PRIVATE KEY block".to_string())?;
     Ok(key.secret_der().to_vec())
-}
-
-fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
-    let mut os = path.as_os_str().to_os_string();
-    os.push(suffix);
-    PathBuf::from(os)
 }
 
 // PEM writers live in `crate::control::cluster::pem_io`. Keep thin

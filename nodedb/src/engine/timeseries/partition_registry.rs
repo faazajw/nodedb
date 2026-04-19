@@ -446,10 +446,8 @@ impl PartitionRegistry {
             .map_err(|e| format!("serialize partition registry: {e}"))?;
 
         let tmp_path = path.with_extension("tmp");
-        std::fs::write(&tmp_path, &json)
-            .map_err(|e| format!("write {}: {e}", tmp_path.display()))?;
-        std::fs::rename(&tmp_path, path)
-            .map_err(|e| format!("rename {} → {}: {e}", tmp_path.display(), path.display()))?;
+        nodedb_wal::segment::atomic_write_fsync(&tmp_path, path, &json)
+            .map_err(|e| format!("atomic write {}: {e}", path.display()))?;
         Ok(())
     }
 
