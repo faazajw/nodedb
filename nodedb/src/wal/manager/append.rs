@@ -1,0 +1,97 @@
+use nodedb_wal::record::RecordType;
+
+use super::core::WalManager;
+use crate::types::{Lsn, TenantId, VShardId};
+
+impl WalManager {
+    /// Internal: append a record of the given type to the WAL.
+    fn append_record(
+        &self,
+        record_type: RecordType,
+        tenant_id: TenantId,
+        vshard_id: VShardId,
+        payload: &[u8],
+    ) -> crate::Result<Lsn> {
+        let mut wal = self.wal.lock().unwrap_or_else(|p| p.into_inner());
+        let lsn = wal
+            .append(
+                record_type as u16,
+                tenant_id.as_u32(),
+                vshard_id.as_u16(),
+                payload,
+            )
+            .map_err(crate::Error::Wal)?;
+        Ok(Lsn::new(lsn))
+    }
+
+    pub fn append_put(&self, tid: TenantId, vs: VShardId, p: &[u8]) -> crate::Result<Lsn> {
+        self.append_record(RecordType::Put, tid, vs, p)
+    }
+
+    pub fn append_delete(&self, tid: TenantId, vs: VShardId, p: &[u8]) -> crate::Result<Lsn> {
+        self.append_record(RecordType::Delete, tid, vs, p)
+    }
+
+    pub fn append_vector_put(&self, tid: TenantId, vs: VShardId, p: &[u8]) -> crate::Result<Lsn> {
+        self.append_record(RecordType::VectorPut, tid, vs, p)
+    }
+
+    pub fn append_vector_delete(
+        &self,
+        tid: TenantId,
+        vs: VShardId,
+        p: &[u8],
+    ) -> crate::Result<Lsn> {
+        self.append_record(RecordType::VectorDelete, tid, vs, p)
+    }
+
+    pub fn append_vector_params(
+        &self,
+        tid: TenantId,
+        vs: VShardId,
+        p: &[u8],
+    ) -> crate::Result<Lsn> {
+        self.append_record(RecordType::VectorParams, tid, vs, p)
+    }
+
+    pub fn append_transaction(&self, tid: TenantId, vs: VShardId, p: &[u8]) -> crate::Result<Lsn> {
+        self.append_record(RecordType::Transaction, tid, vs, p)
+    }
+
+    pub fn append_crdt_delta(
+        &self,
+        tid: TenantId,
+        vs: VShardId,
+        delta: &[u8],
+    ) -> crate::Result<Lsn> {
+        self.append_record(RecordType::CrdtDelta, tid, vs, delta)
+    }
+
+    /// Append a checkpoint marker. Serializes the LSN before writing.
+    pub fn append_checkpoint(
+        &self,
+        tid: TenantId,
+        vs: VShardId,
+        checkpoint_lsn: u64,
+    ) -> crate::Result<Lsn> {
+        let payload =
+            zerompk::to_msgpack_vec(&checkpoint_lsn).map_err(|e| crate::Error::Serialization {
+                format: "msgpack".into(),
+                detail: format!("checkpoint: {e}"),
+            })?;
+        self.append_record(RecordType::Checkpoint, tid, vs, &payload)
+    }
+
+    pub fn append_timeseries_batch(
+        &self,
+        tid: TenantId,
+        vs: VShardId,
+        p: &[u8],
+    ) -> crate::Result<Lsn> {
+        self.append_record(RecordType::TimeseriesBatch, tid, vs, p)
+    }
+
+    pub fn append_log_batch(&self, tid: TenantId, vs: VShardId, p: &[u8]) -> crate::Result<Lsn> {
+        self.append_record(RecordType::LogBatch, tid, vs, p)
+    }
+}

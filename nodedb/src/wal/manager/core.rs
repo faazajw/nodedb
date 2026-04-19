@@ -1,0 +1,143 @@
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+use tracing::info;
+
+use nodedb_types::config::tuning::WalTuning;
+use nodedb_wal::segmented::{SegmentedWal, SegmentedWalConfig};
+use nodedb_wal::writer::WalWriterConfig;
+
+/// WAL manager: owns the segmented WAL and coordinates appends + sync.
+///
+/// The WAL is the single source of truth for durability. Every mutation
+/// goes through here before being applied to any engine's in-memory state.
+///
+/// Thread-safety: the segmented WAL is behind a `Mutex` because multiple
+/// Control Plane tasks may submit WAL appends concurrently. The mutex
+/// serializes writes, which is correct — WAL appends must be ordered anyway.
+/// The `sync()` call (fsync) is the expensive part and is batched via group commit.
+pub struct WalManager {
+    pub(super) wal: Mutex<SegmentedWal>,
+    /// The WAL directory path (for replay without holding the lock).
+    pub(super) wal_dir: PathBuf,
+    /// Encryption key ring (if configured). Supports dual-key reads during rotation.
+    pub(super) encryption_ring: Option<nodedb_wal::crypto::KeyRing>,
+    /// Dedicated audit WAL segment. When present, audit entries are written
+    /// atomically alongside data writes. Append-only, never compacted.
+    pub(super) audit_wal: Option<crate::wal::AuditWalSegment>,
+}
+
+impl WalManager {
+    /// Open or create a segmented WAL at the given path.
+    ///
+    /// The `path` argument is treated as the WAL directory for the segmented format.
+    /// If a legacy single-file WAL exists at this path, it is automatically migrated
+    /// to the segmented format (one-time, transparent).
+    pub fn open(path: &Path, use_direct_io: bool) -> crate::Result<Self> {
+        Self::open_with_segment_size(path, use_direct_io, 0)
+    }
+
+    /// Open with explicit segment target size (bytes). 0 = default (64 MiB).
+    pub fn open_with_segment_size(
+        path: &Path,
+        use_direct_io: bool,
+        segment_target_size: u64,
+    ) -> crate::Result<Self> {
+        Self::open_internal(
+            path,
+            segment_target_size,
+            WalWriterConfig {
+                use_direct_io,
+                ..Default::default()
+            },
+        )
+    }
+
+    /// Open with explicit segment target size and WAL tuning from `TuningConfig`.
+    ///
+    /// Uses `tuning.write_buffer_size` and `tuning.alignment` from [`WalTuning`]
+    /// to configure the underlying `WalWriterConfig`, instead of the hardcoded
+    /// defaults. `segment_target_size` of 0 uses the default (64 MiB).
+    pub fn open_with_tuning(
+        path: &Path,
+        use_direct_io: bool,
+        segment_target_size: u64,
+        tuning: &WalTuning,
+    ) -> crate::Result<Self> {
+        Self::open_internal(
+            path,
+            segment_target_size,
+            WalWriterConfig {
+                write_buffer_size: tuning.write_buffer_size,
+                alignment: tuning.alignment,
+                use_direct_io,
+                dwb_mode: None,
+            },
+        )
+    }
+
+    /// Shared WAL open logic: migrate legacy path, resolve segment size, open.
+    pub(super) fn open_internal(
+        path: &Path,
+        segment_target_size: u64,
+        writer_config: WalWriterConfig,
+    ) -> crate::Result<Self> {
+        let wal_dir = if path.is_file() {
+            let dir = path.with_extension("d");
+            nodedb_wal::segment::migrate_legacy_wal(path, &dir).map_err(crate::Error::Wal)?;
+            dir
+        } else {
+            path.to_path_buf()
+        };
+
+        let effective_target = if segment_target_size > 0 {
+            segment_target_size
+        } else {
+            nodedb_wal::segment::DEFAULT_SEGMENT_TARGET_SIZE
+        };
+
+        let use_direct_io = writer_config.use_direct_io;
+        let config = SegmentedWalConfig {
+            wal_dir: wal_dir.clone(),
+            segment_target_size: effective_target,
+            writer_config,
+        };
+
+        let wal = SegmentedWal::open(config).map_err(crate::Error::Wal)?;
+
+        info!(
+            wal_dir = %wal_dir.display(),
+            next_lsn = wal.next_lsn(),
+            "WAL opened"
+        );
+
+        let audit_dir = wal_dir.join("audit.wal");
+        let audit_wal = match crate::wal::AuditWalSegment::open(&audit_dir, use_direct_io) {
+            Ok(aw) => {
+                info!(audit_dir = %audit_dir.display(), "audit WAL opened");
+                Some(aw)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "audit WAL failed to open (audit entries not durable)");
+                None
+            }
+        };
+
+        Ok(Self {
+            wal: Mutex::new(wal),
+            wal_dir,
+            encryption_ring: None,
+            audit_wal,
+        })
+    }
+
+    /// Open without O_DIRECT (for testing on tmpfs).
+    pub fn open_for_testing(path: &Path) -> crate::Result<Self> {
+        Self::open(path, false)
+    }
+
+    /// Get the WAL directory path.
+    pub fn wal_dir(&self) -> &Path {
+        &self.wal_dir
+    }
+}
