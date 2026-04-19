@@ -51,6 +51,7 @@ pub fn check_generated_readonly<V>(
                     "cannot UPDATE generated column '{field}': \
                      generated columns are computed automatically"
                 ),
+                detail: String::new(),
             });
         }
     }
@@ -115,6 +116,7 @@ fn topological_sort(specs: &[GeneratedColumnSpec]) -> Result<Vec<usize>, ErrorCo
     if order.len() != n {
         return Err(ErrorCode::RejectedConstraint {
             constraint: "cycle detected in generated column dependencies".into(),
+            detail: String::new(),
         });
     }
 

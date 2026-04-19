@@ -36,6 +36,7 @@ impl CoreLoop {
             return self.response_error(
                 task,
                 ErrorCode::RejectedConstraint {
+                    detail: String::new(),
                     constraint: "multi-vector count and dim must be > 0".into(),
                 },
             );
@@ -44,6 +45,7 @@ impl CoreLoop {
             return self.response_error(
                 task,
                 ErrorCode::RejectedConstraint {
+                    detail: String::new(),
                     constraint: format!(
                         "data length mismatch: expected {} ({}×{}), got {}",
                         count * dim,
@@ -64,6 +66,7 @@ impl CoreLoop {
             return self.response_error(
                 task,
                 ErrorCode::RejectedConstraint {
+                    detail: String::new(),
                     constraint: format!(
                         "dimension mismatch: index has {}, got {dim}",
                         existing.dim()
@@ -180,6 +183,7 @@ impl CoreLoop {
                 return self.response_error(
                     task,
                     ErrorCode::RejectedConstraint {
+                        detail: String::new(),
                         constraint: format!(
                             "unknown score mode '{mode_str}'; supported: max_sim, avg_sim, sum_sim"
                         ),

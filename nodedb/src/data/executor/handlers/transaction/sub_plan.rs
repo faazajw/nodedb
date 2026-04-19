@@ -53,6 +53,47 @@ impl CoreLoop {
                 user_roles,
             ),
 
+            PhysicalPlan::Document(DocumentOp::PointInsert {
+                collection,
+                document_id,
+                value,
+                if_absent,
+            }) => {
+                // Existence probe against the engine's current state. The
+                // transaction buffer is represented by `undo_log`: earlier
+                // sub-plans in this same BEGIN block that wrote to
+                // `document_id` show up via `sparse.get` because we apply
+                // writes eagerly and undo on rollback. Same-tx duplicate
+                // keys therefore surface here too.
+                let exists = self
+                    .sparse
+                    .get(tid, collection, document_id)
+                    .ok()
+                    .flatten()
+                    .is_some();
+                if exists {
+                    if *if_absent {
+                        return Ok(self.response_ok(&dummy_task));
+                    }
+                    return Err(ErrorCode::RejectedConstraint {
+                        constraint: "unique".to_string(),
+                        detail: format!(
+                            "duplicate key value '{document_id}' violates primary-key \
+                             uniqueness on '{collection}'"
+                        ),
+                    });
+                }
+                self.tx_point_put(
+                    &dummy_task,
+                    tid,
+                    collection,
+                    document_id,
+                    value,
+                    undo_log,
+                    user_roles,
+                )
+            }
+
             PhysicalPlan::Document(DocumentOp::PointDelete {
                 collection,
                 document_id,

@@ -108,7 +108,7 @@ impl CoreLoop {
                 let merged = if on_conflict_updates.is_empty() {
                     merge_values(existing_val, new_val)
                 } else {
-                    apply_on_conflict_updates(existing_val, on_conflict_updates)
+                    apply_on_conflict_updates(existing_val, &new_val, on_conflict_updates)
                 };
 
                 // Encode merged value for storage.
@@ -207,6 +207,7 @@ impl CoreLoop {
 /// assignments bypass the evaluator and decode their msgpack directly.
 fn apply_on_conflict_updates(
     existing: nodedb_types::Value,
+    excluded: &nodedb_types::Value,
     updates: &[(String, crate::bridge::physical_plan::UpdateValue)],
 ) -> nodedb_types::Value {
     let mut obj = match existing {
@@ -216,7 +217,9 @@ fn apply_on_conflict_updates(
         _ => std::collections::HashMap::new(),
     };
     // Snapshot the row before any assignment applies, so all assignments
-    // see the pre-update state — matches PostgreSQL semantics.
+    // see the pre-update state — matches PostgreSQL semantics. `excluded`
+    // is the row proposed for INSERT that triggered the conflict — it
+    // resolves `EXCLUDED.col` references inside the RHS expressions.
     let snapshot = nodedb_types::Value::Object(obj.clone());
     for (field, update_val) in updates {
         let new_val: nodedb_types::Value = match update_val {
@@ -226,7 +229,9 @@ fn apply_on_conflict_updates(
                     Err(_) => continue,
                 }
             }
-            crate::bridge::physical_plan::UpdateValue::Expr(expr) => expr.eval(&snapshot),
+            crate::bridge::physical_plan::UpdateValue::Expr(expr) => {
+                expr.eval_with_excluded(&snapshot, excluded)
+            }
         };
         obj.insert(field.clone(), new_val);
     }

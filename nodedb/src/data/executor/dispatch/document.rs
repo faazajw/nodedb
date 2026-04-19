@@ -22,6 +22,13 @@ impl CoreLoop {
                 value,
             } => self.execute_point_put(task, tid, collection, document_id, value),
 
+            DocumentOp::PointInsert {
+                collection,
+                document_id,
+                value,
+                if_absent,
+            } => self.execute_point_insert(task, tid, collection, document_id, value, *if_absent),
+
             DocumentOp::PointDelete {
                 collection,
                 document_id,

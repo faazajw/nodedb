@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use redb::{Database, TableDefinition, WriteTransaction};
+use redb::{Database, ReadableTable, TableDefinition, WriteTransaction};
 use tracing::{debug, info};
 
 /// Table definition for the primary document store.
@@ -140,6 +140,33 @@ impl SparseEngine {
                 .insert(key, value)
                 .map_err(|e| redb_err("insert", e))?;
             Ok(())
+        })
+    }
+
+    /// Check whether a document exists within an externally-owned write
+    /// transaction — the probe used by INSERT-with-unique-PK semantics.
+    ///
+    /// Uses the caller's write txn so the check is linearizable with the
+    /// subsequent `put_in_txn`: no other writer can slip a row in between
+    /// the "does it exist" read and the insert commit. Returns `Ok(true)`
+    /// if a document with this (tenant, collection, document_id) is
+    /// already present.
+    pub fn exists_in_txn(
+        &self,
+        txn: &WriteTransaction,
+        tenant_id: u32,
+        collection: &str,
+        document_id: &str,
+    ) -> crate::Result<bool> {
+        with_tenant_key(tenant_id, collection, document_id, |key| {
+            let table = txn
+                .open_table(DOCUMENTS)
+                .map_err(|e| redb_err("open table", e))?;
+            match table.get(key) {
+                Ok(Some(_)) => Ok(true),
+                Ok(None) => Ok(false),
+                Err(e) => Err(redb_err("exists_in_txn", e)),
+            }
         })
     }
 

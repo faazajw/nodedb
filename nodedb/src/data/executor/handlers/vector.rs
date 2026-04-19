@@ -50,6 +50,7 @@ impl CoreLoop {
             && existing.dim() != dim
         {
             return Err(ErrorCode::RejectedConstraint {
+                detail: String::new(),
                 constraint: format!(
                     "dimension mismatch: index has {}, got {dim}",
                     existing.dim()
@@ -86,6 +87,7 @@ impl CoreLoop {
             return self.response_error(
                 task,
                 ErrorCode::RejectedConstraint {
+                    detail: String::new(),
                     constraint: format!(
                         "vector dimension mismatch: expected {dim}, got {}",
                         vector.len()
@@ -192,6 +194,7 @@ impl CoreLoop {
                         return self.response_error(
                             task,
                             ErrorCode::RejectedConstraint {
+                                detail: String::new(),
                                 constraint: format!(
                                     "dimension mismatch in batch: expected {dim}, got {}",
                                     vector.len()
@@ -268,6 +271,7 @@ impl CoreLoop {
             return self.response_error(
                 task,
                 ErrorCode::RejectedConstraint {
+                detail: String::new(),
                     constraint: "cannot change index params after creation; drop and recreate the collection".into(),
                 },
             );
@@ -312,6 +316,7 @@ impl CoreLoop {
                 return self.response_error(
                     task,
                     ErrorCode::RejectedConstraint {
+                detail: String::new(),
                         constraint: format!(
                             "unknown metric '{resolved_metric_str}'; supported: l2, cosine, inner_product, manhattan, chebyshev, hamming, jaccard, pearson"
                         ),
@@ -332,6 +337,7 @@ impl CoreLoop {
                     return self.response_error(
                         task,
                         ErrorCode::RejectedConstraint {
+                detail: String::new(),
                             constraint: format!(
                                 "unknown index_type '{index_type}'; supported: hnsw, hnsw_pq, ivf_pq"
                             ),
