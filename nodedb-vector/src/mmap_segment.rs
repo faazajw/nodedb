@@ -5,6 +5,56 @@
 
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Drop-time page-cache policy for a vector segment.
+///
+/// HNSW traversal touches a small fraction of a segment's pages. When the
+/// segment is dropped we hint the kernel that the residual pages can be
+/// evicted so they don't crowd hotter engines' working sets.
+#[derive(Debug, Clone, Copy)]
+pub struct VectorSegmentDropPolicy {
+    dontneed_on_drop: bool,
+}
+
+impl VectorSegmentDropPolicy {
+    pub const fn new(dontneed_on_drop: bool) -> Self {
+        Self { dontneed_on_drop }
+    }
+    pub const fn keep_resident() -> Self {
+        Self {
+            dontneed_on_drop: false,
+        }
+    }
+    pub const fn dontneed_on_drop(self) -> bool {
+        self.dontneed_on_drop
+    }
+}
+
+impl Default for VectorSegmentDropPolicy {
+    fn default() -> Self {
+        Self {
+            dontneed_on_drop: true,
+        }
+    }
+}
+
+/// Module-scoped counters for observing madvise behaviour in tests.
+///
+/// These are lightweight atomics, always compiled — the same counters are
+/// useful to Event-Plane metrics, not just tests.
+pub mod test_hooks {
+    use super::{AtomicU64, Ordering};
+    pub(super) static DONTNEED_COUNT: AtomicU64 = AtomicU64::new(0);
+    pub(super) static RANDOM_COUNT: AtomicU64 = AtomicU64::new(0);
+
+    pub fn dontneed_count() -> u64 {
+        DONTNEED_COUNT.load(Ordering::Relaxed)
+    }
+    pub fn random_count() -> u64 {
+        RANDOM_COUNT.load(Ordering::Relaxed)
+    }
+}
 
 /// Memory-mapped vector segment file.
 ///
@@ -17,6 +67,8 @@ pub struct MmapVectorSegment {
     dim: usize,
     count: usize,
     data_offset: usize,
+    drop_policy: VectorSegmentDropPolicy,
+    madvise_state: Option<libc::c_int>,
 }
 
 const HEADER_SIZE: usize = 8;
@@ -24,6 +76,16 @@ const HEADER_SIZE: usize = 8;
 impl MmapVectorSegment {
     /// Create a new segment file and write vectors to it.
     pub fn create(path: &Path, dim: usize, vectors: &[&[f32]]) -> std::io::Result<Self> {
+        Self::create_with_policy(path, dim, vectors, VectorSegmentDropPolicy::default())
+    }
+
+    /// Create a new segment file with an explicit drop policy.
+    pub fn create_with_policy(
+        path: &Path,
+        dim: usize,
+        vectors: &[&[f32]],
+        policy: VectorSegmentDropPolicy,
+    ) -> std::io::Result<Self> {
         use std::io::Write;
 
         if let Some(parent) = path.parent() {
@@ -51,11 +113,16 @@ impl MmapVectorSegment {
         fd.sync_all()?;
 
         drop(fd);
-        Self::open(path)
+        Self::open_with_policy(path, policy)
     }
 
     /// Open an existing segment file and memory-map it.
     pub fn open(path: &Path) -> std::io::Result<Self> {
+        Self::open_with_policy(path, VectorSegmentDropPolicy::default())
+    }
+
+    /// Open an existing segment with an explicit drop policy.
+    pub fn open_with_policy(path: &Path, policy: VectorSegmentDropPolicy) -> std::io::Result<Self> {
         let fd = std::fs::OpenOptions::new().read(true).open(path)?;
 
         let file_size = fd.metadata()?.len() as usize;
@@ -131,6 +198,29 @@ impl MmapVectorSegment {
             ));
         }
 
+        // Advise MADV_RANDOM: HNSW graph traversal touches non-adjacent
+        // vector IDs. Default MADV_NORMAL readahead wastes NVMe bandwidth
+        // on neighbouring pages evicted before the walk reaches them.
+        //
+        // Skip advising on header-only files (dim=0 or count=0): madvise
+        // on a zero-data-range region is allowed but meaningless.
+        let mut madvise_state = None;
+        let data_bytes = file_size.saturating_sub(HEADER_SIZE);
+        if data_bytes > 0 {
+            let rc =
+                unsafe { libc::madvise(base as *mut libc::c_void, file_size, libc::MADV_RANDOM) };
+            if rc == 0 {
+                madvise_state = Some(libc::MADV_RANDOM);
+                test_hooks::RANDOM_COUNT.fetch_add(1, Ordering::Relaxed);
+            } else {
+                tracing::warn!(
+                    path = %path.display(),
+                    errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0),
+                    "madvise(MADV_RANDOM) failed on vector segment; continuing with kernel default",
+                );
+            }
+        }
+
         Ok(Self {
             path: path.to_path_buf(),
             _fd: fd,
@@ -139,7 +229,14 @@ impl MmapVectorSegment {
             dim,
             count,
             data_offset: HEADER_SIZE,
+            drop_policy: policy,
+            madvise_state,
         })
+    }
+
+    /// The madvise hint set on this segment (if any).
+    pub fn madvise_state(&self) -> Option<libc::c_int> {
+        self.madvise_state
     }
 
     /// Get a vector by ID. Returns a slice into the mmap'd region.
@@ -225,6 +322,19 @@ impl MmapVectorSegment {
 impl Drop for MmapVectorSegment {
     fn drop(&mut self) {
         if !self.base.is_null() && self.mmap_size > 0 {
+            if self.drop_policy.dontneed_on_drop() {
+                let data_bytes = self.mmap_size.saturating_sub(HEADER_SIZE);
+                if data_bytes > 0 {
+                    unsafe {
+                        libc::madvise(
+                            self.base as *mut libc::c_void,
+                            self.mmap_size,
+                            libc::MADV_DONTNEED,
+                        );
+                    }
+                    test_hooks::DONTNEED_COUNT.fetch_add(1, Ordering::Relaxed);
+                }
+            }
             unsafe {
                 libc::munmap(self.base as *mut libc::c_void, self.mmap_size);
             }
