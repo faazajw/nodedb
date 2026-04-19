@@ -9,6 +9,7 @@ use crate::data::executor::task::ExecutionTask;
 use crate::engine::vector::collection::VectorCollection;
 use crate::engine::vector::distance::DistanceMetric;
 use crate::engine::vector::hnsw::HnswParams;
+use crate::types::TenantId;
 
 /// Parameters for configuring vector index settings.
 pub(in crate::data::executor) struct SetVectorParamsInput<'a> {
@@ -98,7 +99,8 @@ impl CoreLoop {
         if let Some(cfg) = self.index_configs.get(&index_key)
             && cfg.index_type == crate::engine::vector::index_config::IndexType::IvfPq
         {
-            return self.ivf_insert(task, &index_key, vector, dim, doc_id);
+            let key = index_key.clone();
+            return self.ivf_insert(task, &key, vector, dim, doc_id);
         }
 
         // Default: HNSW (with or without PQ).
@@ -109,8 +111,9 @@ impl CoreLoop {
                 } else {
                     collection_ref.insert(vector.to_vec());
                 }
+                let seal_key = CoreLoop::vector_checkpoint_filename(&index_key);
                 if collection_ref.needs_seal()
-                    && let Some(req) = collection_ref.seal(&index_key)
+                    && let Some(req) = collection_ref.seal(&seal_key)
                     && let Some(tx) = &self.build_tx
                     && let Err(e) = tx.send(req)
                 {
@@ -127,14 +130,14 @@ impl CoreLoop {
     fn ivf_insert(
         &mut self,
         task: &ExecutionTask,
-        index_key: &str,
+        index_key: &(TenantId, String),
         vector: &[f32],
         dim: usize,
         doc_id: Option<String>,
     ) -> Response {
         let ivf = self
             .ivf_indexes
-            .entry(index_key.to_string())
+            .entry(index_key.clone())
             .or_insert_with(|| {
                 let cfg = self
                     .index_configs
@@ -144,7 +147,7 @@ impl CoreLoop {
                 let params = cfg.to_ivf_params();
                 debug!(
                     core = self.core_id,
-                    key = index_key,
+                    key = %index_key.1,
                     "creating IVF-PQ index"
                 );
                 crate::engine::vector::ivf::IvfPqIndex::new(dim, params)
@@ -162,7 +165,7 @@ impl CoreLoop {
         if let Some(did) = doc_id {
             let coll = self
                 .vector_collections
-                .entry(index_key.to_string())
+                .entry(index_key.clone())
                 .or_insert_with(|| VectorCollection::new(dim, Default::default()));
             coll.doc_id_map.insert(vector_id, did);
         }
@@ -198,8 +201,9 @@ impl CoreLoop {
                     }
                     collection_ref.insert(vector.clone());
                 }
+                let seal_key = CoreLoop::vector_checkpoint_filename(&index_key);
                 if collection_ref.needs_seal()
-                    && let Some(req) = collection_ref.seal(&index_key)
+                    && let Some(req) = collection_ref.seal(&seal_key)
                     && let Some(tx) = &self.build_tx
                     && let Err(e) = tx.send(req)
                 {

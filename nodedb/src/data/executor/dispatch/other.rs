@@ -313,7 +313,8 @@ impl CoreLoop {
                 let mut deleted = 0usize;
                 let ts_base = self.data_dir.join("ts").join(collection.as_str());
 
-                if let Some(registry) = self.ts_registries.get_mut(collection.as_str()) {
+                let ts_key = (task.request.tenant_id, collection.to_string());
+                if let Some(registry) = self.ts_registries.get_mut(&ts_key) {
                     // Find partitions older than cutoff.
                     let expired: Vec<(i64, String)> = registry
                         .iter()
@@ -351,8 +352,7 @@ impl CoreLoop {
                 }
 
                 // Evict LVC entries older than the cutoff.
-                let scoped = format!("{tid}:{collection}");
-                if let Some(lvc) = self.ts_last_value_caches.get_mut(&scoped) {
+                if let Some(lvc) = self.ts_last_value_caches.get_mut(&ts_key) {
                     let evicted = lvc.evict_older_than(cutoff);
                     if evicted > 0 {
                         tracing::debug!(collection, evicted, "evicted stale LVC entries");
@@ -394,13 +394,13 @@ impl CoreLoop {
             }
 
             PhysicalPlan::Meta(MetaOp::QueryLastValues { collection }) => {
-                let scoped = format!("{tid}:{collection}");
+                let lvc_key = (task.request.tenant_id, collection.to_string());
 
                 // LVC is populated on ingest via ingest_batch_with_lvc().
                 // After crash recovery, it rebuilds as new data flows in.
                 // If no new data has arrived since restart, the cache is empty.
                 let entries: Vec<(u64, i64, f64)> =
-                    if let Some(lvc) = self.ts_last_value_caches.get(&scoped) {
+                    if let Some(lvc) = self.ts_last_value_caches.get(&lvc_key) {
                         lvc.all().map(|(id, e)| (id, e.ts, e.value)).collect()
                     } else {
                         Vec::new()
@@ -424,10 +424,10 @@ impl CoreLoop {
                 collection,
                 series_id,
             }) => {
-                let scoped = format!("{tid}:{collection}");
+                let lvc_key = (task.request.tenant_id, collection.to_string());
                 let entry: Option<(i64, f64)> = self
                     .ts_last_value_caches
-                    .get(&scoped)
+                    .get(&lvc_key)
                     .and_then(|lvc| lvc.get(*series_id))
                     .map(|e| (e.ts, e.value));
                 match response_codec::encode(&entry) {
@@ -484,33 +484,35 @@ impl CoreLoop {
                 gap_fill,
                 computed_columns,
                 ..
-            }) => {
-                let scoped_coll = format!("{tid}:{collection}");
-                self.execute_timeseries_scan(
-                    super::super::handlers::timeseries::TimeseriesScanParams {
-                        task,
-                        collection: &scoped_coll,
-                        time_range: *time_range,
-                        limit: *limit,
-                        filters,
-                        bucket_interval_ms: *bucket_interval_ms,
-                        group_by,
-                        aggregates,
-                        gap_fill,
-                        computed_columns,
-                    },
-                )
-            }
+            }) => self.execute_timeseries_scan(
+                super::super::handlers::timeseries::TimeseriesScanParams {
+                    task,
+                    tid: task.request.tenant_id,
+                    collection,
+                    time_range: *time_range,
+                    limit: *limit,
+                    filters,
+                    bucket_interval_ms: *bucket_interval_ms,
+                    group_by,
+                    aggregates,
+                    gap_fill,
+                    computed_columns,
+                },
+            ),
 
             PhysicalPlan::Timeseries(TimeseriesOp::Ingest {
                 collection,
                 payload,
                 format,
                 wal_lsn,
-            }) => {
-                let scoped_coll = format!("{tid}:{collection}");
-                self.execute_timeseries_ingest(task, &scoped_coll, payload, format, *wal_lsn)
-            }
+            }) => self.execute_timeseries_ingest(
+                task,
+                task.request.tenant_id,
+                collection,
+                payload,
+                format,
+                *wal_lsn,
+            ),
 
             PhysicalPlan::Spatial(SpatialOp::Scan {
                 collection,

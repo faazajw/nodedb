@@ -21,13 +21,22 @@ impl CoreLoop {
         self.sparse_vector_indexes.entry(key).or_default()
     }
 
-    /// Build the key for sparse vector indexes.
-    fn sparse_index_key(tid: u32, collection: &str, field_name: &str) -> String {
-        if field_name.is_empty() {
-            format!("{tid}:{collection}:_sparse")
+    /// Build the tuple key for sparse vector indexes.
+    fn sparse_index_key(
+        tid: u32,
+        collection: &str,
+        field_name: &str,
+    ) -> (crate::types::TenantId, String, String) {
+        let field = if field_name.is_empty() {
+            "_sparse".to_string()
         } else {
-            format!("{tid}:{collection}:{field_name}")
-        }
+            field_name.to_string()
+        };
+        (
+            crate::types::TenantId::new(tid),
+            collection.to_string(),
+            field,
+        )
     }
 
     /// Insert a sparse vector for a document.

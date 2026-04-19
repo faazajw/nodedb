@@ -21,7 +21,11 @@ impl CoreLoop {
         field_name: &str,
     ) -> Response {
         let index_key = CoreLoop::vector_index_key(tid, collection, field_name);
-        debug!(core = self.core_id, %index_key, "vector query stats");
+        debug!(
+            core = self.core_id,
+            key = &index_key.1,
+            "vector query stats"
+        );
 
         let Some(coll) = self.vector_collections.get(&index_key) else {
             // Check IVF index as fallback.
@@ -81,25 +85,30 @@ impl CoreLoop {
         field_name: &str,
     ) -> Response {
         let index_key = CoreLoop::vector_index_key(tid, collection, field_name);
-        debug!(core = self.core_id, %index_key, "vector seal");
+        debug!(core = self.core_id, key = &index_key.1, "vector seal");
 
         let Some(coll) = self.vector_collections.get_mut(&index_key) else {
             return self.response_error(task, ErrorCode::NotFound);
         };
 
         if coll.growing_is_empty() {
-            info!(core = self.core_id, %index_key, "seal: growing segment empty, nothing to seal");
+            info!(
+                core = self.core_id,
+                key = &index_key.1,
+                "seal: growing segment empty, nothing to seal"
+            );
             return self.response_ok(task);
         }
 
-        match coll.seal(&index_key) {
+        let seal_key = CoreLoop::vector_checkpoint_filename(&index_key);
+        match coll.seal(&seal_key) {
             Some(req) => {
                 if let Some(tx) = &self.build_tx
                     && let Err(e) = tx.send(req)
                 {
                     warn!(core = self.core_id, error = %e, "failed to send HNSW build request after seal");
                 }
-                info!(core = self.core_id, %index_key, "growing segment sealed, HNSW build dispatched");
+                info!(core = self.core_id, key = %seal_key, "growing segment sealed, HNSW build dispatched");
                 self.checkpoint_coordinator.mark_dirty("vector", 1);
                 self.response_ok(task)
             }
@@ -116,14 +125,23 @@ impl CoreLoop {
         field_name: &str,
     ) -> Response {
         let index_key = CoreLoop::vector_index_key(tid, collection, field_name);
-        debug!(core = self.core_id, %index_key, "vector compact index");
+        debug!(
+            core = self.core_id,
+            key = &index_key.1,
+            "vector compact index"
+        );
 
         let Some(coll) = self.vector_collections.get_mut(&index_key) else {
             return self.response_error(task, ErrorCode::NotFound);
         };
 
         let removed = coll.compact();
-        info!(core = self.core_id, %index_key, removed, "vector index compaction complete");
+        info!(
+            core = self.core_id,
+            key = &index_key.1,
+            removed,
+            "vector index compaction complete"
+        );
         if removed > 0 {
             self.checkpoint_coordinator.mark_dirty("vector", removed);
         }
@@ -158,7 +176,14 @@ impl CoreLoop {
         use crate::engine::vector::hnsw::{HnswIndex, HnswParams};
 
         let index_key = CoreLoop::vector_index_key(tid, collection, field_name);
-        debug!(core = self.core_id, %index_key, m, m0, ef_construction, "vector rebuild");
+        debug!(
+            core = self.core_id,
+            key = &index_key.1,
+            m,
+            m0,
+            ef_construction,
+            "vector rebuild"
+        );
 
         let Some(coll) = self.vector_collections.get_mut(&index_key) else {
             return self.response_error(task, ErrorCode::NotFound);
@@ -200,7 +225,7 @@ impl CoreLoop {
             if new_index.len() != expected_count {
                 warn!(
                     core = self.core_id,
-                    %index_key,
+                    key = &index_key.1,
                     expected = expected_count,
                     actual = new_index.len(),
                     "rebuild: vector count mismatch, skipping segment"
@@ -215,7 +240,7 @@ impl CoreLoop {
 
         info!(
             core = self.core_id,
-            %index_key,
+            key = &index_key.1,
             rebuilt_count,
             m = new_params.m,
             ef = new_params.ef_construction,

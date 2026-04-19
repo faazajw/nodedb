@@ -102,8 +102,9 @@ impl CoreLoop {
         let ids = coll.insert_multi_vector(&vector_slices, doc_id.to_string());
 
         // Auto-seal if needed.
+        let seal_key = CoreLoop::vector_checkpoint_filename(&index_key);
         if coll.needs_seal()
-            && let Some(req) = coll.seal(&index_key)
+            && let Some(req) = coll.seal(&seal_key)
             && let Some(tx) = &self.build_tx
             && let Err(e) = tx.send(req)
         {

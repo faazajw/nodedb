@@ -119,7 +119,7 @@ impl CoreLoop {
 
         // RLS post-candidate filtering: look up each candidate's document.
         // For strict collections, decode binary tuples via schema before filter eval.
-        let config_key = format!("{tid}:{collection}");
+        let config_key = (crate::types::TenantId::new(tid), collection.to_string());
         let strict_schema = self.doc_configs.get(&config_key).and_then(|config| {
             if let crate::bridge::physical_plan::StorageMode::Strict { ref schema } =
                 config.storage_mode
@@ -182,7 +182,7 @@ impl CoreLoop {
     fn search_ivf(
         &self,
         task: &ExecutionTask,
-        index_key: &str,
+        index_key: &(crate::types::TenantId, String),
         ivf: &crate::engine::vector::ivf::IvfPqIndex,
         query_vector: &[f32],
         top_k: usize,
@@ -236,13 +236,18 @@ impl CoreLoop {
         } = params;
         debug!(core = self.core_id, %collection, top_k, "vector multi-search");
 
-        let prefix = format!("{tid}:{collection}:");
+        let tenant_id = crate::types::TenantId::new(tid);
         let plain_key = CoreLoop::vector_index_key(tid, collection, "");
+        // A named-field key looks like `"{collection}:{field_name}"` in the String part.
+        let field_prefix = format!("{collection}:");
 
         let mut all_results: Vec<Vec<crate::engine::vector::hnsw::SearchResult>> = Vec::new();
 
         for (key, coll) in &self.vector_collections {
-            if key == &plain_key || key.starts_with(&prefix) {
+            if key.0 != tenant_id {
+                continue;
+            }
+            if key == &plain_key || key.1.starts_with(&field_prefix) {
                 if coll.is_empty() || coll.dim() != query_vector.len() {
                     continue;
                 }
@@ -325,7 +330,10 @@ impl CoreLoop {
                     .or_else(|| {
                         self.vector_collections
                             .iter()
-                            .filter(|(k, _)| *k == &plain_key || k.starts_with(&prefix))
+                            .filter(|(k, _)| {
+                                k.0 == tenant_id
+                                    && (k == &&plain_key || k.1.starts_with(&field_prefix))
+                            })
                             .find_map(|(_, c)| c.get_doc_id(id))
                     });
                 // RLS post-fusion: look up document and evaluate filters.

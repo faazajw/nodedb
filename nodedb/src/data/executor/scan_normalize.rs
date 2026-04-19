@@ -63,8 +63,9 @@ impl CoreLoop {
     }
 
     /// Scan columnar rows → standard msgpack.
-    fn scan_columnar(&self, _tid: u32, collection: &str, limit: usize) -> Vec<(String, Vec<u8>)> {
-        if let Some(mt) = self.columnar_memtables.get(collection) {
+    fn scan_columnar(&self, tid: u32, collection: &str, limit: usize) -> Vec<(String, Vec<u8>)> {
+        let engine_key = (crate::types::TenantId::new(tid), collection.to_string());
+        if let Some(mt) = self.columnar_memtables.get(&engine_key) {
             let schema = mt.schema();
             let row_count = (mt.row_count() as usize).min(limit);
             let col_meta: Vec<_> = schema
@@ -103,7 +104,7 @@ impl CoreLoop {
             return results;
         }
 
-        let Some(engine) = self.columnar_engines.get(collection) else {
+        let Some(engine) = self.columnar_engines.get(&engine_key) else {
             return Vec::new();
         };
 
@@ -111,7 +112,7 @@ impl CoreLoop {
         let mut results = Vec::new();
 
         // 1. Read from flushed segments (older rows drained from prior memtable flushes).
-        if let Some(segments) = self.columnar_flushed_segments.get(collection) {
+        if let Some(segments) = self.columnar_flushed_segments.get(&engine_key) {
             for seg_bytes in segments {
                 if results.len() >= limit {
                     break;
@@ -200,7 +201,7 @@ impl CoreLoop {
     ) -> crate::Result<Vec<(String, Vec<u8>)>> {
         let docs = self.sparse.scan_documents(tid, collection, limit)?;
 
-        let config_key = format!("{tid}:{collection}");
+        let config_key = (crate::types::TenantId::new(tid), collection.to_string());
         let strict_schema = self.doc_configs.get(&config_key).and_then(|c| {
             if let crate::bridge::physical_plan::StorageMode::Strict { ref schema } = c.storage_mode
             {
