@@ -1,40 +1,15 @@
-//! CSR checkpoint serialization/deserialization.
-//!
-//! Supports two serialization formats:
-//! - **MessagePack** (zerompk): Legacy format, backwards-compatible.
-//! - **rkyv**: ~3x faster serialization/deserialization. Detected on load
-//!   by magic bytes (`RKCSR\0` header). Future: mmap zero-copy access.
+//! CSR checkpoint serialization via rkyv. On little-endian platforms
+//! dense arrays are restored zero-copy by pointing `DenseArray` at the
+//! archived buffer.
 //!
 //! Used by both Origin (via redb storage) and Lite (via embedded checkpoint).
 
 use std::collections::HashMap;
 
-use zerompk::{FromMessagePack, ToMessagePack};
-
 use super::index::CsrIndex;
 
 /// Magic header for rkyv-serialized CSR snapshots (6 bytes).
 const RKYV_MAGIC: &[u8; 6] = b"RKCS2\0";
-
-#[derive(ToMessagePack, FromMessagePack)]
-struct CsrSnapshotMsgpack {
-    nodes: Vec<String>,
-    labels: Vec<String>,
-    out_offsets: Vec<u32>,
-    out_targets: Vec<u32>,
-    out_labels: Vec<u32>,
-    in_offsets: Vec<u32>,
-    in_targets: Vec<u32>,
-    in_labels: Vec<u32>,
-    buffer_out: Vec<Vec<(u32, u32)>>,
-    buffer_in: Vec<Vec<(u32, u32)>>,
-    deleted: Vec<(u32, u32, u32)>,
-    has_weights: bool,
-    out_weights: Option<Vec<f64>>,
-    in_weights: Option<Vec<f64>>,
-    buffer_out_weights: Vec<Vec<f64>>,
-    buffer_in_weights: Vec<Vec<f64>>,
-}
 
 /// rkyv-serialized CSR snapshot for fast save/load.
 #[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
@@ -59,10 +34,6 @@ struct CsrSnapshotRkyv {
 
 impl CsrIndex {
     /// Serialize the index to rkyv bytes (with magic header) for storage.
-    ///
-    /// rkyv is ~3x faster than MessagePack for both serialization and
-    /// deserialization. The magic header allows `from_checkpoint` to
-    /// auto-detect the format for backward compatibility.
     pub fn checkpoint_to_bytes(&self) -> Vec<u8> {
         let snapshot = CsrSnapshotRkyv {
             nodes: self.id_to_node.clone(),
@@ -90,15 +61,14 @@ impl CsrIndex {
         buf
     }
 
-    /// Restore an index from a checkpoint snapshot.
-    ///
-    /// Auto-detects format: rkyv (magic header `RKCSR\0`) or legacy MessagePack.
-    /// Backwards-compatible with old checkpoints.
+    /// Restore an index from a checkpoint snapshot. Rejects any buffer
+    /// that doesn't start with the `RKYV_MAGIC` header.
     pub fn from_checkpoint(bytes: &[u8]) -> Option<Self> {
         if bytes.len() > RKYV_MAGIC.len() && &bytes[..RKYV_MAGIC.len()] == RKYV_MAGIC {
-            return Self::from_rkyv_checkpoint(&bytes[RKYV_MAGIC.len()..]);
+            Self::from_rkyv_checkpoint(&bytes[RKYV_MAGIC.len()..])
+        } else {
+            None
         }
-        Self::from_msgpack_checkpoint(bytes)
     }
 
     /// Restore from rkyv-serialized bytes.
@@ -218,33 +188,12 @@ impl CsrIndex {
             node_label_names: Vec::new(),
             access_counts,
             query_epoch: 0,
+            partition_tag: crate::csr::local_node_id::next_partition_tag(),
         })
     }
 
-    /// Restore from legacy MessagePack bytes.
-    fn from_msgpack_checkpoint(bytes: &[u8]) -> Option<Self> {
-        let snap: CsrSnapshotMsgpack = zerompk::from_msgpack(bytes).ok()?;
-        Some(Self::from_snapshot_fields(CsrSnapshotRkyv {
-            nodes: snap.nodes,
-            labels: snap.labels,
-            out_offsets: snap.out_offsets,
-            out_targets: snap.out_targets,
-            out_labels: snap.out_labels,
-            in_offsets: snap.in_offsets,
-            in_targets: snap.in_targets,
-            in_labels: snap.in_labels,
-            buffer_out: snap.buffer_out,
-            buffer_in: snap.buffer_in,
-            deleted: snap.deleted,
-            has_weights: snap.has_weights,
-            out_weights: snap.out_weights,
-            in_weights: snap.in_weights,
-            buffer_out_weights: snap.buffer_out_weights,
-            buffer_in_weights: snap.buffer_in_weights,
-        }))
-    }
-
     /// Reconstruct CsrIndex from deserialized snapshot fields.
+    #[cfg(not(target_endian = "little"))]
     fn from_snapshot_fields(snap: CsrSnapshotRkyv) -> Self {
         let node_to_id: HashMap<String, u32> = snap
             .nodes
@@ -297,6 +246,7 @@ impl CsrIndex {
             node_label_names: Vec::new(),
             access_counts,
             query_epoch: 0,
+            partition_tag: crate::csr::local_node_id::next_partition_tag(),
         }
     }
 }

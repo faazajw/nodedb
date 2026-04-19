@@ -32,7 +32,7 @@ impl CsrIndex {
         let mut queue: VecDeque<(u32, usize)> = VecDeque::new();
 
         for &node in start_nodes {
-            if let Some(id) = self.node_id(node)
+            if let Some(&id) = self.node_to_id.get(node)
                 && visited.insert(id)
             {
                 queue.push_back((id, 0));
@@ -48,7 +48,7 @@ impl CsrIndex {
             self.record_access(node_id);
 
             if matches!(direction, Direction::Out | Direction::Both) {
-                for (lid, dst) in self.iter_out_edges(node_id) {
+                for (lid, dst) in self.dense_iter_out(node_id) {
                     if label_id.is_none_or(|f| f == lid)
                         && visited.len() < max_visited
                         && visited.insert(dst)
@@ -59,7 +59,7 @@ impl CsrIndex {
                 }
             }
             if matches!(direction, Direction::In | Direction::Both) {
-                for (lid, src) in self.iter_in_edges(node_id) {
+                for (lid, src) in self.dense_iter_in(node_id) {
                     if label_id.is_none_or(|f| f == lid)
                         && visited.len() < max_visited
                         && visited.insert(src)
@@ -73,7 +73,7 @@ impl CsrIndex {
 
         visited
             .into_iter()
-            .map(|id| self.node_name(id).to_string())
+            .map(|id| self.id_to_node[id as usize].clone())
             .collect()
     }
 
@@ -114,7 +114,7 @@ impl CsrIndex {
         let mut queue: VecDeque<(u32, u8)> = VecDeque::new();
 
         for &node in start_nodes {
-            if let Some(id) = self.node_id(node) {
+            if let Some(&id) = self.node_to_id.get(node) {
                 visited.insert(id, 0);
                 queue.push_back((id, 0));
             }
@@ -128,7 +128,7 @@ impl CsrIndex {
             let next_depth = depth + 1;
 
             if matches!(direction, Direction::Out | Direction::Both) {
-                for (lid, dst) in self.iter_out_edges(node_id) {
+                for (lid, dst) in self.dense_iter_out(node_id) {
                     if match_label(lid)
                         && visited.len() < max_visited
                         && !visited.contains_key(&dst)
@@ -139,7 +139,7 @@ impl CsrIndex {
                 }
             }
             if matches!(direction, Direction::In | Direction::Both) {
-                for (lid, src) in self.iter_in_edges(node_id) {
+                for (lid, src) in self.dense_iter_in(node_id) {
                     if match_label(lid)
                         && visited.len() < max_visited
                         && !visited.contains_key(&src)
@@ -153,7 +153,7 @@ impl CsrIndex {
 
         visited
             .into_iter()
-            .map(|(id, depth)| (self.node_name(id).to_string(), depth))
+            .map(|(id, depth)| (self.id_to_node[id as usize].clone(), depth))
             .collect()
     }
 
@@ -169,8 +169,8 @@ impl CsrIndex {
         max_depth: usize,
         max_visited: usize,
     ) -> Option<Vec<String>> {
-        let src_id = self.node_id(src)?;
-        let dst_id = self.node_id(dst)?;
+        let src_id = *self.node_to_id.get(src)?;
+        let dst_id = *self.node_to_id.get(dst)?;
         if src_id == dst_id {
             return Some(vec![src.to_string()]);
         }
@@ -192,7 +192,7 @@ impl CsrIndex {
             let mut next_fwd = Vec::new();
             for &node in &fwd_frontier {
                 self.record_access(node);
-                for (lid, neighbor) in self.iter_out_edges(node) {
+                for (lid, neighbor) in self.dense_iter_out(node) {
                     if label_id.is_none_or(|f| f == lid) {
                         if let Entry::Vacant(e) = fwd_parent.entry(neighbor) {
                             e.insert(node);
@@ -209,7 +209,7 @@ impl CsrIndex {
             let mut next_bwd = Vec::new();
             for &node in &bwd_frontier {
                 self.record_access(node);
-                for (lid, neighbor) in self.iter_in_edges(node) {
+                for (lid, neighbor) in self.dense_iter_in(node) {
                     if label_id.is_none_or(|f| f == lid) {
                         if let Entry::Vacant(e) = bwd_parent.entry(neighbor) {
                             e.insert(node);
@@ -262,7 +262,7 @@ impl CsrIndex {
 
         fwd_path
             .into_iter()
-            .map(|id| self.node_name(id).to_string())
+            .map(|id| self.id_to_node[id as usize].clone())
             .collect()
     }
 
@@ -283,7 +283,7 @@ impl CsrIndex {
         let mut edges = Vec::new();
 
         for &node in start_nodes {
-            if let Some(id) = self.node_id(node)
+            if let Some(&id) = self.node_to_id.get(node)
                 && visited.insert(id)
             {
                 queue.push_back((id, 0));
@@ -295,12 +295,12 @@ impl CsrIndex {
                 continue;
             }
             self.record_access(node_id);
-            for (lid, dst) in self.iter_out_edges(node_id) {
+            for (lid, dst) in self.dense_iter_out(node_id) {
                 if label_id.is_none_or(|f| f == lid) {
                     edges.push((
-                        self.node_name(node_id).to_string(),
+                        self.id_to_node[node_id as usize].clone(),
                         self.label_name(lid).to_string(),
-                        self.node_name(dst).to_string(),
+                        self.id_to_node[dst as usize].clone(),
                     ));
                     if visited.len() < max_visited && visited.insert(dst) {
                         queue.push_back((dst, depth + 1));

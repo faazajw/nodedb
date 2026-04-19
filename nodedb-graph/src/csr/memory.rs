@@ -138,7 +138,7 @@ mod tests {
         csr.add_edge("a", "L", "b").unwrap();
         csr.add_edge("b", "L", "c").unwrap();
 
-        let a_id = csr.node_id("a").unwrap();
+        let a_id = csr.node_id_raw("a").unwrap();
         assert_eq!(csr.hot_node_count(), 0);
 
         csr.record_access(a_id);

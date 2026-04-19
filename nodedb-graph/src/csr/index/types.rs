@@ -86,6 +86,11 @@ pub struct CsrIndex {
     pub(crate) access_counts: Vec<std::cell::Cell<u32>>,
     /// Total queries served since last access counter reset.
     pub(crate) query_epoch: u64,
+
+    /// Unique partition tag assigned at construction. Embedded into
+    /// every `LocalNodeId` this index produces; cross-partition use is
+    /// caught by comparing tags at API boundaries.
+    pub(crate) partition_tag: u32,
 }
 
 impl Default for CsrIndex {
@@ -120,6 +125,7 @@ impl CsrIndex {
             node_label_names: Vec::new(),
             access_counts: Vec::new(),
             query_epoch: 0,
+            partition_tag: crate::csr::local_node_id::next_partition_tag(),
         }
     }
 }

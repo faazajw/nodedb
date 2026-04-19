@@ -5,6 +5,7 @@
 //! `"weight"` edge property at insertion time. Unweighted edges default to 1.0.
 
 use super::index::CsrIndex;
+use crate::csr::LocalNodeId;
 
 impl CsrIndex {
     /// Enable weight tracking. Backfills existing buffer entries with 1.0.
@@ -108,7 +109,12 @@ impl CsrIndex {
     ///
     /// Yields from both dense CSR and buffer, excluding deleted edges.
     /// Weights are 1.0 for unweighted graphs.
-    pub fn iter_out_edges_weighted(&self, node: u32) -> impl Iterator<Item = (u32, u32, f64)> + '_ {
+    pub fn iter_out_edges_weighted(
+        &self,
+        node: LocalNodeId,
+    ) -> impl Iterator<Item = (u32, LocalNodeId, f64)> + '_ {
+        let node = node.raw(self.partition_tag);
+        let tag = self.partition_tag;
         let idx = node as usize;
 
         // Dense edges with weights.
@@ -152,7 +158,21 @@ impl CsrIndex {
             Vec::new()
         };
 
-        dense.into_iter().chain(buffer)
+        dense
+            .into_iter()
+            .chain(buffer)
+            .map(move |(lid, dst, w)| (lid, LocalNodeId::new(dst, tag), w))
+    }
+
+    /// Raw u32 variant of `iter_out_edges_weighted`. In-partition
+    /// algorithm use only — see [`Self::iter_out_edges_raw`] for the
+    /// safety rationale.
+    pub fn iter_out_edges_weighted_raw(
+        &self,
+        node: u32,
+    ) -> impl Iterator<Item = (u32, u32, f64)> + '_ {
+        self.iter_out_edges_weighted(self.local(node))
+            .map(move |(lid, dst, w)| (lid, dst.raw(self.partition_tag), w))
     }
 }
 
@@ -251,7 +271,8 @@ mod tests {
         csr.add_edge_weighted("a", "R", "c", 7.0).unwrap();
         csr.compact();
 
-        let edges: Vec<(u32, u32, f64)> = csr.iter_out_edges_weighted(0).collect();
+        let edges: Vec<(u32, LocalNodeId, f64)> =
+            csr.iter_out_edges_weighted(csr.local(0)).collect();
         assert_eq!(edges.len(), 2);
 
         let weights: Vec<f64> = edges.iter().map(|e| e.2).collect();

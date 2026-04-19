@@ -115,7 +115,7 @@ impl CsrIndex {
         let mut removed = 0;
 
         // Collect outgoing edges then remove reverse references.
-        let out_edges: Vec<(u32, u32)> = self.iter_out_edges(node_id).collect();
+        let out_edges: Vec<(u32, u32)> = self.dense_iter_out(node_id).collect();
         for (label_id, dst_id) in &out_edges {
             let in_buf = &self.buffer_in[*dst_id as usize];
             if let Some(pos) = in_buf
@@ -136,7 +136,7 @@ impl CsrIndex {
         }
 
         // Collect incoming edges then remove reverse references.
-        let in_edges: Vec<(u32, u32)> = self.iter_in_edges(node_id).collect();
+        let in_edges: Vec<(u32, u32)> = self.dense_iter_in(node_id).collect();
         for (label_id, src_id) in &in_edges {
             let out_buf = &self.buffer_out[*src_id as usize];
             if let Some(pos) = out_buf

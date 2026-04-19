@@ -1,10 +1,30 @@
 //! Read-side queries: neighbor lookup, counters, degree, iterators,
 //! dense-array helpers, and the `add_node` / `build_dense` utilities.
+//!
+//! Public entry points take [`LocalNodeId`] so that cross-partition id
+//! use panics at the boundary. Crate-internal iteration over dense
+//! ranges uses raw `u32` via `dense_out_edges` / `dense_in_edges`.
 
 use super::types::{CsrIndex, Direction};
+use crate::csr::LocalNodeId;
 
 impl CsrIndex {
-    /// Get immediate neighbors.
+    /// Partition tag assigned at construction. Embedded in every
+    /// `LocalNodeId` this index produces.
+    #[inline]
+    pub fn partition_tag(&self) -> u32 {
+        self.partition_tag
+    }
+
+    /// Mint a `LocalNodeId` for this partition from a raw dense index.
+    /// Used by algorithm code that iterates `0..node_count` and needs
+    /// to call `LocalNodeId`-taking APIs.
+    #[inline]
+    pub fn local(&self, id: u32) -> LocalNodeId {
+        LocalNodeId::new(id, self.partition_tag)
+    }
+
+    /// Get immediate neighbors by string name.
     pub fn neighbors(
         &self,
         node: &str,
@@ -20,7 +40,7 @@ impl CsrIndex {
         let mut result = Vec::new();
 
         if matches!(direction, Direction::Out | Direction::Both) {
-            for (lid, dst) in self.iter_out_edges(node_id) {
+            for (lid, dst) in self.dense_iter_out(node_id) {
                 if label_id.is_none_or(|f| f == lid) {
                     result.push((
                         self.id_to_label[lid as usize].clone(),
@@ -30,7 +50,7 @@ impl CsrIndex {
             }
         }
         if matches!(direction, Direction::In | Direction::Both) {
-            for (lid, src) in self.iter_in_edges(node_id) {
+            for (lid, src) in self.dense_iter_in(node_id) {
                 if label_id.is_none_or(|f| f == lid) {
                     result.push((
                         self.id_to_label[lid as usize].clone(),
@@ -63,7 +83,7 @@ impl CsrIndex {
         let mut result = Vec::new();
 
         if matches!(direction, Direction::Out | Direction::Both) {
-            for (lid, dst) in self.iter_out_edges(node_id) {
+            for (lid, dst) in self.dense_iter_out(node_id) {
                 if match_label(lid) {
                     result.push((
                         self.id_to_label[lid as usize].clone(),
@@ -73,7 +93,7 @@ impl CsrIndex {
             }
         }
         if matches!(direction, Direction::In | Direction::Both) {
-            for (lid, src) in self.iter_in_edges(node_id) {
+            for (lid, src) in self.dense_iter_in(node_id) {
                 if match_label(lid) {
                     result.push((
                         self.id_to_label[lid as usize].clone(),
@@ -86,10 +106,11 @@ impl CsrIndex {
         result
     }
 
-    /// Add a node without any edges (used for isolated/dangling nodes).
-    /// Returns the dense node ID. Idempotent — returns existing ID if present.
-    pub fn add_node(&mut self, name: &str) -> u32 {
-        self.ensure_node(name)
+    /// Add a node without any edges. Idempotent — returns the existing
+    /// tagged id if the name is already present.
+    pub fn add_node(&mut self, name: &str) -> LocalNodeId {
+        let raw = self.ensure_node(name);
+        LocalNodeId::new(raw, self.partition_tag)
     }
 
     pub fn node_count(&self) -> usize {
@@ -100,14 +121,17 @@ impl CsrIndex {
         self.node_to_id.contains_key(node)
     }
 
-    /// Get the string node ID for a dense node index.
-    pub fn node_name(&self, dense_id: u32) -> &str {
-        &self.id_to_node[dense_id as usize]
+    /// Get the string name for a tagged node id.
+    pub fn node_name(&self, id: LocalNodeId) -> &str {
+        &self.id_to_node[id.raw(self.partition_tag) as usize]
     }
 
-    /// Look up the dense node ID for a string node ID.
-    pub fn node_id(&self, name: &str) -> Option<u32> {
-        self.node_to_id.get(name).copied()
+    /// Look up the tagged node id for a string name.
+    pub fn node_id(&self, name: &str) -> Option<LocalNodeId> {
+        self.node_to_id
+            .get(name)
+            .copied()
+            .map(|raw| LocalNodeId::new(raw, self.partition_tag))
     }
 
     /// Get the string label for a dense label index.
@@ -115,25 +139,25 @@ impl CsrIndex {
         &self.id_to_label[label_id as usize]
     }
 
-    /// Look up the dense label ID for a string label.
+    /// Look up the dense label id for a string label.
     pub fn label_id(&self, name: &str) -> Option<u32> {
         self.label_to_id.get(name).copied()
     }
 
     /// Out-degree of a node (including buffer, excluding deleted).
-    pub fn out_degree(&self, node_id: u32) -> usize {
-        self.iter_out_edges(node_id).count()
+    pub fn out_degree(&self, id: LocalNodeId) -> usize {
+        self.dense_iter_out(id.raw(self.partition_tag)).count()
     }
 
     /// In-degree of a node.
-    pub fn in_degree(&self, node_id: u32) -> usize {
-        self.iter_in_edges(node_id).count()
+    pub fn in_degree(&self, id: LocalNodeId) -> usize {
+        self.dense_iter_in(id.raw(self.partition_tag)).count()
     }
 
     /// Total edge count (dense + buffer - deleted). O(V).
     pub fn edge_count(&self) -> usize {
         let n = self.id_to_node.len();
-        (0..n).map(|i| self.out_degree(i as u32)).sum()
+        (0..n as u32).map(|i| self.out_degree(self.local(i))).sum()
     }
 
     // ── Internal helpers ──
@@ -170,7 +194,7 @@ impl CsrIndex {
         false
     }
 
-    /// Iterate dense outbound edges for a node.
+    /// Iterate dense outbound edges for a node (raw u32, no tag check).
     pub(crate) fn dense_out_edges(&self, node: u32) -> impl Iterator<Item = (u32, u32)> + '_ {
         let idx = node as usize;
         if idx + 1 >= self.out_offsets.len() {
@@ -184,7 +208,7 @@ impl CsrIndex {
             .into_iter()
     }
 
-    /// Iterate dense inbound edges for a node.
+    /// Iterate dense inbound edges for a node (raw u32, no tag check).
     pub(crate) fn dense_in_edges(&self, node: u32) -> impl Iterator<Item = (u32, u32)> + '_ {
         let idx = node as usize;
         if idx + 1 >= self.in_offsets.len() {
@@ -198,31 +222,103 @@ impl CsrIndex {
             .into_iter()
     }
 
-    /// Iterate all outbound edges for a node (dense + buffer, minus deleted).
-    pub fn iter_out_edges(&self, node: u32) -> impl Iterator<Item = (u32, u32)> + '_ {
-        let idx = node as usize;
+    /// Raw u32 iteration over outbound edges (dense + buffer - deleted).
+    /// Crate-internal: used by label-dispatching helpers and algorithms
+    /// that already hold a validated partition borrow.
+    pub(crate) fn dense_iter_out(&self, node: u32) -> impl Iterator<Item = (u32, u32)> + '_ {
         let dense = self
             .dense_out_edges(node)
             .filter(move |&(lid, dst)| !self.deleted_edges.contains(&(node, lid, dst)));
-        let buffer = if idx < self.buffer_out.len() {
-            self.buffer_out[idx].to_vec()
-        } else {
-            Vec::new()
-        };
-        dense.chain(buffer)
+        dense.chain(self.buffer_out_iter(node))
     }
 
-    /// Iterate all inbound edges for a node (dense + buffer, minus deleted).
-    pub fn iter_in_edges(&self, node: u32) -> impl Iterator<Item = (u32, u32)> + '_ {
-        let idx = node as usize;
+    /// Raw u32 iteration over inbound edges (dense + buffer - deleted).
+    pub(crate) fn dense_iter_in(&self, node: u32) -> impl Iterator<Item = (u32, u32)> + '_ {
         let dense = self
             .dense_in_edges(node)
             .filter(move |&(lid, src)| !self.deleted_edges.contains(&(src, lid, node)));
-        let buffer = if idx < self.buffer_in.len() {
-            self.buffer_in[idx].to_vec()
+        dense.chain(self.buffer_in_iter(node))
+    }
+
+    /// Buffer-only iteration over outbound edges for a node.
+    pub(crate) fn buffer_out_iter(&self, node: u32) -> std::vec::IntoIter<(u32, u32)> {
+        let idx = node as usize;
+        if idx < self.buffer_out.len() {
+            self.buffer_out[idx].clone().into_iter()
         } else {
-            Vec::new()
-        };
-        dense.chain(buffer)
+            Vec::new().into_iter()
+        }
+    }
+
+    /// Buffer-only iteration over inbound edges for a node.
+    pub(crate) fn buffer_in_iter(&self, node: u32) -> std::vec::IntoIter<(u32, u32)> {
+        let idx = node as usize;
+        if idx < self.buffer_in.len() {
+            self.buffer_in[idx].clone().into_iter()
+        } else {
+            Vec::new().into_iter()
+        }
+    }
+
+    /// Iterate all outbound edges for a tagged node. Yields
+    /// `(label_id, dst)` with `dst` tagged to this partition.
+    pub fn iter_out_edges(
+        &self,
+        node: LocalNodeId,
+    ) -> impl Iterator<Item = (u32, LocalNodeId)> + '_ {
+        let raw = node.raw(self.partition_tag);
+        let tag = self.partition_tag;
+        self.dense_iter_out(raw)
+            .map(move |(lid, dst)| (lid, LocalNodeId::new(dst, tag)))
+    }
+
+    /// Iterate all inbound edges for a tagged node.
+    pub fn iter_in_edges(
+        &self,
+        node: LocalNodeId,
+    ) -> impl Iterator<Item = (u32, LocalNodeId)> + '_ {
+        let raw = node.raw(self.partition_tag);
+        let tag = self.partition_tag;
+        self.dense_iter_in(raw)
+            .map(move |(lid, src)| (lid, LocalNodeId::new(src, tag)))
+    }
+
+    // ── Raw u32 helpers for in-partition algorithm use ──
+    //
+    // The tagged `LocalNodeId` API catches cross-partition id leakage
+    // at runtime. In-partition algorithms that iterate dense ranges
+    // within a single `&CsrIndex` borrow cannot produce a cross-
+    // partition id by construction — no other partition is reachable
+    // from the borrow. These helpers expose the underlying raw u32
+    // iteration at zero cost for that case.
+
+    /// Raw dense out-edges iteration. In-partition algorithm use only.
+    pub fn iter_out_edges_raw(&self, node: u32) -> impl Iterator<Item = (u32, u32)> + '_ {
+        self.dense_iter_out(node)
+    }
+
+    /// Raw dense in-edges iteration. In-partition algorithm use only.
+    pub fn iter_in_edges_raw(&self, node: u32) -> impl Iterator<Item = (u32, u32)> + '_ {
+        self.dense_iter_in(node)
+    }
+
+    /// Raw out-degree by dense index.
+    pub fn out_degree_raw(&self, node: u32) -> usize {
+        self.dense_iter_out(node).count()
+    }
+
+    /// Raw in-degree by dense index.
+    pub fn in_degree_raw(&self, node: u32) -> usize {
+        self.dense_iter_in(node).count()
+    }
+
+    /// String name for a raw dense index. In-partition algorithm use only.
+    pub fn node_name_raw(&self, id: u32) -> &str {
+        &self.id_to_node[id as usize]
+    }
+
+    /// Raw dense index lookup by name. In-partition algorithm use only.
+    pub fn node_id_raw(&self, name: &str) -> Option<u32> {
+        self.node_to_id.get(name).copied()
     }
 }

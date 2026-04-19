@@ -98,7 +98,7 @@ impl CsrIndex {
             let mut out_deg = 0usize;
             let mut in_deg = 0usize;
 
-            for (lid, dst) in self.iter_out_edges(node_id) {
+            for (lid, dst) in self.dense_iter_out(node_id) {
                 out_deg += 1;
                 total_edges += 1;
                 *label_edge_count.entry(lid).or_insert(0) += 1;
@@ -106,7 +106,7 @@ impl CsrIndex {
                 label_targets.entry(lid).or_default().insert(dst);
             }
 
-            for (_lid, _src) in self.iter_in_edges(node_id) {
+            for (_lid, _src) in self.dense_iter_in(node_id) {
                 in_deg += 1;
             }
 
@@ -149,7 +149,7 @@ impl CsrIndex {
         let n = self.node_count();
         let mut count = 0usize;
         for node in 0..n {
-            for (l, _dst) in self.iter_out_edges(node as u32) {
+            for (l, _dst) in self.dense_iter_out(node as u32) {
                 if l == lid {
                     count += 1;
                 }

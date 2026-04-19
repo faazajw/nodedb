@@ -132,8 +132,8 @@ fn out_degree_and_in_degree() {
     let a_id = *csr.node_to_id.get("a").unwrap();
     let b_id = *csr.node_to_id.get("b").unwrap();
 
-    assert_eq!(csr.out_degree(a_id), 2);
-    assert_eq!(csr.in_degree(b_id), 2);
+    assert_eq!(csr.out_degree_raw(a_id), 2);
+    assert_eq!(csr.in_degree_raw(b_id), 2);
 }
 
 #[test]
@@ -169,9 +169,9 @@ fn node_labels_bitset() {
     assert!(csr.add_node_label("bob", "Person"));
     assert!(csr.add_node_label("acme", "Company"));
 
-    let alice_id = csr.node_id("alice").unwrap();
-    let bob_id = csr.node_id("bob").unwrap();
-    let acme_id = csr.node_id("acme").unwrap();
+    let alice_id = csr.node_id_raw("alice").unwrap();
+    let bob_id = csr.node_id_raw("bob").unwrap();
+    let acme_id = csr.node_id_raw("acme").unwrap();
 
     assert!(csr.node_has_label(alice_id, "Person"));
     assert!(!csr.node_has_label(alice_id, "Company"));
