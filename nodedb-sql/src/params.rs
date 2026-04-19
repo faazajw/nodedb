@@ -1,11 +1,25 @@
 //! AST-level parameter binding for prepared statements.
 //!
-//! Replaces `Value::Placeholder("$1")` nodes in the sqlparser AST with
-//! concrete literal values, eliminating the need for SQL text substitution.
+//! Every `Value::Placeholder("$N")` in a parsed statement is rewritten to
+//! a concrete literal value via sqlparser's `VisitorMut`. The visitor
+//! traverses every expression position the AST defines — CTE bodies,
+//! window specs, `Update.from/returning/limit`, `Delete.returning`,
+//! `Insert.on_conflict`, `Expr::Array` elements, `Expr::AnyOp`/`AllOp`
+//! right-hand sides, `Expr::Interval`, and any variant sqlparser adds in
+//! the future — without us maintaining a hand-written walker.
+//!
+//! # Why a visitor, not a hand-written walker
+//!
+//! The previous implementation was a recursive match on ~20 `Expr` /
+//! `Statement` / `Query` variants. Every new sqlparser variant it didn't
+//! enumerate was a silent bug: placeholders survived into the planner and
+//! surfaced as "unsupported expression: $1" in the resolver. The walker
+//! was opt-in where it had to be exhaustive to be correct. `VisitorMut`
+//! moves the exhaustiveness burden to sqlparser itself.
 
-use sqlparser::ast::{
-    self, Expr, GroupByExpr, Query, Select, SelectItem, SetExpr, Statement, Value,
-};
+use core::ops::ControlFlow;
+
+use sqlparser::ast::{Statement, Value, VisitMut, VisitorMut};
 
 /// Parameter value for AST substitution.
 ///
@@ -20,14 +34,34 @@ pub enum ParamValue {
 }
 
 /// Substitute all `$N` placeholders in a parsed statement with concrete values.
-///
-/// Walks the AST and replaces every `Value::Placeholder("$N")` with the
-/// corresponding literal from `params` (0-indexed: `$1` → `params[0]`).
 pub fn bind_params(stmt: &mut Statement, params: &[ParamValue]) {
     if params.is_empty() {
         return;
     }
-    bind_statement(stmt, params);
+    let mut binder = ParamBinder { params };
+    let _ = stmt.visit(&mut binder);
+}
+
+/// Visitor that rewrites every `Value::Placeholder("$N")` it encounters.
+///
+/// sqlparser's `VisitMut` impls take us into every expression position of
+/// every `Expr`, `Statement`, `Query`, `SetExpr`, `TableFactor`, etc. —
+/// so we only care about the leaf: the `Value` itself.
+struct ParamBinder<'a> {
+    params: &'a [ParamValue],
+}
+
+impl VisitorMut for ParamBinder<'_> {
+    type Break = ();
+
+    fn pre_visit_value(&mut self, value: &mut Value) -> ControlFlow<Self::Break> {
+        if let Value::Placeholder(p) = value
+            && let Some(v) = placeholder_to_value(p, self.params)
+        {
+            *value = v;
+        }
+        ControlFlow::Continue(())
+    }
 }
 
 fn placeholder_to_value(placeholder: &str, params: &[ParamValue]) -> Option<Value> {
@@ -42,188 +76,6 @@ fn placeholder_to_value(placeholder: &str, params: &[ParamValue]) -> Option<Valu
         ParamValue::Float64(f) => Value::Number(f.to_string(), false),
         ParamValue::Text(s) => Value::SingleQuotedString(s.clone()),
     })
-}
-
-// ── AST walkers ─────────────────────────────────────────────────────
-
-fn bind_statement(stmt: &mut Statement, params: &[ParamValue]) {
-    match stmt {
-        Statement::Query(q) => bind_query(q, params),
-        Statement::Insert(ins) => {
-            if let Some(ref mut src) = ins.source {
-                bind_query(src, params);
-            }
-            if let Some(ref mut sel) = ins.returning {
-                for item in sel {
-                    bind_select_item(item, params);
-                }
-            }
-        }
-        Statement::Update(upd) => {
-            for a in &mut upd.assignments {
-                bind_expr(&mut a.value, params);
-            }
-            if let Some(ref mut w) = upd.selection {
-                bind_expr(w, params);
-            }
-        }
-        Statement::Delete(del) => {
-            if let Some(ref mut w) = del.selection {
-                bind_expr(w, params);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn bind_query(query: &mut Query, params: &[ParamValue]) {
-    bind_set_expr(&mut query.body, params);
-    if let Some(ref mut order_by) = query.order_by
-        && let ast::OrderByKind::Expressions(ref mut exprs) = order_by.kind
-    {
-        for item in exprs {
-            bind_expr(&mut item.expr, params);
-        }
-    }
-    if let Some(limit_clause) = &mut query.limit_clause
-        && let ast::LimitClause::LimitOffset { limit, offset, .. } = limit_clause
-    {
-        if let Some(limit_expr) = limit {
-            bind_expr(limit_expr, params);
-        }
-        if let Some(offset_val) = offset {
-            bind_expr(&mut offset_val.value, params);
-        }
-    }
-}
-
-fn bind_set_expr(body: &mut SetExpr, params: &[ParamValue]) {
-    match body {
-        SetExpr::Select(sel) => bind_select(sel, params),
-        SetExpr::Query(q) => bind_query(q, params),
-        SetExpr::SetOperation { left, right, .. } => {
-            bind_set_expr(left, params);
-            bind_set_expr(right, params);
-        }
-        SetExpr::Values(vals) => {
-            for row in &mut vals.rows {
-                for expr in row {
-                    bind_expr(expr, params);
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
-fn bind_select(sel: &mut Select, params: &[ParamValue]) {
-    for item in &mut sel.projection {
-        bind_select_item(item, params);
-    }
-    if let Some(ref mut w) = sel.selection {
-        bind_expr(w, params);
-    }
-    match &mut sel.group_by {
-        GroupByExpr::Expressions(exprs, _) => {
-            for e in exprs {
-                bind_expr(e, params);
-            }
-        }
-        GroupByExpr::All(_) => {}
-    }
-    if let Some(ref mut having) = sel.having {
-        bind_expr(having, params);
-    }
-}
-
-fn bind_select_item(item: &mut SelectItem, params: &[ParamValue]) {
-    match item {
-        SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. } => {
-            bind_expr(e, params);
-        }
-        _ => {}
-    }
-}
-
-fn bind_expr(expr: &mut Expr, params: &[ParamValue]) {
-    match expr {
-        Expr::Value(ast::ValueWithSpan { value, .. }) => {
-            if let Value::Placeholder(p) = value
-                && let Some(v) = placeholder_to_value(p, params)
-            {
-                *value = v;
-            }
-        }
-        Expr::BinaryOp { left, right, .. } => {
-            bind_expr(left, params);
-            bind_expr(right, params);
-        }
-        Expr::UnaryOp { expr: e, .. } => bind_expr(e, params),
-        Expr::Nested(e) => bind_expr(e, params),
-        Expr::Between {
-            expr: e, low, high, ..
-        } => {
-            bind_expr(e, params);
-            bind_expr(low, params);
-            bind_expr(high, params);
-        }
-        Expr::InList { expr: e, list, .. } => {
-            bind_expr(e, params);
-            for item in list {
-                bind_expr(item, params);
-            }
-        }
-        Expr::InSubquery {
-            expr: e, subquery, ..
-        } => {
-            bind_expr(e, params);
-            bind_query(subquery, params);
-        }
-        Expr::IsNull(e) | Expr::IsNotNull(e) => bind_expr(e, params),
-        Expr::IsFalse(e) | Expr::IsTrue(e) => bind_expr(e, params),
-        Expr::IsNotFalse(e) | Expr::IsNotTrue(e) => bind_expr(e, params),
-        Expr::Like {
-            expr: e, pattern, ..
-        }
-        | Expr::ILike {
-            expr: e, pattern, ..
-        } => {
-            bind_expr(e, params);
-            bind_expr(pattern, params);
-        }
-        Expr::Cast { expr: e, .. } => {
-            bind_expr(e, params);
-        }
-        Expr::Function(f) => {
-            if let ast::FunctionArguments::List(ref mut args) = f.args {
-                for arg in &mut args.args {
-                    if let ast::FunctionArg::Unnamed(ast::FunctionArgExpr::Expr(e)) = arg {
-                        bind_expr(e, params);
-                    }
-                }
-            }
-        }
-        Expr::Case {
-            operand,
-            conditions,
-            else_result,
-            ..
-        } => {
-            if let Some(e) = operand {
-                bind_expr(e, params);
-            }
-            for cw in conditions {
-                bind_expr(&mut cw.condition, params);
-                bind_expr(&mut cw.result, params);
-            }
-            if let Some(e) = else_result {
-                bind_expr(e, params);
-            }
-        }
-        Expr::Exists { subquery, .. } => bind_query(subquery, params),
-        Expr::Subquery(q) => bind_query(q, params),
-        _ => {}
-    }
 }
 
 #[cfg(test)]
@@ -299,5 +151,150 @@ mod tests {
     fn no_params_noop() {
         let result = bind_and_format("SELECT 1", &[]);
         assert!(result.contains("SELECT 1"));
+    }
+
+    #[test]
+    fn bind_cte_body_placeholders() {
+        let result = bind_and_format(
+            "WITH x AS (SELECT $1 AS v) SELECT v FROM x",
+            &[ParamValue::Int64(42)],
+        );
+        assert!(
+            result.contains("SELECT 42"),
+            "CTE body placeholder not substituted: {result}"
+        );
+        assert!(!result.contains("$1"), "placeholder survived: {result}");
+    }
+
+    #[test]
+    fn bind_recursive_cte_placeholders() {
+        let result = bind_and_format(
+            "WITH RECURSIVE chain AS (SELECT $1 AS id UNION ALL SELECT chain.id + 1 FROM chain WHERE chain.id < $2) SELECT * FROM chain",
+            &[ParamValue::Int64(1), ParamValue::Int64(10)],
+        );
+        assert!(
+            !result.contains("$1") && !result.contains("$2"),
+            "got: {result}"
+        );
+    }
+
+    #[test]
+    fn bind_array_elements() {
+        let result = bind_and_format(
+            "SELECT ARRAY[$1, $2, $3]",
+            &[
+                ParamValue::Int64(1),
+                ParamValue::Int64(2),
+                ParamValue::Int64(3),
+            ],
+        );
+        assert!(
+            !result.contains("$1"),
+            "array placeholder survived: {result}"
+        );
+        assert!(
+            result.contains('1') && result.contains('2') && result.contains('3'),
+            "got: {result}"
+        );
+    }
+
+    #[test]
+    fn bind_any_op_rhs() {
+        let result = bind_and_format(
+            "SELECT * FROM t WHERE id = ANY($1)",
+            &[ParamValue::Text("{a,b}".into())],
+        );
+        assert!(!result.contains("$1"), "got: {result}");
+    }
+
+    #[test]
+    fn bind_all_op_rhs() {
+        let result = bind_and_format(
+            "SELECT * FROM t WHERE id = ALL($1)",
+            &[ParamValue::Text("{a,b}".into())],
+        );
+        assert!(!result.contains("$1"), "got: {result}");
+    }
+
+    #[test]
+    fn bind_update_returning() {
+        let result = bind_and_format(
+            "UPDATE t SET n = 1 WHERE id = $1 RETURNING $2 AS tag",
+            &[ParamValue::Int64(7), ParamValue::Text("note".into())],
+        );
+        assert!(result.contains("id = 7"), "got: {result}");
+        assert!(result.contains("'note'"), "got: {result}");
+        assert!(!result.contains("$2"), "got: {result}");
+    }
+
+    #[test]
+    fn bind_delete_returning() {
+        let result = bind_and_format(
+            "DELETE FROM t WHERE id = $1 RETURNING $2 AS tag",
+            &[ParamValue::Int64(3), ParamValue::Text("gone".into())],
+        );
+        assert!(
+            result.contains("id = 3") && result.contains("'gone'"),
+            "got: {result}"
+        );
+        assert!(!result.contains("$2"), "got: {result}");
+    }
+
+    #[test]
+    fn bind_update_limit() {
+        let result = bind_and_format(
+            "UPDATE t SET n = 1 WHERE id > 0 LIMIT $1",
+            &[ParamValue::Int64(5)],
+        );
+        assert!(!result.contains("$1"), "got: {result}");
+    }
+
+    #[test]
+    fn bind_interval_value_placeholder() {
+        let result = bind_and_format(
+            "SELECT now() - INTERVAL $1",
+            &[ParamValue::Text("1 day".into())],
+        );
+        assert!(!result.contains("$1"), "got: {result}");
+    }
+
+    #[test]
+    fn bind_update_from_subquery() {
+        let result = bind_and_format(
+            "UPDATE t SET n = s.y FROM (SELECT $1 AS y) s WHERE t.id = s.y",
+            &[ParamValue::Int64(7)],
+        );
+        assert!(!result.contains("$1"), "got: {result}");
+    }
+
+    #[test]
+    fn bind_insert_on_conflict_update_placeholder() {
+        let result = bind_and_format(
+            "INSERT INTO t (id, n) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET n = $3",
+            &[
+                ParamValue::Int64(1),
+                ParamValue::Int64(2),
+                ParamValue::Int64(99),
+            ],
+        );
+        assert!(!result.contains("$3"), "got: {result}");
+    }
+
+    #[test]
+    fn bind_window_partition_by_placeholder() {
+        let result = bind_and_format(
+            "SELECT LAG(x) OVER (PARTITION BY $1 ORDER BY b) FROM t",
+            &[ParamValue::Text("user_id".into())],
+        );
+        assert!(!result.contains("$1"), "got: {result}");
+    }
+
+    #[test]
+    fn bind_window_order_by_placeholder() {
+        let result = bind_and_format(
+            "SELECT LAG(x) OVER (PARTITION BY a ORDER BY $1) FROM t",
+            &[ParamValue::Text("ts".into())],
+        );
+        assert!(!result.contains("$1"), "got: {result}");
     }
 }

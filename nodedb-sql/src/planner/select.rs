@@ -320,49 +320,12 @@ fn has_aggregation(select: &Select, functions: &FunctionRegistry) -> bool {
     for item in &select.projection {
         if let ast::SelectItem::UnnamedExpr(expr) | ast::SelectItem::ExprWithAlias { expr, .. } =
             item
-            && expr_contains_aggregate(expr, functions)
+            && crate::aggregate_walk::contains_aggregate(expr, functions)
         {
             return true;
         }
     }
     false
-}
-
-/// Check if an expression contains an aggregate function call.
-fn expr_contains_aggregate(expr: &ast::Expr, functions: &FunctionRegistry) -> bool {
-    match expr {
-        ast::Expr::Function(func) => {
-            let name = func
-                .name
-                .0
-                .iter()
-                .map(|p| match p {
-                    ast::ObjectNamePart::Identifier(ident) => normalize_ident(ident),
-                    _ => String::new(),
-                })
-                .collect::<Vec<_>>()
-                .join(".");
-            if functions.is_aggregate(&name) {
-                return true;
-            }
-            // Check args recursively.
-            if let ast::FunctionArguments::List(args) = &func.args {
-                for arg in &args.args {
-                    if let ast::FunctionArg::Unnamed(ast::FunctionArgExpr::Expr(e)) = arg
-                        && expr_contains_aggregate(e, functions)
-                    {
-                        return true;
-                    }
-                }
-            }
-            false
-        }
-        ast::Expr::BinaryOp { left, right, .. } => {
-            expr_contains_aggregate(left, functions) || expr_contains_aggregate(right, functions)
-        }
-        ast::Expr::Nested(inner) => expr_contains_aggregate(inner, functions),
-        _ => false,
-    }
 }
 
 /// Try to detect search-triggering patterns in WHERE clause.
@@ -662,41 +625,18 @@ fn apply_limit(mut plan: SqlPlan, limit_clause: &Option<ast::LimitClause>) -> Sq
     let (limit_val, offset_val) = match limit_clause {
         None => (None, 0usize),
         Some(ast::LimitClause::LimitOffset { limit, offset, .. }) => {
-            let lv = limit.as_ref().and_then(|e| match e {
-                ast::Expr::Value(v) => match &v.value {
-                    ast::Value::Number(n, _) => n.parse::<usize>().ok(),
-                    _ => None,
-                },
-                _ => None,
-            });
+            let lv = limit
+                .as_ref()
+                .and_then(crate::coerce::expr_as_usize_literal);
             let ov = offset
                 .as_ref()
-                .and_then(|o| match &o.value {
-                    ast::Expr::Value(v) => match &v.value {
-                        ast::Value::Number(n, _) => n.parse::<usize>().ok(),
-                        _ => None,
-                    },
-                    _ => None,
-                })
+                .and_then(|o| crate::coerce::expr_as_usize_literal(&o.value))
                 .unwrap_or(0);
             (lv, ov)
         }
         Some(ast::LimitClause::OffsetCommaLimit { offset, limit }) => {
-            let lv = match limit {
-                ast::Expr::Value(v) => match &v.value {
-                    ast::Value::Number(n, _) => n.parse::<usize>().ok(),
-                    _ => None,
-                },
-                _ => None,
-            };
-            let ov = match offset {
-                ast::Expr::Value(v) => match &v.value {
-                    ast::Value::Number(n, _) => n.parse::<usize>().ok(),
-                    _ => None,
-                },
-                _ => None,
-            }
-            .unwrap_or(0);
+            let lv = crate::coerce::expr_as_usize_literal(limit);
+            let ov = crate::coerce::expr_as_usize_literal(offset).unwrap_or(0);
             (lv, ov)
         }
     };

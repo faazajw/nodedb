@@ -194,80 +194,15 @@ pub fn extract_aggregates_from_projection(
 ) -> Result<Vec<AggregateExpr>> {
     let mut aggregates = Vec::new();
     for item in items {
-        match item {
-            ast::SelectItem::UnnamedExpr(expr) => {
-                extract_aggregates_from_expr(expr, &format!("{expr}"), functions, &mut aggregates)?;
-            }
-            ast::SelectItem::ExprWithAlias { expr, alias } => {
-                extract_aggregates_from_expr(
-                    expr,
-                    &normalize_ident(alias),
-                    functions,
-                    &mut aggregates,
-                )?;
-            }
-            _ => {}
-        }
+        let (expr, alias): (&ast::Expr, String) = match item {
+            ast::SelectItem::UnnamedExpr(expr) => (expr, format!("{expr}")),
+            ast::SelectItem::ExprWithAlias { expr, alias } => (expr, normalize_ident(alias)),
+            _ => continue,
+        };
+        let mut extracted = crate::aggregate_walk::extract_aggregates(expr, &alias, functions)?;
+        aggregates.append(&mut extracted);
     }
     Ok(aggregates)
-}
-
-fn extract_aggregates_from_expr(
-    expr: &ast::Expr,
-    alias: &str,
-    functions: &FunctionRegistry,
-    out: &mut Vec<AggregateExpr>,
-) -> Result<()> {
-    match expr {
-        ast::Expr::Function(func) => {
-            let name = func
-                .name
-                .0
-                .iter()
-                .map(|p| match p {
-                    ast::ObjectNamePart::Identifier(ident) => normalize_ident(ident),
-                    _ => String::new(),
-                })
-                .collect::<Vec<_>>()
-                .join(".");
-            if functions.is_aggregate(&name) {
-                let args = match &func.args {
-                    ast::FunctionArguments::List(args) => args
-                        .args
-                        .iter()
-                        .filter_map(|a| match a {
-                            ast::FunctionArg::Unnamed(ast::FunctionArgExpr::Expr(e)) => {
-                                convert_expr(e).ok()
-                            }
-                            ast::FunctionArg::Unnamed(ast::FunctionArgExpr::Wildcard) => {
-                                Some(SqlExpr::Wildcard)
-                            }
-                            _ => None,
-                        })
-                        .collect(),
-                    _ => Vec::new(),
-                };
-                let distinct = matches!(&func.args,
-                    ast::FunctionArguments::List(args) if matches!(args.duplicate_treatment, Some(ast::DuplicateTreatment::Distinct))
-                );
-                out.push(AggregateExpr {
-                    function: name,
-                    args,
-                    alias: alias.into(),
-                    distinct,
-                });
-            }
-        }
-        ast::Expr::BinaryOp { left, right, .. } => {
-            extract_aggregates_from_expr(left, alias, functions, out)?;
-            extract_aggregates_from_expr(right, alias, functions, out)?;
-        }
-        ast::Expr::Nested(inner) => {
-            extract_aggregates_from_expr(inner, alias, functions, out)?;
-        }
-        _ => {}
-    }
-    Ok(())
 }
 
 #[cfg(test)]

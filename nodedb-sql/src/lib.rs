@@ -8,8 +8,11 @@
 //! SQL → parse → resolve → plan → optimize → SqlPlan
 //! ```
 
+pub mod aggregate_walk;
 pub mod catalog;
+pub mod coerce;
 pub mod ddl_ast;
+pub mod dsl_bind;
 pub mod engine_rules;
 pub mod error;
 pub mod functions;
