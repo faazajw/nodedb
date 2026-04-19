@@ -1,36 +1,38 @@
 # Graph Engine
 
-NodeDB's graph engine uses a native CSR (Compressed Sparse Row) adjacency index with interned node IDs (`u32`) and labels (`u16`) — not recursive JOINs pretending to be a graph. At 1 billion edges, CSR uses ~10 GB vs ~60 GB for naive adjacency lists (6x improvement). Sub-millisecond multi-hop traversals, 13 native algorithms, Cypher-subset pattern matching, and GraphRAG fusion — all in the same process as every other engine.
+NodeDB's graph engine uses a native CSR (Compressed Sparse Row) adjacency index with interned node IDs (`u32`) and labels (`u32`) — not recursive JOINs pretending to be a graph. At 1 billion edges, CSR uses ~10 GB vs ~60 GB for naive adjacency lists (6x improvement). Sub-millisecond multi-hop traversals, 13 native algorithms, Cypher-subset pattern matching, and GraphRAG fusion — all in the same process as every other engine.
 
 ---
 
 ## Storage Model
 
-Edges are persisted in a redb B-Tree with forward and reverse indexes:
+Edges are persisted in a redb B-Tree with forward and reverse indexes, both keyed by a `(tenant_id, composite)` tuple:
 
 ```
 Forward Index (EDGES table):
-  Key:   "src_id\x00edge_label\x00dst_id"
+  Key:   (tenant_id: u32, "src\x00edge_label\x00dst")
   Value: edge properties (MessagePack)
 
 Reverse Index (REVERSE_EDGES table):
-  Key:   "dst_id\x00edge_label\x00src_id"
+  Key:   (tenant_id: u32, "dst\x00edge_label\x00src")
   Value: [] (existence check only)
 ```
 
-Both tables are updated atomically in a single write transaction. The null-byte separator enables efficient prefix scans for outbound traversal.
+Tenant isolation is structural: the tenant id is a first-class key component, not a lexical prefix on node names. Node names in the composite portion are user-visible strings. Both tables update atomically in a single write transaction, and the null-byte separator enables prefix scans for outbound traversal within a tenant.
 
-At query time, a CSR index is built from the B-Tree for cache-resident bulk operations:
+At query time the in-memory CSR is partitioned by tenant (`ShardedCsrIndex` = one `CsrIndex` per tenant); algorithms and traversals run against a single tenant's partition:
 
 ```
-CSR Layout:
+CsrIndex (per tenant):
   out_offsets: Vec<u32>   [num_nodes + 1]    — offset into target array per node
   out_targets: Vec<u32>   [num_edges]        — destination node IDs (contiguous)
-  out_labels:  Vec<u16>   [num_edges]        — edge labels (parallel array)
+  out_labels:  Vec<u32>   [num_edges]        — edge labels (parallel array)
   out_weights: Vec<f64>   [num_edges]        — optional, allocated only when weighted
 
   in_offsets / in_targets / in_labels / in_weights — symmetric for inbound
 ```
+
+Each `CsrIndex` gets a unique partition tag at construction. Public APIs that return dense node indices hand out `LocalNodeId { id, partition_tag }` — using a node id from one partition with another partition's API panics at the boundary.
 
 Writes go to a mutable buffer and become visible immediately. Compaction merges the buffer into the dense CSR arrays via double-buffered swap when the buffer exceeds 10% of the dense size.
 
@@ -72,11 +74,11 @@ GRAPH TRAVERSE FROM 'users:alice' DEPTH 2 LABEL 'follows' DIRECTION out;
 
 Breadth-first search from a start node. Returns discovered nodes at each depth level.
 
-| Parameter   | Default | Description                    |
-| ----------- | ------- | ------------------------------ |
-| `DEPTH`     | 2       | Maximum hop count              |
-| `LABEL`     | (any)   | Filter by edge label           |
-| `DIRECTION` | out     | `in`, `out`, or `both`         |
+| Parameter   | Default | Description            |
+| ----------- | ------- | ---------------------- |
+| `DEPTH`     | 2       | Maximum hop count      |
+| `LABEL`     | (any)   | Filter by edge label   |
+| `DIRECTION` | out     | `in`, `out`, or `both` |
 
 ### Neighbors (1-Hop)
 
@@ -132,15 +134,15 @@ NodeDB embeds a Cypher-subset pattern engine. MATCH queries arrive through any p
 
 **Clauses:**
 
-| Clause           | Description                                          |
-| ---------------- | ---------------------------------------------------- |
-| `MATCH`          | Required. Pattern to match against the graph.        |
-| `OPTIONAL MATCH` | LEFT JOIN semantics — preserves rows with no match.  |
-| `WHERE`          | Filter on bound variables. Supports `=`, `!=`, `<`, `<=`, `>`, `>=`. |
-| `WHERE NOT EXISTS { MATCH ... }` | Anti-join — exclude rows matching a sub-pattern. |
-| `RETURN`         | Project bindings. Supports aliases (`AS`). Default: all bound variables. |
-| `ORDER BY`       | Sort results. `ASC` or `DESC`.                       |
-| `LIMIT`          | Cap result count.                                    |
+| Clause                           | Description                                                              |
+| -------------------------------- | ------------------------------------------------------------------------ |
+| `MATCH`                          | Required. Pattern to match against the graph.                            |
+| `OPTIONAL MATCH`                 | LEFT JOIN semantics — preserves rows with no match.                      |
+| `WHERE`                          | Filter on bound variables. Supports `=`, `!=`, `<`, `<=`, `>`, `>=`.     |
+| `WHERE NOT EXISTS { MATCH ... }` | Anti-join — exclude rows matching a sub-pattern.                         |
+| `RETURN`                         | Project bindings. Supports aliases (`AS`). Default: all bound variables. |
+| `ORDER BY`                       | Sort results. `ASC` or `DESC`.                                           |
+| `LIMIT`                          | Cap result count.                                                        |
 
 Multiple comma-separated patterns in one `MATCH` clause act as self-joins.
 
@@ -228,21 +230,21 @@ GRAPH ALGO DIAMETER ON web;
 
 ### Algorithm Reference
 
-| Algorithm           | What it computes                                                   | Key Parameters                              |
-| ------------------- | ------------------------------------------------------------------ | ------------------------------------------- |
-| **PageRank**        | Node importance via incoming link structure                        | `DAMPING` (0.85), `ITERATIONS` (20), `TOLERANCE` (1e-7) |
-| **WCC**             | Weakly connected components (union-find with path compression)     | —                                           |
-| **Label Propagation** | Community detection via iterative label spreading                | `ITERATIONS` (10)                           |
-| **LCC**             | Local clustering coefficient — how tightly neighbors connect       | —                                           |
-| **SSSP**            | Single-source shortest path (Dijkstra, rejects negative weights)   | `FROM` (required)                           |
-| **Betweenness**     | Bridge nodes with high traffic (Brandes' algorithm)                | `SAMPLE` (optional, for approximation)      |
-| **Closeness**       | How close a node is to all others (inverse distance sum)           | `SAMPLE` (optional)                         |
-| **Harmonic**        | Like closeness, but handles disconnected graphs                    | `SAMPLE` (optional)                         |
-| **Degree**          | Connection count per node                                          | `DIRECTION` (in/out/both)                   |
-| **Louvain**         | Community detection via modularity optimization                    | `ITERATIONS` (10), `RESOLUTION` (1.0)       |
-| **Triangles**       | Triangle count (per-node or global)                                | `MODE` (global/per_node)                    |
-| **Diameter**        | Longest shortest path in the graph                                 | —                                           |
-| **k-Core**          | Coreness decomposition (peeling algorithm)                         | —                                           |
+| Algorithm             | What it computes                                                 | Key Parameters                                          |
+| --------------------- | ---------------------------------------------------------------- | ------------------------------------------------------- |
+| **PageRank**          | Node importance via incoming link structure                      | `DAMPING` (0.85), `ITERATIONS` (20), `TOLERANCE` (1e-7) |
+| **WCC**               | Weakly connected components (union-find with path compression)   | —                                                       |
+| **Label Propagation** | Community detection via iterative label spreading                | `ITERATIONS` (10)                                       |
+| **LCC**               | Local clustering coefficient — how tightly neighbors connect     | —                                                       |
+| **SSSP**              | Single-source shortest path (Dijkstra, rejects negative weights) | `FROM` (required)                                       |
+| **Betweenness**       | Bridge nodes with high traffic (Brandes' algorithm)              | `SAMPLE` (optional, for approximation)                  |
+| **Closeness**         | How close a node is to all others (inverse distance sum)         | `SAMPLE` (optional)                                     |
+| **Harmonic**          | Like closeness, but handles disconnected graphs                  | `SAMPLE` (optional)                                     |
+| **Degree**            | Connection count per node                                        | `DIRECTION` (in/out/both)                               |
+| **Louvain**           | Community detection via modularity optimization                  | `ITERATIONS` (10), `RESOLUTION` (1.0)                   |
+| **Triangles**         | Triangle count (per-node or global)                              | `MODE` (global/per_node)                                |
+| **Diameter**          | Longest shortest path in the graph                               | —                                                       |
+| **k-Core**            | Coreness decomposition (peeling algorithm)                       | —                                                       |
 
 ---
 
@@ -282,16 +284,16 @@ GRAPH RAG FUSION ON entities
   MAX_VISITED 1000;
 ```
 
-| Parameter          | Description                                              |
-| ------------------ | -------------------------------------------------------- |
-| `QUERY`            | Query embedding vector                                   |
-| `VECTOR_TOP_K`     | Number of seed nodes from vector search                  |
-| `EXPANSION_DEPTH`  | BFS hop count from seeds                                 |
-| `EDGE_LABEL`       | Optional edge type filter during expansion               |
-| `DIRECTION`        | `in`, `out`, or `both` for BFS                           |
-| `FINAL_TOP_K`      | Final result count after fusion                          |
-| `RRF_K`            | Weighting constants `(vector_k, graph_k)` for RRF scoring |
-| `MAX_VISITED`      | Memory budget cap — BFS stops early if exceeded          |
+| Parameter         | Description                                               |
+| ----------------- | --------------------------------------------------------- |
+| `QUERY`           | Query embedding vector                                    |
+| `VECTOR_TOP_K`    | Number of seed nodes from vector search                   |
+| `EXPANSION_DEPTH` | BFS hop count from seeds                                  |
+| `EDGE_LABEL`      | Optional edge type filter during expansion                |
+| `DIRECTION`       | `in`, `out`, or `both` for BFS                            |
+| `FINAL_TOP_K`     | Final result count after fusion                           |
+| `RRF_K`           | Weighting constants `(vector_k, graph_k)` for RRF scoring |
+| `MAX_VISITED`     | Memory budget cap — BFS stops early if exceeded           |
 
 The response includes a truncation flag if the memory budget forced early termination.
 
