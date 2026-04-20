@@ -69,15 +69,45 @@ pub fn drop_collection(
     let name = name_lower.as_str();
     let tenant_id = identity.tenant_id;
 
-    // CASCADE is accepted by the parser, but the dependent-enumeration
-    // pass lives in the apply layer and is not yet landed. Rejecting
-    // here with a precise message beats silently "succeeding" while
-    // orphaning triggers/RLS/MVs.
+    // Dependent-object check. When CASCADE is NOT specified we refuse
+    // the drop if anything points at this collection. The cascade-
+    // proposal path (atomic batched Delete* + PurgeCollection) has not
+    // landed yet, so CASCADE itself is still rejected — but now with
+    // the enumerated dependent list in hand, so the rejection is
+    // specific instead of a generic "not yet supported".
+    let dependents: Vec<crate::control::cascade::Dependent> = if let Some(catalog) =
+        state.credentials.catalog()
+    {
+        let mut visited = std::collections::HashSet::new();
+        crate::control::cascade::collect_dependents(catalog, tenant_id.as_u32(), name, &mut visited)
+            .map_err(|e| sqlstate_error("XX000", &e.to_string()))?
+    } else {
+        Vec::new()
+    };
+
+    if !dependents.is_empty() && !flags.cascade {
+        let deps_list: Vec<String> = dependents
+            .iter()
+            .map(|d| format!("{}:{}", d.kind.as_str(), d.name))
+            .collect();
+        return Err(sqlstate_error(
+            "2BP01",
+            &format!(
+                "cannot drop collection '{name}': {} dependent object(s) exist ({}); \
+                 drop them individually or retry with CASCADE (batched-cascade propose \
+                 not yet implemented — CASCADE currently rejected to avoid orphaned rows)",
+                dependents.len(),
+                deps_list.join(", ")
+            ),
+        ));
+    }
+
     if flags.cascade {
         return Err(sqlstate_error(
             "0A000",
-            "DROP COLLECTION ... CASCADE is not yet supported — drop dependents (triggers, \
-             RLS policies, materialized views, change streams, schedules) individually first",
+            "DROP COLLECTION ... CASCADE requires atomic batched Delete* + PurgeCollection \
+             in one metadata-raft commit — that proposer surface has not landed yet. \
+             Drop dependents individually in the meantime.",
         ));
     }
     let _ = flags.cascade_force; // same gate

@@ -197,6 +197,34 @@ pub enum Error {
 
     #[error("internal error: {detail}")]
     Internal { detail: String },
+
+    /// DROP / PURGE refused because other catalog objects still
+    /// reference the target. Operator must either drop them first or
+    /// retry with `CASCADE`. `dependents` lists `(kind, name)` pairs.
+    #[error(
+        "cannot drop {root_kind} '{root_name}' for tenant {tenant_id}: \
+         {dependent_count} dependent object(s) exist; use CASCADE to drop them atomically"
+    )]
+    DependentObjectsExist {
+        tenant_id: u32,
+        root_kind: &'static str,
+        root_name: String,
+        dependent_count: usize,
+        dependents: Vec<(String, String)>,
+    },
+
+    /// MV-graph cycle detected (or graph exceeded `MAX_DEPTH`) during
+    /// cascade enumeration. Treated as a blocker rather than silently
+    /// truncating.
+    #[error(
+        "cascade cycle or depth limit ({depth}) exceeded while enumerating \
+         dependents of '{root}' for tenant {tenant_id}"
+    )]
+    CascadeCycle {
+        tenant_id: u32,
+        root: String,
+        depth: usize,
+    },
 }
 
 /// Result alias for NodeDB operations.
@@ -363,6 +391,27 @@ impl From<Error> for NodeDbError {
             Error::Bridge { detail } => NodeDbError::bridge(detail),
             Error::VersionCompat { detail } => NodeDbError::cluster(detail),
             Error::Internal { detail } => NodeDbError::internal(detail),
+            Error::DependentObjectsExist {
+                tenant_id: _,
+                root_kind,
+                root_name,
+                dependent_count,
+                dependents,
+            } => {
+                let names: Vec<String> =
+                    dependents.iter().map(|(k, n)| format!("{k}:{n}")).collect();
+                NodeDbError::bad_request(format!(
+                    "cannot drop {root_kind} '{root_name}': {dependent_count} dependent(s) exist ({})",
+                    names.join(", ")
+                ))
+            }
+            Error::CascadeCycle {
+                tenant_id: _,
+                root,
+                depth,
+            } => NodeDbError::internal(format!(
+                "cascade cycle / depth-limit ({depth}) exceeded on '{root}'"
+            )),
         }
     }
 }
