@@ -98,6 +98,17 @@ pub enum MetaOp {
         purge_lsn: u64,
     },
 
+    /// Reclaim every local Data Plane resource for a single
+    /// materialized view. Mirrors `UnregisterCollection` one level
+    /// up: an MV has its own columnar segment files (populated by the
+    /// CDC refresh loop) that outlive the MV's catalog row when the
+    /// MV is dropped, unless reclaim runs on every follower. Drops
+    /// the MV's in-memory refresh state + unlinks its segment files.
+    ///
+    /// Idempotent: missing in-memory state is a no-op; missing files
+    /// are a no-op. Runs on every node.
+    UnregisterMaterializedView { tenant_id: u32, name: String },
+
     /// Enforce retention on a timeseries collection: drop segments older than
     /// the cutoff. Called by the retention policy enforcement loop.
     EnforceTimeseriesRetention { collection: String, max_age_ms: i64 },

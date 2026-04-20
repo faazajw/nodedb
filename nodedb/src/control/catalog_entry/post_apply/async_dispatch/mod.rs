@@ -19,5 +19,6 @@
 
 pub mod collection;
 mod dispatcher;
+pub mod materialized_view;
 
 pub use dispatcher::spawn_post_apply_async_side_effects;

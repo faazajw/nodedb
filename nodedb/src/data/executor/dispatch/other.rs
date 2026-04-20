@@ -304,6 +304,10 @@ impl CoreLoop {
                 purge_lsn,
             }) => self.execute_unregister_collection(task, *tenant_id, name, *purge_lsn),
 
+            PhysicalPlan::Meta(MetaOp::UnregisterMaterializedView { tenant_id, name }) => {
+                self.execute_unregister_materialized_view(task, *tenant_id, name)
+            }
+
             PhysicalPlan::Meta(MetaOp::EnforceTimeseriesRetention {
                 collection,
                 max_age_ms,

@@ -35,13 +35,23 @@ pub fn spawn_post_apply_async_side_effects(
                 collection::purge_async(tenant_id, name, raft_index, shared).await;
             });
         }
+        // `DeleteMaterializedView` now has async follow-up: every
+        // node dispatches `MetaOp::UnregisterMaterializedView` to its
+        // local Data Plane so the MV's columnar segment files +
+        // per-core in-memory state get reclaimed on followers, not
+        // just on the leader. Runs on every node; idempotent.
+        CatalogEntry::DeleteMaterializedView { tenant_id, name } => {
+            tokio::spawn(async move {
+                super::materialized_view::delete_async(tenant_id, name, shared).await;
+            });
+        }
         // ── Variants with no async side effect today ─────────────────────────
         // Listed explicitly (no `_ => {}`) so the compiler forces a decision
-        // when a new variant is added. Note: `DeleteTrigger`,
-        // `DeleteChangeStream`, and `DeleteMaterializedView` handle their
-        // per-node in-memory teardown synchronously via
-        // `apply_post_apply_side_effects_sync` (which also runs on every
-        // node); they have no additional async work today.
+        // when a new variant is added. Note: `DeleteTrigger` and
+        // `DeleteChangeStream` handle their per-node in-memory
+        // teardown synchronously via `apply_post_apply_side_effects_sync`
+        // (which also runs on every node); they have no additional
+        // async work today.
         CatalogEntry::DeactivateCollection { .. }
         | CatalogEntry::PutSequence(_)
         | CatalogEntry::DeleteSequence { .. }
@@ -63,7 +73,6 @@ pub fn spawn_post_apply_async_side_effects(
         | CatalogEntry::PutApiKey(_)
         | CatalogEntry::RevokeApiKey { .. }
         | CatalogEntry::PutMaterializedView(_)
-        | CatalogEntry::DeleteMaterializedView { .. }
         | CatalogEntry::PutTenant(_)
         | CatalogEntry::DeleteTenant { .. }
         | CatalogEntry::PutRlsPolicy(_)
