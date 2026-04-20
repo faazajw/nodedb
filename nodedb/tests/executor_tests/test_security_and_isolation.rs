@@ -315,6 +315,7 @@ fn mixed_engine_isolation_no_cross_eviction() {
             &mut tx,
             &mut rx,
             PhysicalPlan::Graph(GraphOp::EdgePut {
+                collection: "col".into(),
                 src_id: format!("doc_{i}"),
                 label: "NEXT".into(),
                 dst_id: format!("doc_{}", i + 1),

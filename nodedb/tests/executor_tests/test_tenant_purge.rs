@@ -39,6 +39,7 @@ fn purge_removes_all_tenant_data() {
         &mut rx,
         TENANT_A,
         PhysicalPlan::Graph(GraphOp::EdgePut {
+            collection: "col".into(),
             src_id: "u0".into(),
             label: "KNOWS".into(),
             dst_id: "u1".into(),

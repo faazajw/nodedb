@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use crate::bridge::dispatch::Dispatcher;
 use crate::control::catalog_entry::entry::CatalogEntry;
-use crate::control::catalog_entry::post_apply::invalidate_gateway_cache_for_entry;
+use crate::control::catalog_entry::post_apply::gateway_invalidation::invalidate_gateway_cache_for_entry;
 use crate::control::gateway::plan_cache::{PlanCache, PlanCacheKey, hash_sql};
 use crate::control::gateway::version_set::GatewayVersionSet;
 use crate::control::gateway::{Gateway, PlanCacheInvalidator};

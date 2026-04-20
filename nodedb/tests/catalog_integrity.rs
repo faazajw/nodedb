@@ -446,6 +446,7 @@ fn classify(entry: &CatalogEntry) -> VariantClass {
 
         // Symmetric delete / deactivate paths — owner row deleted by applier.
         CatalogEntry::DeactivateCollection { .. } => VariantClass::ParentReplicated,
+        CatalogEntry::PurgeCollection { .. } => VariantClass::ParentReplicated,
         CatalogEntry::DeleteFunction { .. } => VariantClass::ParentReplicated,
         CatalogEntry::DeleteProcedure { .. } => VariantClass::ParentReplicated,
         CatalogEntry::DeleteTrigger { .. } => VariantClass::ParentReplicated,

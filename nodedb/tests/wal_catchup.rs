@@ -467,7 +467,7 @@ fn startup_replay_recovers_all_wal_data() {
         num_batches,
         "WAL should have {num_batches} batches"
     );
-    core.replay_timeseries_wal(&records, 1);
+    core.replay_timeseries_wal(&records, 1, &nodedb_wal::TombstoneSet::new());
 
     // Query via direct scan: COUNT(*) must see ALL rows.
     let scan_plan = PhysicalPlan::Timeseries(TimeseriesOp::Scan {

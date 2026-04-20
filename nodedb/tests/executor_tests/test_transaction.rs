@@ -205,6 +205,7 @@ fn transaction_edge_put_committed() {
                     value: b"{\"name\":\"carol\"}".to_vec(),
                 }),
                 PhysicalPlan::Graph(GraphOp::EdgePut {
+                    collection: "col".into(),
                     src_id: "alice".into(),
                     label: "KNOWS".into(),
                     dst_id: "bob".into(),
@@ -294,6 +295,7 @@ fn transaction_edge_put_rolled_back_on_failure() {
         PhysicalPlan::Meta(MetaOp::TransactionBatch {
             plans: vec![
                 PhysicalPlan::Graph(GraphOp::EdgePut {
+                    collection: "col".into(),
                     src_id: "alice".into(),
                     label: "KNOWS".into(),
                     dst_id: "bob".into(),
@@ -404,6 +406,7 @@ fn transaction_mixed_doc_edge_vector_rollback() {
                     value: b"modified_n1".to_vec(),
                 }),
                 PhysicalPlan::Graph(GraphOp::EdgePut {
+                    collection: "col".into(),
                     src_id: "n1".into(),
                     label: "LINKED".into(),
                     dst_id: "n2".into(),

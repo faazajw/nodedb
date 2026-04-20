@@ -327,13 +327,17 @@ async fn graph_edge_properties_object_literal() {
 
     // Edge with { } properties (new form).
     server
-        .exec("GRAPH INSERT EDGE FROM 'a' TO 'b' TYPE 'knows' PROPERTIES { since: 2020, weight: 0.9 }")
+        .exec(
+            "GRAPH INSERT EDGE IN 'graph_nodes' FROM 'a' TO 'b' TYPE 'knows' PROPERTIES { since: 2020, weight: 0.9 }",
+        )
         .await
         .unwrap();
 
     // Edge with quoted JSON properties (old form — still works).
     server
-        .exec("GRAPH INSERT EDGE FROM 'b' TO 'a' TYPE 'follows' PROPERTIES '{\"year\": 2021}'")
+        .exec(
+            "GRAPH INSERT EDGE IN 'graph_nodes' FROM 'b' TO 'a' TYPE 'follows' PROPERTIES '{\"year\": 2021}'",
+        )
         .await
         .unwrap();
 
@@ -363,7 +367,7 @@ async fn match_node_label_filtering() {
         .await
         .unwrap();
     server
-        .exec("GRAPH INSERT EDGE FROM 'alice' TO 'bob' TYPE 'knows'")
+        .exec("GRAPH INSERT EDGE IN 'label_docs' FROM 'alice' TO 'bob' TYPE 'knows'")
         .await
         .unwrap();
 

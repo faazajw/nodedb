@@ -66,6 +66,7 @@ fn cross_model_query_vector_graph_relational() {
             &mut tx,
             &mut rx,
             PhysicalPlan::Graph(GraphOp::EdgePut {
+                collection: "col".into(),
                 src_id: format!("p{i}"),
                 label: "CITES".into(),
                 dst_id: format!("p{}", i + 1),
