@@ -298,6 +298,51 @@ pub fn verify_redb_integrity(catalog: &SystemCatalog) -> Vec<Divergence> {
         }
     }
 
+    // ── Check 6: every materialized_view.source exists as a
+    //              collection. ──
+    //
+    // An MV whose source was purged (or never existed on this node)
+    // will silently refresh against nothing. Surface as a dangling
+    // reference so operators know to drop the stale MV or restore
+    // the source. Cascade-delete of MVs on `PurgeCollection` is the
+    // preventive path; this check is the detective path.
+    for mv in &materialized_views {
+        let key = (mv.tenant_id, mv.source.clone());
+        if !collection_keys.contains(&key) {
+            violations.push(Divergence::new(DivergenceKind::DanglingReference {
+                from_kind: "materialized_view",
+                from_key: format!("{}:{}", mv.tenant_id, mv.name),
+                to_kind: "collection",
+                to_key: format!("{}:{}", mv.tenant_id, mv.source),
+            }));
+        }
+    }
+
+    // ── Check 7: every change_stream.collection exists as a
+    //              collection, unless it's the wildcard `*` which
+    //              matches any collection for the tenant. ──
+    for cs in &change_streams {
+        if cs.collection == "*" {
+            continue;
+        }
+        let key = (cs.tenant_id, cs.collection.clone());
+        if !collection_keys.contains(&key) {
+            violations.push(Divergence::new(DivergenceKind::DanglingReference {
+                from_kind: "change_stream",
+                from_key: format!("{}:{}", cs.tenant_id, cs.name),
+                to_kind: "collection",
+                to_key: format!("{}:{}", cs.tenant_id, cs.collection),
+            }));
+        }
+    }
+
+    // Check 8 (Schedule → referenced collection) is blocked on the
+    // `references_collection: Option<(TenantId, String)>` field not
+    // yet existing on `StoredSchedule`. Tracked distinctly in the
+    // hard-delete checklist (cascade enumeration section).
+
+    let _ = (functions, procedures, sequences, schedules);
+
     violations
 }
 
