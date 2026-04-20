@@ -8,6 +8,7 @@ pub mod columnar;
 pub mod conversion;
 pub mod datetime;
 pub mod document;
+pub mod dropped_collection;
 pub mod error;
 pub mod filter;
 pub mod geometry;
@@ -43,6 +44,7 @@ pub use columnar::{
 pub use config::TuningConfig;
 pub use datetime::{NdbDateTime, NdbDuration};
 pub use document::Document;
+pub use dropped_collection::DroppedCollection;
 pub use error::NodeDbError;
 pub use filter::{EdgeFilter, MetadataFilter};
 pub use graph::Direction;
