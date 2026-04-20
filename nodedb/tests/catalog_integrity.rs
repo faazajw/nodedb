@@ -141,11 +141,15 @@ fn make_trigger(name: &str, collection: &str) -> StoredTrigger {
 }
 
 fn make_mv(name: &str) -> StoredMaterializedView {
+    make_mv_sourced(name, "source_coll")
+}
+
+fn make_mv_sourced(name: &str, source: &str) -> StoredMaterializedView {
     StoredMaterializedView {
         tenant_id: TENANT,
         name: name.into(),
-        source: "source_coll".into(),
-        query_sql: "SELECT * FROM source_coll".into(),
+        source: source.into(),
+        query_sql: format!("SELECT * FROM {source}"),
         refresh_mode: "auto".into(),
         owner: ADMIN.into(),
         created_at: 0,
@@ -481,6 +485,76 @@ fn classify(entry: &CatalogEntry) -> VariantClass {
 //    integrity verifier must produce zero violations. ─────────────────────
 
 #[test]
+fn check_6_flags_dangling_materialized_view_source() {
+    let (_dir, catalog) = make_catalog();
+    // Create an MV sourced at "ghost" without putting a matching
+    // collection row — Check 6 must flag the dangling reference.
+    catalog
+        .put_materialized_view(&make_mv_sourced("mv_ghost", "ghost"))
+        .unwrap();
+
+    let violations =
+        nodedb::control::cluster::recovery_check::integrity::verify_redb_integrity(&catalog);
+    assert!(
+        violations.iter().any(|v| matches!(
+            &v.kind,
+            nodedb::control::cluster::recovery_check::divergence::DivergenceKind::DanglingReference {
+                from_kind: "materialized_view",
+                to_kind: "collection",
+                ..
+            }
+        )),
+        "Check 6 must flag dangling MV source: {violations:?}"
+    );
+}
+
+#[test]
+fn check_7_flags_dangling_change_stream_collection() {
+    let (_dir, catalog) = make_catalog();
+    // Build a stream scoped to a specific (non-wildcard) collection
+    // that doesn't exist.
+    let mut stream = make_stream("cs_ghost");
+    stream.collection = "ghost".into();
+    catalog.put_change_stream(&stream).unwrap();
+
+    let violations =
+        nodedb::control::cluster::recovery_check::integrity::verify_redb_integrity(&catalog);
+    assert!(
+        violations.iter().any(|v| matches!(
+            &v.kind,
+            nodedb::control::cluster::recovery_check::divergence::DivergenceKind::DanglingReference {
+                from_kind: "change_stream",
+                to_kind: "collection",
+                ..
+            }
+        )),
+        "Check 7 must flag dangling change-stream collection: {violations:?}"
+    );
+}
+
+#[test]
+fn check_7_ignores_wildcard_change_stream() {
+    let (_dir, catalog) = make_catalog();
+    // Wildcard streams should NOT trigger Check 7 — they match any
+    // collection by design.
+    catalog.put_change_stream(&make_stream("cs_star")).unwrap();
+
+    let violations =
+        nodedb::control::cluster::recovery_check::integrity::verify_redb_integrity(&catalog);
+    assert!(
+        !violations.iter().any(|v| matches!(
+            &v.kind,
+            nodedb::control::cluster::recovery_check::divergence::DivergenceKind::DanglingReference {
+                from_kind: "change_stream",
+                to_kind: "collection",
+                ..
+            }
+        )),
+        "Check 7 must skip wildcard (`*`) streams: {violations:?}"
+    );
+}
+
+#[test]
 fn apply_all_put_entries_produces_clean_redb_integrity() {
     let (_dir, catalog) = make_catalog();
 
@@ -500,8 +574,11 @@ fn apply_all_put_entries_produces_clean_redb_integrity() {
         &CatalogEntry::PutTrigger(Box::new(make_trigger("t1", "orders"))),
         &catalog,
     );
+    // MV source must match an existing collection or Check 6
+    // (dangling MV source) will flag it. `orders` is the one PutCollection
+    // above, so route the MV at it.
     apply_to(
-        &CatalogEntry::PutMaterializedView(Box::new(make_mv("mv1"))),
+        &CatalogEntry::PutMaterializedView(Box::new(make_mv_sourced("mv1", "orders"))),
         &catalog,
     );
     apply_to(
