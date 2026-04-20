@@ -114,6 +114,7 @@ pub async fn create_materialized_view(
             lvc_enabled: false,
             permission_tree_def: None,
             indexes: Vec::new(),
+            size_bytes_estimate: 0,
         };
         let coll_entry =
             crate::control::catalog_entry::CatalogEntry::PutCollection(Box::new(target.clone()));

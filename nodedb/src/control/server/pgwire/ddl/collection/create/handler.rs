@@ -145,6 +145,7 @@ pub fn create_collection(
         lvc_enabled: false,
         permission_tree_def: None,
         indexes: Vec::new(),
+        size_bytes_estimate: 0,
     };
 
     // Persist through the replicated metadata Raft group (group 0).

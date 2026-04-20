@@ -87,6 +87,7 @@ pub fn create_timeseries(
         lvc_enabled: false,
         permission_tree_def: None,
         indexes: Vec::new(),
+        size_bytes_estimate: 0,
     };
 
     if let Some(catalog) = state.credentials.catalog() {

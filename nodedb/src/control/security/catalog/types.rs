@@ -341,6 +341,19 @@ pub struct StoredCollection {
     /// invalidation.
     #[msgpack(default)]
     pub indexes: Vec<StoredIndex>,
+    /// Best-effort estimate of this collection's on-core data size in
+    /// bytes. Summed across every engine's in-memory state for the
+    /// `(tenant, collection)` pair on the node that most recently
+    /// refreshed it. Populated lazily by the `_system.dropped_collections`
+    /// view via a `MetaOp::QueryCollectionSize` dispatch, and surfaces
+    /// in the view's `size_bytes_estimate` column so operators can
+    /// see how much storage a soft-deleted collection will reclaim
+    /// when the GC sweeper hard-deletes it. `0` = never refreshed
+    /// yet. Not authoritative across cluster nodes (each node's
+    /// local Data Plane is queried) — it's an operator hint, not a
+    /// billable source of truth.
+    #[msgpack(default)]
+    pub size_bytes_estimate: u64,
 }
 
 impl StoredCollection {
@@ -383,6 +396,7 @@ impl StoredCollection {
             lvc_enabled: false,
             permission_tree_def: None,
             indexes: Vec::new(),
+            size_bytes_estimate: 0,
         }
     }
 

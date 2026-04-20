@@ -305,7 +305,8 @@ pub fn required_permission(plan: &crate::bridge::envelope::PhysicalPlan) -> Perm
             | MetaOp::CreateTenantSnapshot { .. }
             | MetaOp::RestoreTenantSnapshot { .. }
             | MetaOp::UnregisterCollection { .. }
-            | MetaOp::UnregisterMaterializedView { .. },
+            | MetaOp::UnregisterMaterializedView { .. }
+            | MetaOp::QueryCollectionSize { .. },
         ) => Permission::Admin,
 
         // KV engine: read operations.
