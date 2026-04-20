@@ -127,6 +127,14 @@ pub async fn restore_tenant(
     stats.crdt_state = merged.crdt_state.len();
     stats.timeseries = merged.timeseries.len();
 
+    // Warn-and-audit for any collection in the snapshot that has been
+    // hard-deleted on the destination cluster since the snapshot was
+    // captured. Restore still proceeds (operator intent wins — the
+    // tombstone set is tenant-local state and was not captured in the
+    // backup), but the operator needs to know they just resurrected
+    // data that had been purged.
+    warn_on_tombstoned_restores(state, tenant_id, &merged, env.meta.snapshot_watermark);
+
     if dry_run {
         return Ok(stats);
     }
@@ -178,6 +186,110 @@ pub async fn restore_tenant(
     }
 
     Ok(stats)
+}
+
+/// Walk the merged snapshot, extract the distinct collection names
+/// present across every engine section, and for each one that has a
+/// live tombstone on the destination cluster emit a loud warning +
+/// audit event. Best-effort: catalog-open failures silently skip the
+/// check (the main restore path still runs its own catalog-open).
+fn warn_on_tombstoned_restores(
+    state: &Arc<SharedState>,
+    tenant_id: u32,
+    merged: &TenantDataSnapshot,
+    snapshot_watermark: u64,
+) {
+    let Some(catalog) = state.credentials.catalog() else {
+        return;
+    };
+    let Ok(tombstones) = catalog.load_wal_tombstones() else {
+        return;
+    };
+    if tombstones.is_empty() {
+        return;
+    }
+
+    // Keys across the snapshot all start with `{tenant_id}:{collection}`
+    // (with either `:` or `\0` as the next separator depending on
+    // engine). Extract the second segment for each key and dedupe.
+    let mut names = std::collections::BTreeSet::new();
+    let sections: [&[(String, Vec<u8>)]; 6] = [
+        &merged.documents,
+        &merged.indexes,
+        &merged.vectors,
+        &merged.kv_tables,
+        &merged.timeseries,
+        &merged.edges,
+    ];
+    for section in sections {
+        for (key, _) in section {
+            if let Some(name) = collection_from_key(key) {
+                names.insert(name.to_string());
+            }
+        }
+    }
+
+    for name in &names {
+        let Some(purge_lsn) = tombstones.purge_lsn(tenant_id, name) else {
+            continue;
+        };
+        // Any snapshot whose watermark is below the purge_lsn is
+        // pre-purge. A 0 watermark (envelope had no watermark) is
+        // treated as "older than any purge" — flag it too.
+        if snapshot_watermark != 0 && snapshot_watermark >= purge_lsn {
+            continue;
+        }
+        tracing::warn!(
+            tenant_id,
+            collection = %name,
+            purge_lsn,
+            snapshot_watermark,
+            "RESTORE: bringing back a collection that was hard-deleted on this cluster — \
+             operator intent wins, but the data predates the purge"
+        );
+        state.audit_record(
+            crate::control::security::audit::AuditEvent::AdminAction,
+            Some(TenantId::new(tenant_id)),
+            "__restore",
+            &format!(
+                "restore resurrected tombstoned collection '{name}' \
+                 (purge_lsn={purge_lsn}, snapshot_watermark={snapshot_watermark})"
+            ),
+        );
+    }
+}
+
+/// Parse `{tid}:{collection}(:|\0)...` → `collection`.
+fn collection_from_key(key: &str) -> Option<&str> {
+    let tail = key.split_once(':')?.1;
+    tail.split(|c| c == ':' || c == '\0').next()
+}
+
+#[cfg(test)]
+mod collection_key_tests {
+    use super::collection_from_key;
+
+    #[test]
+    fn extracts_collection_with_colon_separator() {
+        assert_eq!(collection_from_key("1:users:doc-1"), Some("users"));
+    }
+
+    #[test]
+    fn extracts_collection_with_null_separator() {
+        // Edge-key shape: `{tid}:{src}\x00{label}\x00{tid}:{dst}`
+        assert_eq!(collection_from_key("1:src\0label\0"), Some("src"));
+    }
+
+    #[test]
+    fn vector_and_kv_key_shapes() {
+        // These engines use `{tid}:{collection}` with no trailing part.
+        assert_eq!(collection_from_key("1:events"), Some("events"));
+    }
+
+    #[test]
+    fn no_tenant_prefix_returns_none() {
+        assert_eq!(collection_from_key("no_colon"), None);
+    }
 }
 
 fn merge_sections(
