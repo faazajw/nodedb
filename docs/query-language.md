@@ -228,15 +228,40 @@ CREATE COLLECTION sessions TYPE KEY_VALUE (key TEXT PRIMARY KEY);
 -- Timeseries collection (convenience alias)
 CREATE TIMESERIES metrics;
 
--- Drop
+-- Drop (two-phase: soft-delete, reversible within retention window)
 DROP COLLECTION users;
+
+-- Restore a soft-deleted collection (within retention window)
+UNDROP COLLECTION users;
+
+-- Hard-delete immediately (admin-only, skips retention, no UNDROP)
+DROP COLLECTION users PURGE;
 
 -- Show all
 SHOW COLLECTIONS;
 
 -- Describe schema
 DESCRIBE users;
+
+-- Inspect soft-deleted collections and the L2 delete backlog
+SELECT * FROM _system.dropped_collections;
+SELECT * FROM _system.l2_cleanup_queue;
+
+-- Change retention (superuser; live — sweeper picks up next tick)
+ALTER SYSTEM SET deactivated_collection_retention_days = 14;
+-- Per-tenant override:
+ALTER TENANT 42 SET QUOTA deactivated_collection_retention_days = 30;
 ```
+
+`DROP COLLECTION` is a soft-delete by default — the catalog row and
+all on-disk bytes are preserved for a retention window (default: 7
+days) during which `UNDROP COLLECTION` restores the collection with
+zero data loss. After the window the Event-Plane GC sweeper proposes
+`PurgeCollection` and reclaims storage on every node. `DROP ... PURGE`
+skips the window and is admin-only. If any triggers, RLS policies,
+materialized views, change streams, schedules, or implicit sequences
+reference the collection, the handler rejects with SQLSTATE `2BP01`
+listing every dependent.
 
 #### Unified Columnar DDL
 
