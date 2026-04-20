@@ -15,7 +15,7 @@ use super::tables;
 /// Returns `Some(Ok(response))` if the query targets a known
 /// pg_catalog table, `None` if the query should fall through to the
 /// normal planner. The `upper` argument is the uppercased SQL.
-pub fn try_pg_catalog(
+pub async fn try_pg_catalog(
     state: &SharedState,
     identity: &AuthenticatedIdentity,
     upper: &str,
@@ -29,7 +29,7 @@ pub fn try_pg_catalog(
         "pg_attribute" => tables::pg_attribute(state, identity),
         "pg_index" => tables::pg_index(),
         "pg_authid" => tables::pg_authid(state, identity),
-        "_system.dropped_collections" => dropped_collections(state, identity),
+        "_system.dropped_collections" => dropped_collections(state, identity).await,
         "_system.l2_cleanup_queue" => l2_cleanup_queue(state, identity),
         _ => return None,
     };
@@ -96,6 +96,7 @@ pub fn pg_catalog_schema(table: &str) -> Option<Vec<pgwire::api::results::FieldI
             text_field("engine_type"),
             int8_field("deactivated_at_ns"),
             int8_field("retention_expires_at_ns"),
+            int8_field("size_bytes_estimate"),
         ],
         "_system.l2_cleanup_queue" => vec![
             int8_field("tenant_id"),

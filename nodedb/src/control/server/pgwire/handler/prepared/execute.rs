@@ -72,7 +72,9 @@ impl NodeDbPgHandler {
                 &self.state,
                 &identity,
                 &upper,
-            ) {
+            )
+            .await
+            {
                 let mut responses = result?;
                 return Ok(responses.pop().unwrap_or(Response::EmptyQuery));
             }
