@@ -4,6 +4,7 @@
 //! SQL identifier quoting into a focused module.
 
 use nodedb_types::Value;
+use nodedb_types::error::{NodeDbError, NodeDbResult};
 
 /// Convert a `tokio_postgres` column value to `nodedb_types::Value`.
 pub(crate) fn pg_value_to_value(
@@ -86,6 +87,40 @@ pub(crate) fn json_to_value(v: &serde_json::Value) -> Value {
 pub(crate) fn quote_identifier(name: &str) -> String {
     let escaped = name.replace('"', "\"\"");
     format!("\"{escaped}\"")
+}
+
+/// Decode a pgwire-decoded integer column as `u32`. Used by the
+/// `_system.dropped_collections` row decoder.
+pub(crate) fn value_as_u32(v: &Value) -> NodeDbResult<u32> {
+    match v {
+        Value::Integer(i) => Ok(*i as u32),
+        other => Err(NodeDbError::storage(format!(
+            "expected integer for u32 column, got {other:?}"
+        ))),
+    }
+}
+
+/// Decode a pgwire-decoded integer column as `u64`.
+pub(crate) fn value_as_u64(v: &Value) -> NodeDbResult<u64> {
+    match v {
+        Value::Integer(i) => Ok(*i as u64),
+        other => Err(NodeDbError::storage(format!(
+            "expected integer for u64 column, got {other:?}"
+        ))),
+    }
+}
+
+/// Decode a pgwire-decoded string column. `Null` projects to the
+/// empty string so downstream callers don't have to special-case
+/// nullable text columns for owner lookups.
+pub(crate) fn value_as_string(v: &Value) -> NodeDbResult<String> {
+    match v {
+        Value::String(s) => Ok(s.clone()),
+        Value::Null => Ok(String::new()),
+        other => Err(NodeDbError::storage(format!(
+            "expected string column, got {other:?}"
+        ))),
+    }
 }
 
 /// Format an f32 slice as a SQL ARRAY literal: `ARRAY[0.1,0.2,0.3]`.

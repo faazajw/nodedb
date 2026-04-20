@@ -19,6 +19,7 @@ use tokio::sync::Mutex;
 use tokio_postgres::{Client, NoTls};
 
 use nodedb_types::document::Document;
+use nodedb_types::dropped_collection::DroppedCollection;
 use nodedb_types::error::{NodeDbError, NodeDbResult};
 use nodedb_types::filter::{EdgeFilter, MetadataFilter};
 use nodedb_types::id::{EdgeId, NodeId};
@@ -105,7 +106,8 @@ impl NodeDbRemote {
 }
 
 use super::remote_parse::{
-    format_vector_array, json_to_value, pg_value_to_value, quote_identifier,
+    format_vector_array, json_to_value, pg_value_to_value, quote_identifier, value_as_string,
+    value_as_u32, value_as_u64,
 };
 
 #[async_trait]
@@ -355,6 +357,50 @@ impl NodeDb for NodeDbRemote {
             rows,
             rows_affected: 0,
         })
+    }
+
+    // ─── Collection Lifecycle (soft-delete / undrop / hard-delete) ───
+    //
+    // Explicit overrides of the trait defaults so the pgwire routing
+    // takes the no-row `execute_raw` path for DDL (rather than
+    // `query_raw`, which is shaped for row-returning statements) and
+    // so the dispatch is visible and grep-able in this file.
+
+    async fn undrop_collection(&self, name: &str) -> NodeDbResult<()> {
+        let sql = format!("UNDROP COLLECTION {}", quote_identifier(name));
+        self.execute_raw(&sql, &[]).await?;
+        Ok(())
+    }
+
+    async fn drop_collection_purge(&self, name: &str) -> NodeDbResult<()> {
+        let sql = format!("DROP COLLECTION {} PURGE", quote_identifier(name));
+        self.execute_raw(&sql, &[]).await?;
+        Ok(())
+    }
+
+    async fn list_dropped_collections(&self) -> NodeDbResult<Vec<DroppedCollection>> {
+        let sql = "SELECT tenant_id, name, owner, engine_type, \
+                   deactivated_at_ns, retention_expires_at_ns \
+                   FROM _system.dropped_collections";
+        let (_columns, rows) = self.query_raw(sql, &[]).await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for row in &rows {
+            if row.len() < 6 {
+                return Err(NodeDbError::storage(format!(
+                    "dropped_collections row has {} columns; expected 6",
+                    row.len()
+                )));
+            }
+            out.push(DroppedCollection {
+                tenant_id: value_as_u32(&row[0])?,
+                name: value_as_string(&row[1])?,
+                owner: value_as_string(&row[2])?,
+                engine_type: value_as_string(&row[3])?,
+                deactivated_at_ns: value_as_u64(&row[4])?,
+                retention_expires_at_ns: value_as_u64(&row[5])?,
+            });
+        }
+        Ok(out)
     }
 }
 

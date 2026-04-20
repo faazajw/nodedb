@@ -7,15 +7,39 @@
 //! All methods are `async` — on native this runs on Tokio, on WASM this
 //! runs on `wasm-bindgen-futures`.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 
 use nodedb_types::document::Document;
-use nodedb_types::error::NodeDbResult;
+use nodedb_types::dropped_collection::DroppedCollection;
+use nodedb_types::error::{NodeDbError, NodeDbResult};
 use nodedb_types::filter::{EdgeFilter, MetadataFilter};
 use nodedb_types::id::{EdgeId, NodeId};
 use nodedb_types::result::{QueryResult, SearchResult, SubGraph};
 use nodedb_types::text_search::TextSearchParams;
 use nodedb_types::value::Value;
+
+/// Event passed to `NodeDb::on_collection_purged` handlers.
+///
+/// Emitted on the sync client when Origin pushes a `CollectionPurged`
+/// wire message and on Lite after local hard-delete completes, so
+/// application code can flush UI caches, drop derived indexes, etc.
+/// Handler callsites must not block — the dispatch path is on the
+/// sync client's receive loop.
+#[derive(Debug, Clone)]
+pub struct CollectionPurgedEvent {
+    pub tenant_id: u32,
+    pub name: String,
+    /// WAL LSN at which the purge was applied. Handlers can compare
+    /// this against locally-observed LSNs for resume/replay logic.
+    pub purge_lsn: u64,
+}
+
+/// Handler registered via `NodeDb::on_collection_purged`. Fn-ref
+/// (not FnMut) so the same handler can fire from multiple threads
+/// without interior mutability ceremony at every call site.
+pub type CollectionPurgedHandler = Arc<dyn Fn(CollectionPurgedEvent) + Send + Sync + 'static>;
 
 /// Unified database interface for NodeDB.
 ///
@@ -227,6 +251,141 @@ pub trait NodeDb: Send + Sync {
     /// For most AI agent workloads, the typed methods above are sufficient
     /// and faster. Use this for BI tools, existing ORMs, or ad-hoc queries.
     async fn execute_sql(&self, query: &str, params: &[Value]) -> NodeDbResult<QueryResult>;
+
+    // ─── Collection Lifecycle (soft-delete / undrop / hard-delete) ───
+
+    /// Restore a soft-deleted collection within its retention window.
+    ///
+    /// Equivalent to `UNDROP COLLECTION <name>`. Fails with 42P01 if
+    /// the retention window has elapsed and the row is gone, or with
+    /// 42501 if the caller is neither preserved owner nor admin.
+    ///
+    /// Default impl routes through `execute_sql` so any implementation
+    /// that can execute SQL inherits the correct behavior for free.
+    async fn undrop_collection(&self, name: &str) -> NodeDbResult<()> {
+        let sql = format!("UNDROP COLLECTION {}", quote_ident(name));
+        self.execute_sql(&sql, &[]).await?;
+        Ok(())
+    }
+
+    /// Hard-delete a collection, skipping soft-delete and retention.
+    ///
+    /// Equivalent to `DROP COLLECTION <name> PURGE`. Admin-only on the
+    /// server; the server rejects non-admin callers with 42501.
+    /// Bypasses the retention safety net — data is unrecoverable.
+    async fn drop_collection_purge(&self, name: &str) -> NodeDbResult<()> {
+        let sql = format!("DROP COLLECTION {} PURGE", quote_ident(name));
+        self.execute_sql(&sql, &[]).await?;
+        Ok(())
+    }
+
+    /// List every soft-deleted collection in the current tenant that
+    /// is still within its retention window.
+    ///
+    /// Equivalent to `SELECT tenant_id, name, owner, deactivated_at_ns,
+    /// retention_expires_at_ns FROM _system.dropped_collections`.
+    /// Returns `Vec<DroppedCollection>` — empty if no soft-deleted rows
+    /// exist for the caller's tenant.
+    async fn list_dropped_collections(&self) -> NodeDbResult<Vec<DroppedCollection>> {
+        let sql = "SELECT tenant_id, name, owner, engine_type, \
+                   deactivated_at_ns, retention_expires_at_ns \
+                   FROM _system.dropped_collections";
+        let result = self.execute_sql(sql, &[]).await?;
+        parse_dropped_collection_rows(&result)
+    }
+
+    /// Register a handler fired when a collection the caller has
+    /// synced is purged on Origin and the local copy is removed.
+    ///
+    /// Default impl returns `NodeDbError::storage` with a
+    /// `"not supported"` detail — implementations that maintain a
+    /// sync client (Lite, any future push-capable remote client)
+    /// override with registration into their internal handler list.
+    /// Stateless clients (pgwire-only `NodeDbRemote`) have nothing
+    /// to push, so the default rejection is the correct behavior.
+    async fn on_collection_purged(&self, _handler: CollectionPurgedHandler) -> NodeDbResult<()> {
+        Err(NodeDbError::storage(
+            "on_collection_purged is not supported on this client — \
+             requires a push-capable sync connection (NodeDbLite or a \
+             sync-enabled remote client)",
+        ))
+    }
+}
+
+/// Quote a SQL identifier. Mirrors the pgwire-side rule used by
+/// `remote_parse::quote_identifier`: wrap in double-quotes only if
+/// the name contains anything other than `[A-Za-z0-9_]` or starts
+/// with a digit. Unquoted fast-path keeps the usual case cheap.
+fn quote_ident(name: &str) -> String {
+    let needs_quote = name.is_empty()
+        || name.chars().next().is_some_and(|c| c.is_ascii_digit())
+        || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if needs_quote {
+        let escaped = name.replace('"', "\"\"");
+        format!("\"{escaped}\"")
+    } else {
+        name.to_string()
+    }
+}
+
+/// Decode `_system.dropped_collections` rows into
+/// `Vec<DroppedCollection>`. Each row is a `Vec<Value>` aligned with
+/// the column order declared in the SELECT list above.
+fn parse_dropped_collection_rows(result: &QueryResult) -> NodeDbResult<Vec<DroppedCollection>> {
+    let mut out = Vec::with_capacity(result.rows.len());
+    for row in &result.rows {
+        if row.len() < 6 {
+            return Err(NodeDbError::storage(format!(
+                "dropped_collections row has {} columns; expected 6 \
+                 (tenant_id, name, owner, engine_type, deactivated_at_ns, \
+                 retention_expires_at_ns)",
+                row.len()
+            )));
+        }
+        out.push(DroppedCollection {
+            tenant_id: value_as_u32(&row[0])?,
+            name: value_as_string(&row[1])?,
+            owner: value_as_string(&row[2])?,
+            engine_type: value_as_string(&row[3])?,
+            deactivated_at_ns: value_as_u64(&row[4])?,
+            retention_expires_at_ns: value_as_u64(&row[5])?,
+        });
+    }
+    Ok(out)
+}
+
+fn value_as_u32(v: &Value) -> NodeDbResult<u32> {
+    match v {
+        Value::Integer(i) => Ok(*i as u32),
+        Value::String(s) => s
+            .parse::<u32>()
+            .map_err(|e| NodeDbError::storage(format!("parse u32 from '{s}': {e}"))),
+        _ => Err(NodeDbError::storage(format!(
+            "expected integer for u32 column, got {v:?}"
+        ))),
+    }
+}
+
+fn value_as_u64(v: &Value) -> NodeDbResult<u64> {
+    match v {
+        Value::Integer(i) => Ok(*i as u64),
+        Value::String(s) => s
+            .parse::<u64>()
+            .map_err(|e| NodeDbError::storage(format!("parse u64 from '{s}': {e}"))),
+        _ => Err(NodeDbError::storage(format!(
+            "expected integer for u64 column, got {v:?}"
+        ))),
+    }
+}
+
+fn value_as_string(v: &Value) -> NodeDbResult<String> {
+    match v {
+        Value::String(s) => Ok(s.clone()),
+        Value::Null => Ok(String::new()),
+        other => Err(NodeDbError::storage(format!(
+            "expected string column, got {other:?}"
+        ))),
+    }
 }
 
 #[cfg(test)]
