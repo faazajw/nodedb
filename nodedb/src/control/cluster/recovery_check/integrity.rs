@@ -336,12 +336,26 @@ pub fn verify_redb_integrity(catalog: &SystemCatalog) -> Vec<Divergence> {
         }
     }
 
-    // Check 8 (Schedule → referenced collection) is blocked on the
-    // `references_collection: Option<(TenantId, String)>` field not
-    // yet existing on `StoredSchedule`. Tracked distinctly in the
-    // hard-delete checklist (cascade enumeration section).
+    // ── Check 8: every schedule.target_collection (when Some) exists
+    //              as a collection. `None` means the schedule is
+    //              cross-collection or opaque (runs on `_system`
+    //              coordinator) and is exempt. ──
+    for sch in &schedules {
+        let Some(target) = &sch.target_collection else {
+            continue;
+        };
+        let key = (sch.tenant_id, target.clone());
+        if !collection_keys.contains(&key) {
+            violations.push(Divergence::new(DivergenceKind::DanglingReference {
+                from_kind: "schedule",
+                from_key: format!("{}:{}", sch.tenant_id, sch.name),
+                to_kind: "collection",
+                to_key: format!("{}:{}", sch.tenant_id, target),
+            }));
+        }
+    }
 
-    let _ = (functions, procedures, sequences, schedules);
+    let _ = (functions, procedures, sequences);
 
     violations
 }
