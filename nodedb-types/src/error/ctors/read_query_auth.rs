@@ -1,0 +1,125 @@
+//! Read path (1100s), query (1200s), auth (2000s) constructors.
+
+use std::fmt;
+
+use super::super::code::ErrorCode;
+use super::super::details::ErrorDetails;
+use super::super::types::NodeDbError;
+
+impl NodeDbError {
+    pub fn collection_not_found(collection: impl Into<String>) -> Self {
+        let collection = collection.into();
+        Self {
+            code: ErrorCode::COLLECTION_NOT_FOUND,
+            message: format!("collection '{collection}' not found"),
+            details: ErrorDetails::CollectionNotFound { collection },
+            cause: None,
+        }
+    }
+
+    /// Collection is mid-purge; new scans are refused until the purge
+    /// ack. Distinct from `collection_not_found` so clients can
+    /// differentiate "try again in a moment" from "does not exist".
+    pub fn collection_draining(collection: impl Into<String>) -> Self {
+        let collection = collection.into();
+        Self {
+            code: ErrorCode::COLLECTION_DRAINING,
+            message: format!(
+                "collection '{collection}' is draining for hard-delete; \
+                 retry after the purge completes"
+            ),
+            details: ErrorDetails::CollectionDraining { collection },
+            cause: None,
+        }
+    }
+
+    /// Collection is soft-deleted (retention window active). Distinct
+    /// from `collection_not_found` so clients can surface the
+    /// `UNDROP COLLECTION <name>` hint instead of "does not exist".
+    pub fn collection_deactivated(
+        collection: impl Into<String>,
+        retention_expires_at_ns: u64,
+    ) -> Self {
+        let collection = collection.into();
+        let undrop_hint = format!("UNDROP COLLECTION {collection}");
+        Self {
+            code: ErrorCode::COLLECTION_DEACTIVATED,
+            message: format!(
+                "collection '{collection}' was dropped and is within its retention \
+                 window; restore it with `{undrop_hint}` before it is hard-deleted"
+            ),
+            details: ErrorDetails::CollectionDeactivated {
+                collection,
+                retention_expires_at_ns,
+                undrop_hint,
+            },
+            cause: None,
+        }
+    }
+
+    pub fn document_not_found(
+        collection: impl Into<String>,
+        document_id: impl Into<String>,
+    ) -> Self {
+        let collection = collection.into();
+        let document_id = document_id.into();
+        Self {
+            code: ErrorCode::DOCUMENT_NOT_FOUND,
+            message: format!("document '{document_id}' not found in '{collection}'"),
+            details: ErrorDetails::DocumentNotFound {
+                collection,
+                document_id,
+            },
+            cause: None,
+        }
+    }
+
+    pub fn plan_error(detail: impl fmt::Display) -> Self {
+        Self {
+            code: ErrorCode::PLAN_ERROR,
+            message: format!("query plan error: {detail}"),
+            details: ErrorDetails::PlanError,
+            cause: None,
+        }
+    }
+
+    pub fn fan_out_exceeded(shards_touched: u16, limit: u16) -> Self {
+        Self {
+            code: ErrorCode::FAN_OUT_EXCEEDED,
+            message: format!("query fan-out exceeded: {shards_touched} shards > limit {limit}"),
+            details: ErrorDetails::FanOutExceeded {
+                shards_touched,
+                limit,
+            },
+            cause: None,
+        }
+    }
+
+    pub fn sql_not_enabled() -> Self {
+        Self {
+            code: ErrorCode::SQL_NOT_ENABLED,
+            message: "SQL not enabled (compile with 'sql' feature)".into(),
+            details: ErrorDetails::SqlNotEnabled,
+            cause: None,
+        }
+    }
+
+    pub fn authorization_denied(resource: impl Into<String>) -> Self {
+        let resource = resource.into();
+        Self {
+            code: ErrorCode::AUTHORIZATION_DENIED,
+            message: format!("authorization denied on {resource}"),
+            details: ErrorDetails::AuthorizationDenied { resource },
+            cause: None,
+        }
+    }
+
+    pub fn auth_expired(detail: impl fmt::Display) -> Self {
+        Self {
+            code: ErrorCode::AUTH_EXPIRED,
+            message: format!("auth expired: {detail}"),
+            details: ErrorDetails::AuthExpired,
+            cause: None,
+        }
+    }
+}
