@@ -14,7 +14,7 @@
 use pgwire::api::results::{Response, Tag};
 use pgwire::error::PgWireResult;
 
-use crate::control::security::audit::AuditEvent;
+use crate::control::security::audit::{AuditEvent, UndropAuditDetail, UndropStage};
 use crate::control::security::identity::{AuthenticatedIdentity, Role};
 use crate::control::state::SharedState;
 
@@ -89,12 +89,10 @@ pub fn undrop_collection(
     // Audit intent BEFORE the catalog mutation (symmetric with drop;
     // if we crash mid-propose, the audit record still captures that
     // an UNDROP was requested, with the owner-missing flag for
-    // post-hoc investigation).
-    let intent = if owner_user_missing {
-        format!("requested undrop of collection '{name}' (owner_user_missing=true)")
-    } else {
-        format!("requested undrop of collection '{name}'")
-    };
+    // post-hoc investigation). Detail is a JSON-serialized
+    // `UndropAuditDetail` so SIEM / compliance consumers filter on
+    // `owner_user_missing` without string-scraping.
+    let intent = UndropAuditDetail::new(name, UndropStage::Requested, owner_user_missing).to_json();
     state.audit_record(
         AuditEvent::AdminAction,
         Some(tenant_id),
@@ -117,11 +115,9 @@ pub fn undrop_collection(
             .map_err(|e| sqlstate_error("XX000", &e.to_string()))?;
     }
 
-    let completion = if owner_user_missing {
-        format!("undropped collection '{name}' (log_index={log_index}, owner_user_missing=true)")
-    } else {
-        format!("undropped collection '{name}' (log_index={log_index})")
-    };
+    let completion = UndropAuditDetail::new(name, UndropStage::Completed, owner_user_missing)
+        .with_log_index(log_index)
+        .to_json();
     state.audit_record(
         AuditEvent::AdminAction,
         Some(tenant_id),
