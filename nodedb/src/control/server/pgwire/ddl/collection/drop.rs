@@ -122,6 +122,25 @@ pub fn drop_collection(
         }
     }
 
+    // Audit the user's intent BEFORE mutating the catalog. Ordering
+    // is load-bearing for forensic completeness: if the process
+    // crashes between the audit durable-write and the catalog row
+    // delete, restart leaves the audit record present + the row
+    // still present, so the purge can be retried cleanly with full
+    // history. The alternative (audit after delete) loses the trail
+    // on a crash window.
+    let action = if flags.purge {
+        format!("requested purge of collection '{name}'")
+    } else {
+        format!("requested drop of collection '{name}'")
+    };
+    state.audit_record(
+        AuditEvent::AdminAction,
+        Some(tenant_id),
+        &identity.username,
+        &action,
+    );
+
     // Propose the drop through the metadata raft group. The applier
     // on every node decodes the entry, performs the appropriate
     // mutation, and (for PurgeCollection) triggers the async
@@ -182,16 +201,20 @@ pub fn drop_collection(
         }
     }
 
-    let action = if flags.purge {
-        format!("purged collection '{name}'")
+    // Emit a second audit record with the completion status so the
+    // intent + outcome pair is visible to auditors. If the process
+    // dies after propose returned but before this line, the pre-propose
+    // intent record alone is enough to reconstruct the history.
+    let completion = if flags.purge {
+        format!("purged collection '{name}' (log_index={log_index})")
     } else {
-        format!("dropped collection '{name}'")
+        format!("dropped collection '{name}' (log_index={log_index})")
     };
     state.audit_record(
         AuditEvent::AdminAction,
         Some(tenant_id),
         &identity.username,
-        &action,
+        &completion,
     );
 
     Ok(vec![Response::Execution(Tag::new("DROP COLLECTION"))])

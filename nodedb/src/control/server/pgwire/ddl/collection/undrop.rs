@@ -86,6 +86,22 @@ pub fn undrop_collection(
         ));
     }
 
+    // Audit intent BEFORE the catalog mutation (symmetric with drop;
+    // if we crash mid-propose, the audit record still captures that
+    // an UNDROP was requested, with the owner-missing flag for
+    // post-hoc investigation).
+    let intent = if owner_user_missing {
+        format!("requested undrop of collection '{name}' (owner_user_missing=true)")
+    } else {
+        format!("requested undrop of collection '{name}'")
+    };
+    state.audit_record(
+        AuditEvent::AdminAction,
+        Some(tenant_id),
+        &identity.username,
+        &intent,
+    );
+
     // Propose the restore as a PutCollection through the metadata raft
     // group. Fresh entry carries `is_active = true` and the preserved
     // owner (already present on `stored`).
@@ -101,16 +117,16 @@ pub fn undrop_collection(
             .map_err(|e| sqlstate_error("XX000", &e.to_string()))?;
     }
 
-    let action = if owner_user_missing {
-        format!("undropped collection '{name}' (owner_user_missing=true)")
+    let completion = if owner_user_missing {
+        format!("undropped collection '{name}' (log_index={log_index}, owner_user_missing=true)")
     } else {
-        format!("undropped collection '{name}'")
+        format!("undropped collection '{name}' (log_index={log_index})")
     };
     state.audit_record(
         AuditEvent::AdminAction,
         Some(tenant_id),
         &identity.username,
-        &action,
+        &completion,
     );
 
     Ok(vec![Response::Execution(Tag::new("UNDROP COLLECTION"))])
